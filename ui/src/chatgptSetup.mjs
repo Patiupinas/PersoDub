@@ -2,6 +2,7 @@
 // about 130 MB), the window says what it is doing and how far it has got. A
 // silent minute read as a hang to a tester (2026-09-28). Used by the first-dub
 // sign-in window and by Settings.
+import { t } from "./i18n.mjs";
 
 /** The progress line under the bar, or "" when there is nothing to show. */
 export function setupText(p) {
@@ -9,7 +10,7 @@ export function setupText(p) {
   // Short on purpose (user, 2026-09-28): the title already says ChatGPT, and
   // the bar shows the rest.
   const pct = p.stage === "unpack" ? 100 : p.total ? Math.min(100, Math.floor((p.got / p.total) * 100)) : null;
-  return pct == null ? "First-time setup" : `First-time setup ${pct}%`;
+  return pct == null ? t("First-time setup") : t("First-time setup {pct}%", { pct });
 }
 
 /** 0-100 for the bar, or null while the size is not known yet. */

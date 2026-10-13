@@ -121,13 +121,17 @@ def test_the_command_fences_the_assistant_in():
     # would come along and hand the assistant tools this app never offered.
     assert "--strict-mcp-config" in args
     allowed = args[args.index("--allowedTools") + 1]
-    assert allowed.count("mcp__persodub__") == 22
+    assert allowed.count("mcp__persodub__") == 23
     assert "mcp__persodub__cancel_dub" in allowed
     assert "mcp__persodub__burn_subtitles" in allowed
     denied = args[args.index("--disallowedTools") + 1]
     for tool in ("Bash", "Write", "WebFetch"):
         assert tool in denied
     assert "-c" not in args
+    # None of the user's own settings files: their hooks, plugins and private
+    # CLAUDE.md rode into every turn, and a plugin's start-up text made the
+    # assistant refuse to stop a running dub (Windows test F22, 2026-10-10).
+    assert args[args.index("--setting-sources") + 1] == ""
 
 
 def test_resuming_continues_the_same_conversation():
@@ -177,7 +181,7 @@ def test_a_job_is_refused_when_the_disk_is_nearly_full(monkeypatch):
     """Failing here beats failing three stages in with a half-written folder."""
     from fastapi import HTTPException
 
-    from app.api import dub as m
+    from app.api import _launch as m
 
     monkeypatch.setattr(m, "free_bytes", lambda p: 100 * 1024 ** 2)  # 100 MB
     try:
@@ -190,7 +194,7 @@ def test_a_job_is_refused_when_the_disk_is_nearly_full(monkeypatch):
 
 
 def test_plenty_of_room_starts_the_job():
-    from app.api import dub as m
+    from app.api import _launch as m
     m.check_space("/tmp")  # must not raise on a normal disk
 
 
@@ -272,9 +276,85 @@ def test_the_instructions_say_to_keep_the_balance_when_asking_about_credits():
     assert "AND the balance" in SYSTEM_PROMPT
 
 
+def test_the_instructions_say_to_ask_before_starting_free_work_too():
+    # "Method: you decide" started a free local dubbing unasked (night test
+    # 2026-10-01). Both agents read this prompt.
+    from app.agents.claude import SYSTEM_PROMPT
+    assert "ASK BEFORE STARTING WORK" in SYSTEM_PROMPT
+    assert "when it is free" in SYSTEM_PROMPT and "you decide" in SYSTEM_PROMPT
+    assert "said to go, start without asking" in SYSTEM_PROMPT
+
+
 def test_a_download_offer_names_its_model_for_the_button():
     from app.agents.claude import translate
     ev = {"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "mcp__persodub__download_model", "input": {"model_id": "gemma"}}]}}
     step = translate(ev)[0]
     assert step["tool"] == "download_model" and step["model"] == "gemma"
+
+
+def test_the_instructions_do_not_let_the_assistant_choose_the_engine_on_you_decide():
+    # "You decide" used to let it pick this machine and quote only that;
+    # on a kit whose default is Perso that is the user's money (Windows F36, 2026-10-07).
+    from app.agents.claude import SYSTEM_PROMPT
+    assert "do not choose where it runs" in SYSTEM_PROMPT
+    assert "you may choose for them" not in SYSTEM_PROMPT
+
+
+def test_the_instructions_keep_the_users_account_details_private():
+    # Asked "Who am I signed in as?", the assistant read out the account's
+    # email address (Windows test F1, 2026-10-10). Both agents read this prompt.
+    from app.agents.claude import SYSTEM_PROMPT
+    assert "Never say the user's email address" in SYSTEM_PROMPT
+    assert "who is signed in" in SYSTEM_PROMPT
+
+
+def test_the_instructions_answer_in_the_language_of_the_users_message():
+    # An English request was answered in Japanese (Windows test F10,
+    # 2026-10-10): "the user's language" was read off something other than
+    # the message. Both agents read this prompt.
+    from app.agents.claude import SYSTEM_PROMPT
+    assert "the language the user's own message is written in" in SYSTEM_PROMPT
+    assert "not the language of the video" in SYSTEM_PROMPT
+
+
+def test_the_instructions_ask_about_a_dubbing_with_the_tools_own_plan():
+    # The assistant wrote its own question before calling queue_dub, and left
+    # out the video's length the tool would have given (Windows test F10,
+    # 2026-10-10). Both agents read this prompt.
+    from app.agents.claude import SYSTEM_PROMPT
+    assert "call queue_dub without confirm first" in SYSTEM_PROMPT
+
+
+def test_the_instructions_take_read_it_again_as_the_voices():
+    # "Read all the lines again" was taken for a new translation, and the
+    # video was not made again (Windows test F18, 2026-10-10). Both agents
+    # read this prompt.
+    from app.agents.claude import SYSTEM_PROMPT
+    assert "read the lines again" in SYSTEM_PROMPT and "not a new translation" in SYSTEM_PROMPT
+
+
+def test_the_instructions_do_not_take_a_request_or_an_answer_for_a_go():
+    # Five videos started at once after the user only answered which
+    # language (Windows test F26), and a request naming two dubs and an
+    # erase started all three unasked (F28), both on 2026-10-10. Both agents
+    # read this prompt.
+    from app.agents.claude import SYSTEM_PROMPT
+    assert "is not a go" in SYSTEM_PROMPT
+    assert "each video's length and the total" in SYSTEM_PROMPT
+
+
+def test_the_instructions_remake_every_voice_for_read_it_all_again():
+    # "Read all the lines again" with no line changed remade nothing: only
+    # the changed lines could be remade (Windows test F18, 2026-10-11).
+    from app.agents.claude import SYSTEM_PROMPT
+    assert "every_line=true" in SYSTEM_PROMPT
+
+
+def test_the_instructions_take_a_short_stop_for_the_running_work():
+    # Asked "Stop that." after an earlier question in the same chat, the
+    # assistant took it for that question and left the dub running (Windows
+    # test F41, 2026-10-11). Both agents read this prompt.
+    from app.agents.claude import SYSTEM_PROMPT
+    assert "whatever the talk was about before" in SYSTEM_PROMPT
+    assert "call list_jobs and cancel the running job straight away" in SYSTEM_PROMPT

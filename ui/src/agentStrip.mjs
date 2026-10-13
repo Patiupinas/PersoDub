@@ -20,8 +20,9 @@
 // #assistantState, #assistantModelBtn, #assistantModelLabel, #assistantMenu,
 // #assistantGo, #assistantGoIcon and #assistantFold. It never reaches the top
 // bar, the timeline, the script table or `state`.
-import { escapeHtml } from "./format.mjs";
+import { escapeHtml, errorText } from "./format.mjs";
 import { CHECK_ICON_SM } from "./icons.mjs";
+import { t } from "./i18n.mjs";
 
 // Model aliases, not version numbers -- an alias keeps pointing at the current
 // model of that size, so this menu does not go stale.
@@ -68,7 +69,7 @@ const CHEVRON_LEFT = '<svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M15
 // page: the chosen pick, the list the server sent, and the model the CLI said it
 // actually ran.
 export function labelFor(chosen, agentList, servedModel) {
-  if (!chosen.agent) return "Model";
+  if (!chosen.agent) return t("Model");
   const a = agentList.find((x) => x.id === chosen.agent);
   // chosen.name is the vendor's own spelling, saved with the pick: while a dub
   // runs the picker is locked and the list may not have come back, and a strip
@@ -107,9 +108,9 @@ export function loginWords(a) {
   if (a.logged_in) {
     // "as" only when the account is an address, which says which one: a
     // service's name ("claude.ai", "ChatGPT") only repeated the row's own.
-    return a.account && a.account.includes("@") ? `signed in as ${a.account}` : "signed in";
+    return a.account && a.account.includes("@") ? t("signed in as {account}", { account: a.account }) : t("signed in");
   }
-  return "not signed in";
+  return t("not signed in");
 }
 
 // The two faces of the button at the end of the input row. Drawn, like every
@@ -177,9 +178,13 @@ const MARK_NOTE = '<svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M6 12h
 // those come off before the numbers go on. A step that names no line at all --
 // reading the script, remaking the voices -- keeps its label as it is.
 export function chipText(label, lines) {
-  if (!lines.length) return label;
-  const stem = label.replace(/\s+(?:a|this|the)\s+lines?$/i, "");
-  return stem + (lines.length > 1 ? " lines " : " line ") + lines.join(", ");
+  // The label is the engine's, in English (app/agents/claude.py TOOL_LABELS),
+  // and said here in the page's language: its keys are added to
+  // static/i18n/ui.*.json by hand, the cut-down ones ("Rewriting") too.
+  if (!lines.length) return t(label);
+  const stem = t(label.replace(/\s+(?:a|this|the)\s+lines?$/i, ""));
+  return lines.length > 1 ? t("{step} lines {lines}", { step: stem, lines: lines.join(", ") })
+    : t("{step} line {lines}", { step: stem, lines: lines.join(", ") });
 }
 
 /**
@@ -297,24 +302,79 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
     // about Codex -- the answer there is this one, by name, or switch to the
     // other (Windows saw it, 2026-09-11).
     stateLine.classList.add("warn");
-    stateLine.textContent = anySignedIn() ? `${a.name} is not signed in.` : SIGN_IN;
-    // Codex signs in with ChatGPT in the app's own window (one sign-in for
-    // translation and the agent, 2026-09-28): a button, not a terminal command.
-    if (!a.login_command) {
+    // A sign-in started from here is waiting on the browser.
+    if (signingIn) { stateLine.textContent = t("Finish in your browser."); return; }
+    const oneOut = anySignedIn();
+    // A button, not a terminal command: one for the assistant that is out, or
+    // one each when both are, named, since either will do.
+    const outs = oneOut ? [a]
+      : agentList.filter((x) => x.installed && x.supported && loginKnown(x) && !x.logged_in);
+    stateLine.textContent = oneOut ? t("{name} is not signed in.", { name: a.name })
+      : outs.length > 1 ? t("Sign in with") : SIGN_IN();
+    for (const x of outs) {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "state-signin";
-      b.textContent = "Sign in";
-      b.addEventListener("click", () => emit("persodub:chatgpt-signin", () => recheckLogin()));
+      b.textContent = oneOut || outs.length < 2 ? t("Sign in") : x.name;
+      b.addEventListener("click", () => signIn(x));
       stateLine.append(" ", b);
     }
+  }
+
+  // Signing in from the strip. Codex signs in with ChatGPT in the app's own
+  // window (one sign-in for translation and the agent, 2026-09-28). Claude's
+  // own sign-in is started the same way that window starts ChatGPT's -- the
+  // app runs the CLI's login, which opens the browser -- and the strip asks
+  // every three seconds, for three minutes, whether it has landed.
+  let signingIn = "";
+  function signIn(a) {
+    if (!a.login_command) { emit("persodub:chatgpt-signin", () => signedIn(a.id)); return; }
+    if (signingIn) return;
+    signingIn = a.id;
+    paintState();
+    fetch("/api/agent/login", { method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ agent: a.id }) })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(String((await r.json().catch(() => ({}))).detail || ""));
+        waitForSignIn(a.id, 60);
+      })
+      .catch((e) => signInFailed(a, e && e.message));
+  }
+  function waitForSignIn(id, left) {
+    setTimeout(async () => {
+      if (signingIn !== id) return;
+      await loadAgents({ login: true }).catch(() => {});
+      const a = agentList.find((x) => x.id === id);
+      if (a && a.logged_in === true) { signingIn = ""; signedIn(id); return; }
+      if (left > 1) waitForSignIn(id, left - 1);
+      else signInFailed(a || { name: "", login_command: "" }, t("The sign-in did not finish. Try again."));
+    }, 3000);
+  }
+  // The terminal command is the way left when the app could not start it.
+  function signInFailed(a, why) {
+    signingIn = "";
+    paintState();
+    showError(why || (a.login_command
+      ? t("Could not start the sign-in. Run {command} in Terminal.", { command: a.login_command })
+      : t("Could not start the sign-in.")));
+  }
+  // Signed in: if the assistant that was picked still cannot answer, this one
+  // takes its place, and the list is read again for its models.
+  function signedIn(id) {
+    const a = agentList.find((x) => x.id === id);
+    if (a && signedOutChoice() && chosen.agent !== id) {
+      chosen = id === DEFAULT_CHOICE.agent ? { ...DEFAULT_CHOICE }
+        : { agent: id, model: (a.models || [])[0] || "", name: a.name };
+      saveChoice();
+    }
+    recheckLogin();
   }
 
   // Which one it is showing, and whether it can be pressed. While a turn runs it
   // is always pressable -- stopping is the whole point of it being there.
   function paintGo() {
     wire("send button", () => {
-      const words = busy ? "Stop" : "Send";
+      const words = busy ? t("Stop") : t("Send");
       goIcon.innerHTML = busy ? GO_STOP : GO_SEND;
       goBtn.disabled = !busy && !input.value.trim();
       goBtn.setAttribute("aria-label", words);
@@ -354,22 +414,22 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
       // be installed, a model to be picked, or the user. A running dub is not on
       // the list -- the strip is off the page there, so nothing it said was read.
       if (notice) {
-        input.placeholder = notice;
+        input.placeholder = notice();
       } else if (!chosen.agent) {
-        input.placeholder = "Pick a model first";
+        input.placeholder = t("Pick a model first");
       } else if (signedOutChoice()) {
         // It cannot answer yet. The row above says the same thing; this is the
         // one the user reads while typing.
-        input.placeholder = anySignedIn() ? SIGN_IN_NARROW : SIGN_IN_BOX;
+        input.placeholder = anySignedIn() ? SIGN_IN_NARROW() : SIGN_IN_BOX();
       } else if (document.body.classList.contains("agent-open")) {
-        input.placeholder = "Ask anything";
+        input.placeholder = t("Ask anything");
       } else if (screen === "home") {
         // No script on screen to point at, so no line-number example here.
-        input.placeholder = "Ask anything";
+        input.placeholder = t("Ask anything");
       } else {
         // Three words, because the box is 107px wide: the example that used to
         // stand here needed 382px and the user saw the first two words of it.
-        input.placeholder = "Ask for a fix";
+        input.placeholder = t("Ask for a fix");
       }
     });
     paintGo();
@@ -377,9 +437,22 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
 
   // The app's screens live in another module; the strip follows them through the
   // one thing both can see.
+  // Words typed and not sent belong to the project they were typed on: another
+  // project's box starts empty, and this one's words are there on the way back.
+  // Home, a new project and an erase have no job, and share one box.
+  const unsent = new Map();
+  let unsentFor = getJobId() || "";
+  function followProject() {
+    const now = getJobId() || "";
+    if (now === unsentFor) return;
+    unsent.set(unsentFor, input.value);
+    unsentFor = now;
+    input.value = unsent.get(now) || "";
+    input.style.height = "auto";
+  }
   wire("screen watch", () => {
-    new MutationObserver(paintChoice)
-      .observe(document.body, { attributeFilter: ["data-screen"] });
+    new MutationObserver(() => { followProject(); paintChoice(); })
+      .observe(document.body, { attributeFilter: ["data-screen", "data-job-id"] });
   });
 
   // Two steps, the way the reference does it: the vendor first, then that
@@ -392,7 +465,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
     if (!menuLevel) {
       const head = document.createElement("div");
       head.className = "menu-group";
-      head.innerHTML = "<span>Assistant</span>";
+      head.innerHTML = `<span>${t("Assistant")}</span>`;
       menu.appendChild(head);
       for (const a of agentList) {
         const usable = a.installed && a.supported;
@@ -406,11 +479,11 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
         // the account's, so there are none to show until then (2026-09-28).
         const signsInHere = usable && signedOut && !a.login_command;
         const row = menuRow(a.name, {
-          note: !a.installed ? "not installed" : "",
+          note: !a.installed ? t("not installed") : "",
           // Why this one cannot be picked, said where the picking happens -- or,
           // for one that can, whether it is signed in.
-          sub: a.installed && !a.supported ? (a.reason || "not supported")
-            : signsInHere ? "Sign in first" : loginWords(a),
+          sub: a.installed && !a.supported ? (a.reason || t("not supported"))
+            : signsInHere ? t("Sign in first") : loginWords(a),
           chevron: pickable,
           // Not greyed out when a press can fix it: it opens the sign-in.
           disabled: !pickable && !signsInHere,
@@ -533,18 +606,21 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
       if (stripInUse()) loadAgents().then(done).catch(() => {});
     }, 1800);
   }
-  const CHECK_FAILED = "Could not check which assistants are available.";
+  // Each sentence is a function, so it is read in the language of the moment it
+  // is drawn. `notice` holds the function itself: compared by which one it is,
+  // never by its words, which change with the language.
+  const CHECK_FAILED = () => t("Could not check which assistants are available.");
   // What the strip says when it cannot answer, short enough for the heading
   // row and the input box (user, 2026-09-10). The full stop is for the log.
-  const NONE_READY = "Install Claude Code or Codex";
-  const SIGN_IN = "Sign in to Claude or Codex.";
+  const NONE_READY = () => t("Install Claude Code or Codex");
+  const SIGN_IN = () => t("Sign in to Claude or Codex.");
   // Two lines for two situations. With nothing signed in the picker leaves the
   // row (there is nothing to pick), the box gets the whole width, and the
   // sentence that names both fits in it. With one of the two signed in the
   // picker stays -- switching to it is the fix -- and the box has 107px, which
   // holds the state and nothing else (user, 2026-09-10).
-  const SIGN_IN_BOX = "Sign in to Claude or Codex.";
-  const SIGN_IN_NARROW = "Not signed in";
+  const SIGN_IN_BOX = () => t("Sign in to Claude or Codex.");
+  const SIGN_IN_NARROW = () => t("Not signed in");
   // The Terminal command is the one thing here a person cannot guess, and it
   // is said once: the log keeps it, the rows and the heading stay short.
   let signInHintSaid = false;
@@ -574,7 +650,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
     } catch {
       agentList = [];
       // Say it once. A retry that fails again should not stack up bubbles.
-      if (notice !== CHECK_FAILED) bubble("ai", CHECK_FAILED);
+      if (notice !== CHECK_FAILED) bubble("ai", CHECK_FAILED());
       notice = CHECK_FAILED;
     }
     // A saved choice only stands if that assistant is still usable -- but a list
@@ -613,7 +689,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
     // installed, and "install one of these three" is the wrong thing to tell
     // someone who already has one. The fetch's own message stands instead.
     if (arrived && !agentList.some((a) => a.installed && a.supported)) {
-      if (notice !== NONE_READY) bubble("ai", NONE_READY + ".");
+      if (notice !== NONE_READY) bubble("ai", t("Install Claude Code or Codex."));
       notice = NONE_READY;
       paintChoice();
     } else if (arrived && notice === NONE_READY) {
@@ -630,18 +706,14 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
       signInHintSaid = false;   // a later sign-out is said again
     }
     if (arrived && !signInHintSaid && signedOutChoice()) {
-      const cmds = agentList.filter((a) => loginKnown(a) && !a.logged_in && a.login_command)
-        .map((a) => a.login_command);
       signInHintSaid = true;
       // Same rule as the line above: name the one that is out when the other
       // is there to switch to, and both when neither is.
       const out = signedOutChoice();
-      const opening = anySignedIn()
-        ? `${out.name} is not signed in. Pick another assistant, or sign in.`
-        : "Sign in to Claude or Codex to use this.";
-      // Codex signs in from the button at the top: one short sentence says so.
-      signInHint = bubble("ai", !out.login_command ? `${out.name} is not signed in. Press Sign in above.`
-        : opening + (cmds.length ? ` Run ${cmds.join(" or ")} in Terminal.` : ""));
+      // The button at the top signs in: one short sentence says so.
+      signInHint = bubble("ai", anySignedIn()
+        ? t("{name} is not signed in. Pick another assistant, or press Sign in above.", { name: out.name })
+        : t("Sign in to Claude or Codex to use this. Press a button above."));
     }
   }
 
@@ -674,45 +746,50 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
     card.className = "offer-card";
     const title = document.createElement("div");
     title.className = "offer-title";
-    title.textContent = `Download ${row.name}?`;
+    title.textContent = t("Download {name}?", { name: row.name });
     const sub = document.createElement("div");
     sub.className = "offer-sub";
-    sub.textContent = `${gb} GB · on this computer`;
+    sub.textContent = t("{gb} GB · on this computer", { gb });
     const btns = document.createElement("div");
     btns.className = "offer-btns";
     const yes = document.createElement("button");
-    yes.type = "button"; yes.className = "btn btn-primary btn-sm"; yes.textContent = "Download";
+    yes.type = "button"; yes.className = "btn btn-primary btn-sm"; yes.textContent = t("Download");
     const no = document.createElement("button");
-    no.type = "button"; no.className = "btn btn-outline btn-sm"; no.textContent = "Not now";
+    no.type = "button"; no.className = "btn btn-outline btn-sm"; no.textContent = t("Not now");
     yes.addEventListener("click", async () => {
       yes.disabled = no.disabled = true;
       try {
         const r = await fetch(`/api/models/${encodeURIComponent(id)}/download`, { method: "POST" });
         if (!r.ok) {
           const detail = (await r.json().catch(() => ({}))).detail;
-          throw new Error(typeof detail === "string" ? detail : "Could not start the download.");
+          throw new Error(typeof detail === "string" ? detail : t("Could not start the download."));
         }
         btns.remove();
-        sub.textContent = `Downloading · ${gb} GB`;
+        sub.textContent = t("Downloading · {gb} GB", { gb });
         emit("persodub:models-changed");
         // Follow it to the end: set once, the line said Downloading long after
-        // the model was ready (Windows, 2026-09-26).
+        // the model was ready (Windows, 2026-09-26). A stopped one is followed
+        // too, at a slower pace: resumed in Settings and finished, it still
+        // said "Download stopped" (Windows H9/H10, 2026-10-06).
         const follow = async () => {
+          if (card.isConnected === false) return;
           let m = null;
           try {
             m = ((await (await fetch("/api/models")).json()).models || []).find((x) => x.id === id) || null;
           } catch { m = null; }
-          if (m && m.state === "ready") { sub.textContent = `Downloaded · ${gb} GB`; return; }
-          if (m && m.state !== "downloading") { sub.textContent = "Download stopped. Try again in Settings."; return; }
-          setTimeout(follow, 2000);
+          if (m && m.state === "ready") { sub.textContent = t("Downloaded · {gb} GB", { gb }); return; }
+          const stopped = m && m.state !== "downloading";
+          if (stopped) sub.textContent = t("Download stopped. Resume it in Settings.");
+          else if (m) sub.textContent = t("Downloading · {gb} GB", { gb });
+          setTimeout(follow, stopped ? 5000 : 2000);
         };
         setTimeout(follow, 2000);
       } catch (e) {
-        sub.textContent = String((e && e.message) || e);
+        sub.textContent = errorText(e);
         yes.disabled = no.disabled = false;
       }
     });
-    no.addEventListener("click", () => { btns.remove(); sub.textContent = "Not downloaded."; });
+    no.addEventListener("click", () => { btns.remove(); sub.textContent = t("Not downloaded."); });
     btns.append(yes, no);
     card.append(title, sub, btns);
     log.appendChild(card);
@@ -744,7 +821,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
     // "· 1 of 2" -- how far through the run it is. Only worth saying while there
     // is more than one call in the chip and one of them has yet to land.
     if (run.calls > 1 && run.finished < run.calls) {
-      text += " · " + run.finished + " of " + run.calls;
+      text = t("{step} · {done} of {total}", { step: text, done: run.finished, total: run.calls });
     }
     run.text.nodeValue = text;
     const settled = run.finished >= run.calls;
@@ -822,6 +899,13 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
   // put down the moment Stop is pressed rather than when the stream finally ends,
   // because the point of Stop is being able to type the next thing at once.
   let busy = false;
+  // On the page too, as body[data-agent-turn]: Settings reads it before it
+  // starts the page again in a new language, because leaving the page ends
+  // the turn on air (app/api/agent.py).
+  function setBusy(on) {
+    busy = on;
+    document.body.dataset.agentTurn = on ? "on" : "";
+  }
   // Which turn is the current one. A stopped turn's stream runs on for a moment
   // after the next has started, and without this its clean-up would put the new
   // turn's button back to Send.
@@ -829,12 +913,25 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
   // The running turn's stream, so Stop can cut it mid-sentence -- asking the
   // server alone left the text pouring in for seconds (user feedback).
   let turnAbort = null;
+  // The first turn after the page opens starts a new conversation, and so
+  // does the next turn after New chat: the panel used to carry an invisible
+  // old conversation across launches, and a long one kept following its old
+  // habits over new instructions (Windows F36, 2026-10-08).
+  let fresh = true;
+  if ($("assistantNewChat")) {
+    $("assistantNewChat").addEventListener("click", () => {
+      if (busy) stopTurn();
+      log.innerHTML = "";
+      fresh = true;
+      bubble("ai", t("New conversation."));
+    });
+  }
 
   // Press Stop, and the server ends the CLI. The conversation is not lost: the
   // CLI is asked to go rather than shot, so the next message carries on.
   async function stopTurn() {
     if (!busy) return;
-    busy = false;
+    setBusy(false);
     paintGo();
     turnAbort?.abort();
     try { await fetch("/api/agent/stop", { method: "POST" }); }
@@ -857,7 +954,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
   function stoppedLine() {
     const d = document.createElement("div");
     d.className = "assistant-stopped";
-    d.textContent = "Stopped";
+    d.textContent = t("Stopped");
     log.appendChild(d);
     log.scrollTop = log.scrollHeight;
     return d;
@@ -867,7 +964,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
     // The same allow-list submit() had stood here too, so removing one without
     // the other would have moved the silent refusal rather than ended it.
     const token = ++turnToken;
-    busy = true;
+    setBusy(true);
     paintGo();
     bubble("me", message);
     let answer = null;
@@ -886,15 +983,17 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
     // is back. Only that press downloads (download_model never does).
     let offerModel = null;
     let remadeVoices = false;
-    let dots = thinking("Thinking…");
+    let dots = thinking(t("Thinking…"));
     const clearDots = () => { if (dots) { dots.remove(); dots = null; } };
     // A slow turn should say so rather than look stuck.
     const slow = setTimeout(() => {
-      if (dots) dots.querySelector("span").textContent = "Still working…";
+      if (dots) dots.querySelector("span").textContent = t("Still working…");
     }, 12000);
 
     turnAbort = new AbortController();
     try {
+      const freshTurn = fresh;
+      fresh = false;
       const res = await fetch("/api/agent/chat", {
         method: "POST",
         signal: turnAbort.signal,
@@ -903,6 +1002,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
           message,
           agent: chosen.agent,
           model: chosen.model,
+          resume: !freshTurn,
           // Whatever job is on screen. Without it the assistant asks for a job
           // number the user never sees.
           //
@@ -917,7 +1017,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
       });
       if (!res.ok) {
         const detail = await res.json().catch(() => ({}));
-        throw new Error(detail.detail || ("The app server answered " + res.status + "."));
+        throw new Error(detail.detail || t("PersoDub answered {status}.", { status: res.status }));
       }
 
       // The body is one JSON event per line, arriving as the turn runs.
@@ -971,8 +1071,10 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
             // The remake is told at the end of the turn instead (below): this
             // chip fires when the tool is CALLED, and reloading the player then
             // would fetch the video halfway through being written again.
-            // retranslate_lines rewrites the words AND remakes the voices.
-            if (ev.tool === "remake_voices" || ev.tool === "retranslate_lines") remadeVoices = true;
+            // retranslate_lines rewrites the words only, and takes a while:
+            // the table is drawn again when the turn ends.
+            if (ev.tool === "retranslate_lines") touchedScript = true;
+            if (ev.tool === "remake_voices") remadeVoices = true;
             if (JOB_TOOLS.has(ev.tool)) touchedJobs = true;
             if (ev.tool === "download_model" && ev.model) offerModel = ev.model;
           }
@@ -987,7 +1089,9 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
           } else if (ev.kind === "error") {
             clearDots();
             settlePrevious();
-            showError(ev.message);
+            // The engine's sentence (app/agents/), English; its keys are added
+            // to the page's tables by hand, and one with none reads as it came.
+            showError(t(ev.message));
             // The CLI just told us it has no credentials -- a flag from the
             // reader that knows each CLI's way of saying it, not a phrase
             // matched here. The strip above still says the opposite, because
@@ -1004,7 +1108,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
             // ends there.
             if (ev.stopped) stoppedLine();
             else if (!saidSomething && ev.text) bubble("ai", ev.text);
-            else if (!saidSomething) bubble("ai", "(empty answer)");
+            else if (!saidSomething) bubble("ai", t("(empty answer)"));
           }
         }
       }
@@ -1013,7 +1117,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
       settlePrevious();
       // A cut stream is the Stop working, not a failure.
       if (e && e.name === "AbortError") stoppedLine();
-      else showError(String(e.message || e));
+      else showError(errorText(e));
     } finally {
       clearTimeout(slow);
       // The writes have certainly landed by the time the turn is over, so this is
@@ -1029,10 +1133,10 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
       if (touchedJobs) emit("persodub:jobs-changed");
       // A turn that ends having shown nothing at all is the failure that looks
       // exactly like the app being broken. Say so instead.
-      if (dots) { clearDots(); bubble("ai", "No answer came back. Try sending that again."); }
+      if (dots) { clearDots(); bubble("ai", t("No answer came back. Try sending that again.")); }
       // Only if this is still the turn on air: a stopped one finishing after the
       // next has started must not say the row is free when it is not.
-      if (token === turnToken) busy = false;
+      if (token === turnToken) setBusy(false);
       paintChoice();
       log.scrollTop = log.scrollHeight;
     }
@@ -1105,7 +1209,7 @@ export function initAgentStripUi({ $, fetch = globalThis.fetch, getScreen, getJo
     try { localStorage.setItem(AGENT_OPEN_KEY, collapsed ? "0" : "1"); } catch { /* private window */ }
     wire("fold", () => {
       const fold = $("assistantFold");
-      const words = collapsed ? "Show the conversation" : "Hide the conversation";
+      const words = collapsed ? t("Show the conversation") : t("Hide the conversation");
       fold.setAttribute("aria-expanded", String(!collapsed));
       fold.setAttribute("aria-label", words);
       fold.title = words;

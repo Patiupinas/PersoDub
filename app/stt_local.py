@@ -13,11 +13,16 @@ app/docs/INTEGRATION_SPEC.md) -- so the caller must decide what happens next.
 """
 import json
 import os
+import re
 import subprocess
 import tempfile
+import wave
 from typing import Callable, List, Optional
 
+from app.config import NONVERBAL_WHISPER_MODEL, NONVERBAL_WHISPER_PYTHON
+from app.nonverbal import _PUNCT_RE, MIN_RMS_DBFS, _span_rms_db
 from app.run_errors import describe_exit_failure, describe_start_failure
+from app.text.srt import clamp_cues
 from app.timeouts import scaled_timeout
 
 # Dedicated venv with faster-whisper installed (see app/docs/INTEGRATION_SPEC.md
@@ -26,6 +31,37 @@ from app.timeouts import scaled_timeout
 STT_PYTHON = os.environ.get("STT_PYTHON", "python3")
 
 SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "whisper_transcribe.py")
+
+# What Whisper writes over music or silence, learned from video sign-offs and
+# subtitle credits: a whole line, lowercased, spaces and punctuation taken out
+# (nonverbal._PUNCT_RE). A 10 s TikTok came back as "Thank you for watching!"
+# over music alone (Windows B5/D14, 2026-10-06).
+_MADE_UP = re.compile("|".join([
+    r"thankyou", r"thank(s|you)(so|very)?(much)?forwatching", r"pleasesubscribe.*",
+    r"(subtitles|captions)by.*", r".*amaraorg.*",
+    r"감사합니다", r"시청해주셔서(정말)?감사합니다", r"다음영상에서(또)?만나요", r"구독과좋아요.*",
+    r"mbc뉴스.*", r"자막(제공|by).*",
+    r"ご視聴ありがとうございました", r"チャンネル登録.*",
+    r"(谢谢|感谢)(大家的?)?(观看|收看)", r"字幕(由|提供).*", r"[请請]不吝.*",
+    r"graciasporver(el)?(video)?", r"subtítulos(por|realizados).*",
+    r"mercidavoirregardé(cettevidéo)?", r"soustitres.*",
+    r"vielendankfürszuschauen", r"untertitel.*",
+    r"obrigad[oa]porassistir", r"legendas.*",
+    r"grazieperlavisione", r"sottotitoli.*",
+    r"спасибозапросмотр", r"субтитры.*", r"продолжениеследует",
+]))
+
+
+def _made_up(cue: dict, vocals_path: str) -> bool:
+    """True for one of Whisper's made-up lines over a quiet stretch of the
+    vocals track. A speaker who really says it is loud there and is kept, as
+    is any line when the track cannot be read."""
+    if not _MADE_UP.fullmatch(_PUNCT_RE.sub("", cue["text"].lower())):
+        return False
+    try:
+        return _span_rms_db(vocals_path, cue["start"], cue["end"]) < MIN_RMS_DBFS
+    except (OSError, EOFError, wave.Error):
+        return False
 
 
 def transcribe_local(
@@ -36,10 +72,15 @@ def transcribe_local(
     log: Optional[Callable[[str], None]] = None,
     on_language: Optional[Callable[[str], None]] = None,
     video_duration: Optional[float] = None,
+    vocals_path: Optional[str] = None,
 ) -> List[dict]:
     """Transcribe audio_path with local Whisper. Returns a list of cues in the
     same shape the pipeline expects everywhere else: [{"start": float,
     "end": float, "text": str}, ...] (see app/srt_utils.Cue).
+
+    video_duration, when known, also ends every line where the video ends.
+    vocals_path, when given, drops Whisper's made-up lines ("Thank you for
+    watching!") wherever that track is quiet (_made_up).
 
     Raises RuntimeError (with a clear message) on any failure: missing
     interpreter/script, subprocess crash/timeout, non-zero exit, bad JSON
@@ -95,7 +136,52 @@ def transcribe_local(
             if on_language:
                 on_language(detected)
 
-    segments = result.get("segments")
+    segments = clamp_cues(result.get("segments") or [], video_duration)
+    if vocals_path:
+        segments = [c for c in segments if not _made_up(c, vocals_path)]
     if not segments:
-        raise RuntimeError("local STT produced no segments")
+        raise RuntimeError("This video has no speech to transcribe.")
     return segments
+
+
+# The small Whisper the laughter check already loads (openai-whisper "base",
+# app/nonverbal.py). Hearing Fast lines back with it costs 0.5s a line on an
+# M4's CPU; the large model this module uses for the video took 9.4s a line.
+# It still heard all three kinds of wrong line Qwen made in finished dubs
+# ("Get get get get get going", "Good, good, good..." for "G-G-G", words the
+# script never had) -- 10 of 13 (2026-10-01).
+_LINE_RUNNER = """
+import json, sys
+import whisper
+model_name, language, in_path, out_path = sys.argv[1:5]
+model = whisper.load_model(model_name)
+out = {}
+for p in json.load(open(in_path, encoding="utf-8")):
+    out[p] = model.transcribe(p, language=language or None, fp16=False, temperature=0.0,
+                              condition_on_previous_text=False)["text"].strip()
+json.dump(out, open(out_path, "w", encoding="utf-8"))
+"""
+
+
+def transcribe_batch(paths: List[str], language: Optional[str] = None,
+                     timeout: Optional[float] = None) -> Optional[dict]:
+    """{path: what the small Whisper heard} for many short files, the model
+    loaded once. None when it cannot run: unlike transcribe_local this is a
+    check on lines already made, and a job goes on without it."""
+    py = NONVERBAL_WHISPER_PYTHON
+    if not paths or not (os.path.exists(py) and os.access(py, os.X_OK)):
+        return None
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        list_path = os.path.join(tmp_dir, "audio_list.json")
+        out_path = os.path.join(tmp_dir, "heard.json")
+        with open(list_path, "w", encoding="utf-8") as f:
+            json.dump(paths, f)
+        try:
+            r = subprocess.run([py, "-c", _LINE_RUNNER, NONVERBAL_WHISPER_MODEL, language or "", list_path, out_path],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=timeout or 120 + 10 * len(paths))
+            with open(out_path, encoding="utf-8") as f:
+                heard = json.load(f)
+        except Exception:
+            return None
+    return heard if r.returncode == 0 else None

@@ -152,7 +152,7 @@ def test_pairs_translation_with_source_by_time(tmp_path):
 
 
 def test_reports_slot_and_whether_it_fits(tmp_path):
-    # Korean is estimated at 4.4 syllables/sec, so a 2.0s slot fits roughly 7.5-10 chars.
+    # Korean is estimated at 6.2 syllables/sec, so a 2.0s slot fits roughly 11-14 chars.
     write(tmp_path / ORIGINAL_NAME, [(0.0, 2.0, "Stay with me.")])
     write(tmp_path / DUB_NAME, [(0.0, 2.0, "이건 도저히 이 시간 안에 다 읽을 수 없는 아주 긴 문장입니다")])
 
@@ -202,15 +202,15 @@ def test_edit_writes_to_edited_and_leaves_the_dub_alone(tmp_path):
     # translated.srt is the record of what the dub actually read -- without it there is
     # nothing to compare an edit against, so edits go to edited.srt instead.
     write(tmp_path / ORIGINAL_NAME, [(0.0, 2.0, "Stay with me.")])
-    write(tmp_path / DUB_NAME, [(0.0, 2.0, "나와 함께 있어주세요 제발")])  # 2.50s, overshoots
+    write(tmp_path / DUB_NAME, [(0.0, 2.0, "나와 함께 여기 있어주세요 제발 부탁")])  # 2.57s, overshoots
 
-    line = edit_line(str(tmp_path), 1, "정신 차려요 지금 당장", "ko")  # 2.05s, inside [1.70, 2.30]
+    line = edit_line(str(tmp_path), 1, "정신 차려요 지금 당장 어서", "ko")  # 1.89s, inside [1.70, 2.30]
 
     assert line["line"] == 1
-    assert line["text"] == "정신 차려요 지금 당장"
+    assert line["text"] == "정신 차려요 지금 당장 어서"
     assert line["fits"] is True
     assert (tmp_path / EDITED_NAME).exists()
-    assert "나와 함께 있어주세요 제발" in (tmp_path / DUB_NAME).read_text(encoding="utf-8")
+    assert "나와 함께 여기 있어주세요 제발 부탁" in (tmp_path / DUB_NAME).read_text(encoding="utf-8")
 
 
 def test_second_edit_builds_on_the_first(tmp_path):

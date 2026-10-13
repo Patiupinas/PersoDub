@@ -5,12 +5,13 @@ socket spec (app/engines/base.py). Qwen does not use num_step / guidance_scale /
 speed -- those are generic knobs the socket spec defines for other engines.
 """
 import os
+import time
 from typing import Dict, Optional
 
 import httpx
 
 from app import runtime
-from app.config import QWEN_VOICE_MODE
+from app.config import QWEN_TEMPERATURE, QWEN_TOP_P, QWEN_VOICE_MODE
 from app.engines.base import (
     SynthesisCut,
     SynthesisRequest,
@@ -47,6 +48,10 @@ except (TypeError, ValueError):
 # Registering a voice includes, the first time, loading the 4 GB model: one
 # took over two minutes (2026-09-16). It gets its own, longer wait.
 CLONE_WAIT_SECONDS = 600.0
+# A restarted sidecar loads its model again: about a minute on an M4, longer
+# on a slow disk; the same scale as the other waits.
+RESTART_WAIT_SECONDS = 300.0
+RESTART_POLL_SECONDS = 3.0
 
 
 # Never below this: a line squeezed into a sliver of a slot (0.01s after
@@ -70,16 +75,21 @@ def wait_seconds(slot: Optional[float]) -> float:
 class QwenTTSEngine(TTSEngine):
     id = "qwen3_tts"
     display_name = "Qwen3-TTS (local voice clone)"
+    log_name = "Qwen"
     supports_cloning = True
+    needs_spoken_numbers = True
+    adds_stray_sounds = True
+    free_retakes = True
 
     def __init__(self, base_url: Optional[str] = None):
         self._base_url = base_url
+        self._clones = {}   # voice_id -> (ref wav path, ref_text, mode), for restart()
 
     @property
     def base_url(self) -> str:
         """Read at every use, not once at construction: the engine registered
-        at import (app/api/misc.py) must see a sidecar the desktop shell starts
-        later in the session, when the engine pack is installed on demand."""
+        at import (app/engines/__init__.py) must see a sidecar the desktop shell
+        starts later in the session, when the engine pack is installed on demand."""
         return (self._base_url or runtime.url("tts")).rstrip("/")
 
     def is_available(self) -> bool:
@@ -89,6 +99,38 @@ class QwenTTSEngine(TTSEngine):
             return r.status_code == 200 and bool(r.json().get("model_loaded"))
         except Exception:
             return False
+
+    def memory_mb(self) -> Optional[int]:
+        """The sidecar's resident memory, or None when it cannot say."""
+        try:
+            r = httpx.get(self.base_url + "/health", timeout=5)
+            mb = r.json().get("rss_mb") if r.status_code == 200 else None
+            return int(mb) if mb is not None else None
+        except Exception:
+            return None
+
+    def restart(self) -> None:
+        """Have the desktop shell start a fresh sidecar (POST /restart, see
+        vendor/sidecar/server.py), wait for it, and clone the voices this
+        engine made again: a cloned voice lives in the sidecar's memory and
+        goes with it. Its address may change (runtime.json is read at every
+        use). Raises RuntimeError when no engine answers in time."""
+        httpx.post(self.base_url + "/restart", timeout=5)
+        deadline = time.monotonic() + RESTART_WAIT_SECONDS * PERSODUB_TTS_WAIT_SCALE
+        gone = False
+        while True:
+            up = self.is_available()
+            gone = gone or not up
+            if gone and up:
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError("the voice engine did not come back after a restart")
+            time.sleep(RESTART_POLL_SECONDS)
+        for voice_id, (path, ref_text, mode) in list(self._clones.items()):
+            if os.path.exists(path):
+                self.clone(path, ref_text, mode=mode)
+            else:
+                del self._clones[voice_id]
 
     def device_label(self) -> Optional[str]:
         """Human-readable compute device, or None when it cannot be known.
@@ -124,6 +166,8 @@ class QwenTTSEngine(TTSEngine):
         form["mode"] = req.mode or QWEN_VOICE_MODE
         if req.seed is not None:
             form["seed"] = str(req.seed)
+        form["temperature"] = str(QWEN_TEMPERATURE)
+        form["top_p"] = str(QWEN_TOP_P)
         # The speech cap travels with the request; the sidecar turns it into
         # a token count (desktop/vendor/sidecar/server.py).
         form["max_seconds"] = "%.2f" % speech_cap_seconds(req.duration)
@@ -137,9 +181,11 @@ class QwenTTSEngine(TTSEngine):
         audio on every line.
 
         mode: "timbre" (ref_text optional/ignored) | "icl" (ref_text required).
-        Defaults to config.QWEN_VOICE_MODE when omitted.
+        Omitted: config.QWEN_VOICE_MODE when there are words to clone with,
+        else timbre -- a job made before icl was the default kept none, and
+        its lines can still be remade.
         """
-        resolved_mode = mode or QWEN_VOICE_MODE
+        resolved_mode = mode or (QWEN_VOICE_MODE if ref_text and ref_text.strip() else "timbre")
         if resolved_mode == "icl" and (not ref_text or not ref_text.strip()):
             raise ValueError(
                 "Qwen3-TTS ICL voice clone requires ref_text (the transcript of the "
@@ -157,7 +203,9 @@ class QwenTTSEngine(TTSEngine):
                 timeout=CLONE_WAIT_SECONDS * PERSODUB_TTS_WAIT_SCALE,
             )
         r.raise_for_status()
-        return r.json()["voice_id"]
+        voice_id = r.json()["voice_id"]
+        self._clones[voice_id] = (ref_audio_path, ref_text, resolved_mode)
+        return voice_id
 
     def synthesize(self, req: SynthesisRequest) -> SynthesisResult:
         # Qwen ICL clone REQUIRES ref_text; fail early with a clear message.

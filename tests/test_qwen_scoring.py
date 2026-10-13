@@ -284,3 +284,38 @@ def test_score_takes_subprocess_timeout_honours_asr_timeout_env(monkeypatch, tmp
               "takes": [{"k": k, "path": "p"} for k in range(4)]} for i in range(22)]
     qsc.score_takes({"A": "/ref.wav"}, lines, "Korean", str(tmp_path))
     assert captured["timeout"] == 88 * 60 + 900
+
+
+# --- the ASR language is the dub's own (2026-10-01) -------------------------
+# Everything but Korean used to be transcribed as English, so a correct
+# Spanish take scored like a wrong one and High quality picked by voice alone.
+
+def test_whisper_code_maps_names_and_codes():
+    assert qsc.whisper_code("Spanish") == "es"
+    assert qsc.whisper_code("korean") == "ko"
+    assert qsc.whisper_code("Japanese") == "ja"
+    assert qsc.whisper_code("pt") == "pt"
+    assert qsc.whisper_code("Klingon") is None
+    assert qsc.whisper_code(None) is None
+
+
+def test_score_takes_hands_the_scorer_the_dub_language(monkeypatch, tmp_path):
+    import sys
+    monkeypatch.setattr(qsc, "QWEN_SCORER_PYTHON", sys.executable)
+    monkeypatch.setattr(qsc, "SCRIPT_PATH", sys.executable)
+    sent = []
+
+    class _R:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, **_kw):
+        with open(cmd[cmd.index("--input") + 1], encoding="utf-8") as f:
+            sent.append(json.load(f)["language"])
+        _write_output(str(tmp_path), {"ok": True, "lines": {}})
+        return _R()
+
+    monkeypatch.setattr(qsc.subprocess, "run", fake_run)
+    for language in ("Spanish", "Korean", "Klingon"):
+        qsc.score_takes({"A": "/ref/a.wav"}, [], language, str(tmp_path))
+    assert sent == ["es", "ko", None]

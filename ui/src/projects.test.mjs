@@ -8,7 +8,7 @@
 // Run with: node --test ui/src/projects.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { initProjectsUi, jobMark, shownName } from "./projects.mjs";
+import { initProjectsUi, jobMark, shownName, projectMeta, doingWord } from "./projects.mjs";
 
 function makeEl(id) {
   return {
@@ -98,7 +98,7 @@ test("the sidebar paints a row per job, marks the open one and says which way ea
   assert.match(first.innerHTML, /Korean → English/);
   assert.match(first.innerHTML, /class="job-dot dot-done"/);
   // No source language is "Auto", and a trimmed job also says how long it is.
-  assert.match(second.innerHTML, /Auto → Korean · 00:01:00/);
+  assert.match(second.innerHTML, /Auto → Korean · 01:00/);
   // Anything still going gets the running dot, named or not.
   assert.match(second.innerHTML, /class="job-dot dot-running"/);
 });
@@ -155,7 +155,7 @@ test("an empty list invites a video; an unreachable engine says so instead", asy
   t.after(down.log.restore);
   await down.api.renderHistory();
   assert.equal(down.$("historyList").innerHTML,
-    '<div class="history-empty">Could not reach the app server.</div>');
+    '<div class="history-empty">PersoDub is not running. Restart the app.</div>');
 });
 
 test("only the names too long for their column get a tooltip", async (t) => {
@@ -256,7 +256,7 @@ test("an erase in the line counts itself from its own log line", async (t) => {
   assert.match(row.innerHTML, /Erasing 43%/);
   assert.match(row.innerHTML, /class="queue-bar"><i style="width:43%"/);
   // The X beside it stops an erase, and says so.
-  assert.equal(h.$("queueRows").children[0].children[1].title, "Cancel erasing");
+  assert.equal(h.$("queueRows").children[0].children[1].title, "Stop erasing");
 });
 
 test("a queue row's X hands the job to the page, and a job on its way out has none", async (t) => {
@@ -275,7 +275,7 @@ test("a queue row's X hands the job to the page, and a job on its way out has no
   const [live, waiting] = h.$("queueRows").children;
   // Already on its way out: the row alone, no X to press twice.
   assert.equal(live.children.length, 1);
-  assert.match(live.children[0].innerHTML, /Cancelling…/);
+  assert.match(live.children[0].innerHTML, /Stopping…/);
 
   const x = waiting.children[1];
   assert.equal(x.className, "queue-x");
@@ -287,6 +287,35 @@ test("a queue row's X hands the job to the page, and a job on its way out has no
   // Cancelling is the page's to do: the list asks the server for nothing.
   assert.deepEqual(h.log.calls, [`GET ${JOBS}`, "GET /api/dub/jobs/r1"]);
 });
+
+test("a job that leaves the line has the project list read again, so its card stops saying a percent", async (t) => {
+  // The cards kept "Dubbing 97%" for over a minute after the job was done
+  // (Windows H19, 2026-10-07): only an event redrew them.
+  let jobs = [{ id: "r1", status: "running", project: "First" }];
+  const h = harness({
+    responses: {
+      [JOBS]: () => ok({ jobs }),
+      "/api/dub/jobs/r1": ok({ logs: [] }),
+    },
+  });
+  t.after(h.log.restore);
+  await h.api.renderQueueCard();
+  assert.equal(h.$("queueCard").hidden, false);
+  const reads = () => h.log.calls.filter((c) => c === `GET ${JOBS}`).length;
+  assert.equal(reads(), 1);
+
+  jobs = [{ id: "r1", status: "done", project: "First" }];
+  await h.api.renderQueueCard();
+  await new Promise((r) => setTimeout(r, 0));
+  // Once for the card, once more for the list the cards are painted from.
+  assert.equal(reads(), 3);
+  assert.equal(h.$("queueCard").hidden, true);
+
+  await h.api.renderQueueCard();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(reads(), 4, "nothing left the line this time");
+});
+
 
 test("the card hides itself when the line is empty, and off the home screen it never asks", async (t) => {
   const h = harness({ responses: { [JOBS]: ok({ jobs: [{ id: "a", status: "done" }] }) } });
@@ -310,4 +339,16 @@ test("a renamed project shows the name it was given", () => {
   assert.equal(shownName({ project: "clip10", title: "마이클 잭슨 Beat It" }), "마이클 잭슨 Beat It");
   assert.equal(shownName({ project: "clip10", title: "   " }), "clip10", "blank is not a name");
   assert.equal(shownName({}), "Dubbing", "and a job with neither still says something");
+});
+
+test("a separation says Separated once it is done, and what it is while it is not", () => {
+  const meta = (status) => projectMeta({ kind: "separate", status }, () => "");
+  assert.equal(meta("done"), "Separated");
+  assert.equal(meta("running"), "Separating");
+  assert.equal(meta("queued"), "Separating");
+  assert.equal(meta("error"), "Separate audio");
+  assert.equal(meta("cancelled"), "Separate audio");
+  assert.equal(doingWord({ kind: "separate" }), "Separating");
+  assert.equal(doingWord({ kind: "erase" }), "Erasing");
+  assert.equal(doingWord({}), "Dubbing");
 });

@@ -2,7 +2,7 @@
 the erase as a job, playing the result back, saving it, and handing it on to a
 dub.
 
-The ritual is the dub's (app/api/dub.py), reused rather than rewritten: the
+The ritual is the dub's (app/api/_launch.py), reused rather than rewritten: the
 free-space floor, a folder named the same way, input.mp4 copied into it, and
 launch_job to make the record and set the work going. What differs is the work
 itself -- app/erase_launch.py, one stage and no engine choices -- and the
@@ -19,7 +19,6 @@ it checks first and answers 409 {"reason": "pack_missing"} -- the screen offers
 the download; nothing here downloads anything by itself.
 """
 import json
-import math
 import os
 import re
 import shutil
@@ -31,11 +30,23 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import engines_status, erase_launch, eraser, media, state
+from app.api import _launch as launch_api
 from app.api import downloads as downloads_api
-from app.api._shared import free_path, work_dir_of
-from app.api.dub import _job_dir, _today, check_space, launch_job
+from app.api._launch import check_space, job_dir, launch_job
+from app.api._shared import (
+    check_ranges_fit,
+    check_trim,
+    cut_to_kept_parts,
+    free_path,
+    parse_ranges,
+    ratio_errors_as_http,
+    work_dir_of,
+)
 from app.downloads import save_folder
-from app.jobs import kind_of
+from app.i18n import t
+from app.jobs import JobKind, JobStatus, kind_of
+from app.ratio import pad_file
+from app.ratio import wanted as wanted_ratio
 from app.text.naming import project_name
 
 router = APIRouter()
@@ -43,6 +54,7 @@ router = APIRouter()
 # Read off this module, the way app/api/dub.py keeps _cut_video: this is where
 # the tests replace the trim.
 _cut_video = media.cut_video
+_cut_ranges = media.cut_ranges
 
 # The percentage the screen shows comes out of the job's own log, which is the
 # only place app/eraser.py's progress lines are kept.
@@ -51,6 +63,10 @@ _PROGRESS = re.compile(r"^progress (\d+)%")
 
 class SaveRequest(BaseModel):
     dir: Optional[str] = None       # default: the user's Downloads folder
+    audio: Optional[str] = None     # "mp3" or "wav": the sound only
+    # A canvas to save the video in (app/ratio.py); default: as it is. Not
+    # read with `audio`: the sound alone has no picture.
+    ratio: Optional[str] = None
 
 
 def _pack_missing() -> HTTPException:
@@ -79,11 +95,11 @@ def _source(video, download_id):
     download_id = (download_id or "").strip() or None
     has_upload = video is not None and bool(video.filename)
     if has_upload == bool(download_id):
-        raise HTTPException(422, "Provide either a video file or a download_id.")
+        raise HTTPException(422, t("Provide either a video file or a download_id."))
     if download_id:
         held = downloads_api.download_store.get(download_id)
         if held is None or held.status != "ready" or not os.path.exists(held.path):
-            raise HTTPException(404, "That video is not downloaded yet.")
+            raise HTTPException(404, t("That video is not downloaded yet."))
         return held.title, held.path, lambda dest: shutil.copyfile(held.path, dest)
 
     def _write(dest):
@@ -108,26 +124,11 @@ def _parse_area(raw: str):
         band = None
     if (not isinstance(band, list) or len(band) != 4
             or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in band)):
-        raise HTTPException(422, 'area must be "whole" or [ymin, ymax, xmin, xmax].')
+        raise HTTPException(422, t('area must be "whole" or [ymin, ymax, xmin, xmax].'))
     ymin, ymax, xmin, xmax = (int(v) for v in band)
     if ymin < 0 or xmin < 0 or ymax <= ymin or xmax <= xmin:
-        raise HTTPException(422, "The subtitle area has to be a box with height and width.")
+        raise HTTPException(422, t("The subtitle area has to be a box with height and width."))
     return [ymin, ymax, xmin, xmax]
-
-
-def _check_trim(trim_start, trim_end) -> None:
-    """The same rule dub_start applies: both or neither, and long enough to be
-    a video at all."""
-    if (trim_start is None) != (trim_end is None):
-        raise HTTPException(400, "Send both trim_start and trim_end, or neither.")
-    if trim_start is not None and not (
-        math.isfinite(trim_start) and math.isfinite(trim_end)
-        and trim_start >= 0 and trim_end - trim_start >= 0.5
-    ):
-        raise HTTPException(
-            400,
-            "The trim must start at 0 seconds or later and keep at least half a second of video.",
-        )
 
 
 def _erase_job(jid: str) -> dict:
@@ -135,8 +136,8 @@ def _erase_job(jid: str) -> dict:
     two live in one store, and a dub answered here would have no erased video
     to give."""
     job = state.job_store.get(jid)
-    if job is None or kind_of(job) != "erase":
-        raise HTTPException(404, f"Unknown job: {jid}")
+    if job is None or kind_of(job) != JobKind.ERASE:
+        raise HTTPException(404, t("Unknown job: {jid}", jid=jid))
     return job
 
 
@@ -190,6 +191,7 @@ def erase_start(
     area: str = Form("whole"),
     trim_start: Optional[float] = Form(None),
     trim_end: Optional[float] = Form(None),
+    ranges: Optional[str] = Form(None),
     project: Optional[str] = Form(None),
 ):
     """Queue an erase: take the subtitles out of this video and keep the rest.
@@ -198,41 +200,41 @@ def erase_start(
     offered or the one the user dragged) or "whole" for the entire frame --
     slower, but it catches writing anywhere. trim_start/trim_end cut the video
     down first, and the cut IS what this job is about, exactly as it is for a
-    dub.
+    dub. ranges is the timeline's kept parts, JSON [[start, end], ...], joined
+    into one video the way a dub joins them (app/api/_shared.py parse_ranges). A
+    trim or kept parts, not both.
 
     Answers as soon as the job is on the queue: an erase runs for minutes, and
     GET /api/erase/{job_id} is what follows it.
     """
     _require_eraser()
     band = _parse_area(area)
-    _check_trim(trim_start, trim_end)
+    check_trim(trim_start, trim_end)
+    kept = parse_ranges(ranges)
+    if kept is not None and trim_start is not None:
+        raise HTTPException(400, t("Send a trim or kept parts, not both."))
     title, _path, copy_into = _source(video, download_id)
 
     project = project_name(project or "") or project_name(title or "")
     check_space(state.WORKSPACE)
-    work = _job_dir(project, "erase")
+    work = job_dir(project, "erase")
     video_path = os.path.join(work, "input.mp4")
     copy_into(video_path)
-    if trim_start is not None:
-        try:
-            _cut_video(video_path, trim_start, trim_end)
-        except RuntimeError as e:
-            # No record points at this folder yet, so nothing would ever come
-            # back to clear it, and the next try would land in _001.
-            shutil.rmtree(work, ignore_errors=True)
-            raise HTTPException(400, str(e))
+    cut_to_kept_parts(work, video_path, trim_start, trim_end, kept,
+                      cut_video=_cut_video, cut_ranges=_cut_ranges, check_fit=check_ranges_fit)
 
     fields = {
         # What this job is. Everything else here means the same as it does on a
         # dub's record, which is what lets Projects, the cancel button and the
         # delete route treat the two alike.
-        "kind": "erase",
+        "kind": JobKind.ERASE,
         "project": project or os.path.basename(work),
-        "day": _today(),
+        "day": launch_api.today(),
         "work_dir": work,
         "area": band,
         "from_link": False,
         "trim": ({"start": trim_start, "end": trim_end} if trim_start is not None else None),
+        "ranges": kept,
     }
 
     def _target(jid, log):
@@ -259,29 +261,30 @@ def erase_retry(jid: str):
     box once, and a failure is not a reason to make them draw it again.
     """
     job = _erase_job(jid)
-    if job.get("status") in ("running", "cancelling"):
-        raise HTTPException(409, "This job is still running.")
+    if job.get("status") in (JobStatus.RUNNING, JobStatus.CANCELLING):
+        raise HTTPException(409, t("This project is still running."))
     work_dir = work_dir_of(job)
     source_video = os.path.join(work_dir, "input.mp4")
     if not os.path.exists(source_video):
-        raise HTTPException(409, "This job's video is no longer on disk.")
+        raise HTTPException(409, t("This project's video is no longer on disk."))
     _require_eraser()
 
     project = job.get("project") or os.path.basename(work_dir)
     check_space(state.WORKSPACE)
-    work = _job_dir(project, "erase")
+    work = job_dir(project, "erase")
     shutil.copyfile(source_video, os.path.join(work, "input.mp4"))
 
     fields = {
-        "kind": "erase",
+        "kind": JobKind.ERASE,
         "project": project,
-        "day": _today(),
+        "day": launch_api.today(),
         "work_dir": work,
         "area": job.get("area"),
         "from_link": False,
         # Already cut into the copy above. Kept on the record so the screen can
         # still say which part of the original this is.
         "trim": job.get("trim"),
+        "ranges": job.get("ranges"),
     }
 
     def _target(new_jid, log):
@@ -306,7 +309,7 @@ def erase_video(jid: str):
     """The cleaned video."""
     out = _erased_path(_erase_job(jid))
     if not os.path.exists(out):
-        raise HTTPException(404, "This video is not erased yet.")
+        raise HTTPException(404, t("This video is not erased yet."))
     return FileResponse(out, media_type="video/mp4")
 
 
@@ -315,13 +318,13 @@ def erase_original(jid: str):
     """The video as it came in -- what the screen shows beside the result."""
     src = os.path.join(work_dir_of(_erase_job(jid)), "input.mp4")
     if not os.path.exists(src):
-        raise HTTPException(404, "This job's video is no longer on disk.")
+        raise HTTPException(404, t("This project's video is no longer on disk."))
     return FileResponse(src, media_type="video/mp4")
 
 
 @router.post("/api/erase/{jid}/save")
 def erase_save(jid: str, body: SaveRequest):
-    """Save the cleaned video where the user keeps their files.
+    """Save the cleaned video, or its sound alone, where the user keeps their files.
 
     Named after the project so the file says what it is, and never written
     over an existing one -- the same promise every other save in the app makes.
@@ -329,12 +332,29 @@ def erase_save(jid: str, body: SaveRequest):
     job = _erase_job(jid)
     out = _erased_path(job)
     if not os.path.exists(out):
-        raise HTTPException(404, "This video is not erased yet.")
+        raise HTTPException(404, t("This video is not erased yet."))
+    if body.audio is not None and body.audio not in media.AUDIO_CODECS:
+        raise HTTPException(422, t("Audio is saved as mp3 or wav."))
+    if body.audio and not media.has_audio(out):
+        raise HTTPException(422, t("This video has no sound."))
+    if not body.audio:
+        with ratio_errors_as_http():
+            wanted_ratio(body.ratio)    # an unknown shape is refused before a file is written
     project = job.get("project") or "video"
-    folder = save_folder(body.dir or "", job.get("day") or _today(), project)
+    folder = save_folder(body.dir or "", job.get("day") or launch_api.today(), project)
     os.makedirs(folder, exist_ok=True)
+    if body.audio:
+        # The sound is the video's own, so its file carries the plain name.
+        dest = free_path(os.path.join(folder, project), "." + body.audio)
+        try:
+            media.run_new_file(media.audio_command(out, dest, body.audio), 0, t("Could not save the audio"))
+        except RuntimeError as e:
+            raise HTTPException(503, str(e))
+        return {"path": dest}
     dest = free_path(os.path.join(folder, "%s (no subtitles)" % project), ".mp4")
     shutil.copyfile(out, dest)
+    with ratio_errors_as_http():
+        pad_file(dest, body.ratio)
     return {"path": dest}
 
 
@@ -351,12 +371,8 @@ def erase_to_dub(jid: str):
     job = _erase_job(jid)
     out = _erased_path(job)
     if not os.path.exists(out):
-        raise HTTPException(404, "This video is not erased yet.")
-    try:
-        duration = media.video_duration(out)
-    except Exception:
-        duration = 0
+        raise HTTPException(404, t("This video is not erased yet."))
     held = downloads_api.download_store.add_file(
-        state.WORKSPACE, job.get("project") or "video", duration,
+        state.WORKSPACE, job.get("project") or "video", downloads_api.seconds_of(out),
         lambda dest: shutil.copyfile(out, dest))
     return {"download_id": held.id, "title": held.title, "duration_sec": held.duration_sec}

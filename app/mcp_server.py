@@ -7,9 +7,6 @@ whatever started it. Nothing leaves the machine.
 Run it with:
     PERSODUB_API=http://127.0.0.1:8000 python -m app.mcp_server
 
-See docs/superpowers/specs/2026-08-20-앱내터미널-설계.md for wiring it into a
-terminal tool.
-
 What is not here cannot be reached. Changing settings and deleting files are
 deliberately absent. Starting a dub (queue_dub) exists since 2026-09-01, behind
 the same confirm gate as every other spending tool: nothing starts until the
@@ -27,7 +24,12 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from app import languages, media
-from app.dub_script import edit_line, export_srt, load_lines
+from app.dub_script import DUB_NAME, edit_line, export_srt, load_lines
+from app.engines_status import TRANSLATORS
+from app.jobs import JobKind, JobStatus
+from app.perso_edit import LOCAL_VOICE
+from app.setup import STAGES, checked_choice
+from app.stages import progress_of
 
 API = os.environ.get("PERSODUB_API", "http://127.0.0.1:8000")
 
@@ -104,8 +106,8 @@ def _job(job_id: str) -> dict:
 def _work_dir(job: dict) -> str:
     """A job's workspace folder.
 
-    The folder name and the job id are two unrelated strings (app/api/dub.py's
-    _job_dir names the folder after the title; JobStore.create makes the id),
+    The folder name and the job id are two unrelated strings (app/api/_launch.py's
+    job_dir names the folder after the title; JobStore.create makes the id),
     so the folder cannot be derived from the id -- it is read back out of the
     result path, the same way app/api/_shared.py's work_dir_of does it.
     """
@@ -121,12 +123,155 @@ def _lang(job: dict) -> str:
     return job.get("language_code") or "en"
 
 
+# What the routes that reach Perso answer with when they refuse
+# (app/api/script.py _perso_says), each with its reason in `detail`.
+PERSO_REFUSALS = (402, 404, 409, 422, 500, 502, 503, 504, 507)
+
+
+def _perso_edit(job_id: str, job: dict) -> Optional[dict]:
+    """How this job's voices are to be remade: None for "on this computer",
+    else what Perso says about the project (app/perso_edit.py live_state).
+
+    On this computer means a job Perso never dubbed, or one a voice was
+    already made in here -- the rule at the top of app/perso_edit.py. Any
+    other reason Perso editing is off is a reason to stop, not to fall back:
+    a local voice on a Perso dub is the one thing the user must choose.
+    """
+    if job.get("dub_mode") != "perso":
+        return None
+    r = _api_get("/api/dub/jobs/%s/perso/edit" % job_id, timeout=60.0)
+    if r.status_code in PERSO_REFUSALS:
+        raise Refusal(r.json().get("detail", "cannot ask Perso about this job"))
+    r.raise_for_status()
+    edit = r.json()
+    if edit.get("reason") == LOCAL_VOICE:
+        return None
+    if not edit.get("available"):
+        raise Refusal(edit.get("reason") or "this job cannot be edited through Perso")
+    return edit
+
+
+# The tools that put a question to the user in this reply, with the plan each
+# put. The CLI starts this server afresh for every message (app/api/agent.py),
+# so a name here means the user has not answered yet, and a confirm=true now
+# would be the agent saying yes for them: Claude asked "Proceed?" and started
+# the dubbing in the same reply (night test 2026-10-01).
+#
+# One exception, kept on disk because it spans two of these processes: the
+# agent put the plan in one reply, the user said yes, and in the next reply it
+# put the same plan once more before confirming. That ask is the user's own
+# question read back, not a new one, so the confirm goes through (Windows F41,
+# 2026-10-07: every consent had to be given twice).
+_asked = {}
+_ASK_FILE = os.path.join(os.getcwd(), ".persodub-asked.json")
+
+
+def _asks_on_file() -> dict:
+    try:
+        with open(_ASK_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _write_asks(asks: dict) -> None:
+    try:
+        with open(_ASK_FILE, "w", encoding="utf-8") as f:
+            json.dump(asks, f, ensure_ascii=False)
+    except Exception:
+        pass   # a folder that cannot be written only costs the exception above
+
+
+def _ask_entries(value) -> list:
+    """A tool's asks on file, one {"plan", "pid"} each (a single dict before
+    2026-10-12)."""
+    if isinstance(value, dict):
+        return [value]
+    return [e for e in value if isinstance(e, dict)] if isinstance(value, list) else []
+
+
+def _ask(tool: str, answer: dict, plan: str) -> dict:
+    """Put a plan to the user. `plan` names what the call would do (file,
+    language, engines), not the sentence shown: the sentence carries the
+    balance, which moves between two replies.
+
+    Every plan put in one reply stays on file, so "Shall I start all three?"
+    can be confirmed three times in the next: only the last was kept, and a
+    batch that spends credits started one video per answer (final review,
+    2026-10-12). The first question of a reply replaces the reply before's."""
+    first = tool not in _asked
+    _asked[tool] = plan
+    asks = _asks_on_file()
+    entries = _ask_entries(asks.get(tool))
+    if first:
+        # The same plan put in an earlier reply stays on file as that earlier ask.
+        entries = [e for e in entries if e.get("pid") != os.getpid() and e.get("plan") == plan]
+    if not any(e.get("plan") == plan for e in entries):
+        entries.append({"plan": plan, "pid": os.getpid()})
+    asks[tool] = entries
+    _write_asks(asks)
+    return answer
+
+
+def _answered(tool: str, plan: str, paid: bool = False) -> None:
+    """confirm=true has arrived. It goes through when the user has had the
+    plan since an earlier reply (its ask is on file from another process), or,
+    for work that costs nothing, when the user's own message said to go and
+    nothing was asked in this reply. Work that spends credits is never started
+    on that word alone: the plan with its cost goes to the user first (the
+    agent started a dub whose transcription ran on Perso without a quote,
+    Mac F10, 2026-10-08)."""
+    same = any(e.get("pid") != os.getpid() and e.get("plan") in ("*", plan)
+               for e in _ask_entries(_asks_on_file().get(tool)))
+    if tool in _asked:
+        if same:
+            _forget_ask(tool, plan)
+            return
+        raise Refusal("The user has not answered yet. Put the plan to them and end "
+                      "your reply. Call with confirm=true only after they say yes.")
+    if same:
+        _forget_ask(tool, plan)
+        return
+    if paid:
+        raise Refusal("This spends credits, so it is not started on the user's word alone: "
+                      "call without confirm first, put the plan with its cost to the user, "
+                      "end your reply, and call with confirm=true after they say yes.")
+
+
+def _forget_ask(tool: str, plan: str) -> None:
+    """A yes is used once: the plan it answered, or the "*" that stood for it."""
+    asks = _asks_on_file()
+    entries = _ask_entries(asks.get(tool))
+    kept = [e for e in entries if e.get("plan") != plan]
+    if len(kept) == len(entries):
+        kept = [e for e in entries if e.get("plan") != "*"]
+    if kept:
+        asks[tool] = kept
+    else:
+        asks.pop(tool, None)
+    _write_asks(asks)
+
+
+def _perso_post(path: str, refusal: str, changed_only: bool = False, **kw) -> dict:
+    body = {"confirm": True, "changed_only": True} if changed_only else {"confirm": True}
+    r = _api_post(path, json=body, **kw)
+    if r.status_code in PERSO_REFUSALS:
+        raise Refusal(r.json().get("detail", refusal))
+    r.raise_for_status()
+    return r.json()
+
+
+NIGHTINGALE_LINES = ("This dubbing's Perso voice cannot remake one line at a time. "
+                     "proofread_dub (All at once on screen) remakes every line.")
+
+
 @mcp.tool()
 def get_script(job_id: str) -> List[dict]:
     """Return the dubbing script line by line.
 
     Each line carries: line (its number), start/end (seconds), slot (the time this
-    line has to be spoken in), source (the original-language line), text (the current
+    line has to be spoken in), source (the original-language line), source_line (that
+    line's number: lines sharing one are a sentence the dub split), text (the current
     translation), estimated (how long the translation takes to say), fits (true
     when the line can be spoken inside its slot -- judged by the voice made for
     it once there is one, else by the estimate), over (how many seconds the
@@ -138,7 +283,9 @@ def get_script(job_id: str) -> List[dict]:
     still sounds like the old ones until remake_line_voice runs), and
     untranslated (true when the translator could not translate this line: it
     has no words and is silent in the dub; write it from source with
-    edit_script_line, then remake_line_voice).
+    edit_script_line, then remake_line_voice). On a Perso dub a line can also
+    carry reworded: the words the user wrote, which Perso replaced with its
+    own (text) when it made the voice.
     """
     job = _job(job_id)
     if job.get("dub_mode") == "perso":
@@ -161,7 +308,15 @@ def edit_script_line(job_id: str, line: int, text: str) -> dict:
     new wording is short enough.
     """
     job = _job(job_id)
-    return edit_line(_work_dir(job), line, text, _lang(job))
+    work_dir = _work_dir(job)
+    if job.get("dub_mode") == "perso" and not os.path.exists(os.path.join(work_dir, DUB_NAME)):
+        # A Perso dub nobody has opened for editing yet: its parts are
+        # fetched first (downloads only, no credits).
+        r = _api_post("/api/dub/jobs/%s/perso/materialize" % job_id, timeout=600.0)
+        if r.status_code in PERSO_REFUSALS:
+            raise Refusal(r.json().get("detail", "could not fetch this dubbing from Perso"))
+        r.raise_for_status()
+    return edit_line(work_dir, line, text, _lang(job))
 
 
 @mcp.tool()
@@ -213,7 +368,17 @@ def get_job_status(job_id: str) -> dict:
         "notices": job.get("notices") or [],
         "logs": (job.get("logs") or [])[-20:],
     }
-    if job.get("kind") == "erase":
+    if job.get("dub_mode") == "perso" and job.get("status") == JobStatus.DONE:
+        # Whether Perso is working on it (a proofread) and how that ended.
+        r = _api_get("/api/dub/jobs/%s/perso/edit" % job_id, timeout=60.0)
+        if r.status_code == 200:
+            info["perso_edit"] = r.json()
+    if (job.get("kind") not in (JobKind.ERASE, JobKind.SEPARATE)
+            and job.get("status") in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.CANCELLING)):
+        # The same percent the home card shows (app/stages.py progress_of):
+        # the agent used to answer "no percent given" (Windows F6, 2026-10-07).
+        info.update(progress_of(job.get("logs") or []))
+    if job.get("kind") == JobKind.ERASE:
         r = _api_get("/api/erase/%s" % job_id, timeout=10.0)
         if r.status_code == 200:
             erase = r.json()
@@ -225,17 +390,32 @@ def get_job_status(job_id: str) -> dict:
 
 
 @mcp.tool()
-def remake_voices(job_id: str) -> dict:
-    """Remake the voices of the lines whose words changed, and nothing else.
+def remake_voices(job_id: str, confirm: bool = False, every_line: bool = False) -> dict:
+    """Remake the voices of the lines whose words changed, and nothing else --
+    or, with every_line=true, of every line ("read it all again").
 
-    Only lines whose text was rewritten since their voice was made are spoken
-    again. Every other line keeps the voice it already has, the timings, the
-    script and the job itself are untouched, and the finished video is rebuilt
-    in place -- no new job and no second copy of the job's folder.
+    every_line=true speaks every line that has words again, changed or not, and
+    rebuilds the video once. It takes a while, so without confirm=true it only
+    returns the question with the number of lines; call again with confirm=true
+    after the user says yes. On a Perso dub, Perso redoes every line through
+    proofread_dub instead.
+
+    Without every_line: on a Perso dub the voices are made BY PERSO, in the
+    voice it dubbed with, and THAT SPENDS PERSO CREDITS: without confirm=true
+    this only returns the confirmation question. Without every_line, confirm
+    means nothing on any other job. Perso may put its own words in place of the
+    user's to fit the time: each such line comes back under reworded, with
+    you_wrote and perso_said. Always tell the user, quoting both.
+
+    Without every_line, only lines whose text was rewritten since their voice
+    was made are spoken again. Every other line keeps the voice it already has,
+    the timings, the script and the job itself are untouched, and the finished
+    video is rebuilt in place -- no new job and no second copy of the job's
+    folder.
 
     Returns {"remade": [line numbers], "skipped": how many lines were left
     alone}; remade is empty when every voice is already up to date. The work is
-    done by the time this answers -- seconds per changed line -- so there is
+    done by the time this answers -- seconds per remade line -- so there is
     nothing to poll afterwards.
 
     This is the whole-script version. To remake one particular line, changed or
@@ -250,24 +430,106 @@ def remake_voices(job_id: str) -> dict:
     rewrites a line and then asks the user to go press a button themselves is
     doing nothing they could not do alone.
     """
-    r = _api_post("/api/dub/jobs/%s/voices/stale" % job_id, timeout=600.0)
+    job = _job(job_id)
+    if every_line:
+        return _remake_every_voice(job_id, job, confirm)
+    if _perso_edit(job_id, job):
+        return _perso_remake_stale(job_id, confirm)
+    return _voices_post(job_id, "stale", 600.0)
+
+
+def _remake_every_voice(job_id: str, job: dict, confirm: bool) -> dict:
+    """remake_voices(every_line=True): asked first, with the number of lines.
+    Only the changed lines could be remade before, so with none changed "read
+    it all again" did nothing (Windows test F18, 2026-10-11)."""
+    # A Perso dub whose voices are made here now is read again here, the way
+    # its changed lines are (_perso_edit answers None for it).
+    if _perso_edit(job_id, job):
+        raise Refusal("On a Perso dub, Perso redoes every line: that is proofread_dub.")
+    count = sum(1 for line in load_lines(_work_dir(job), _lang(job)) if line["text"].strip())
+    plan = "every_line:%s" % job_id
+    if not confirm:
+        return _ask("remake_voices", {"needs_confirmation": True, "message": (
+            "Remaking every voice speaks all %d lines of this dubbing again on this computer, "
+            "one after another, and rebuilds the video once at the end. It takes a while. "
+            "Proceed?" % count)}, plan=plan)
+    _answered("remake_voices", plan)
+    # Seconds a line, and the rebuild: a long script can run past the usual ten minutes.
+    return _voices_post(job_id, "all", max(600.0, 30.0 * count))
+
+
+def _voices_post(job_id: str, which: str, timeout: float) -> dict:
+    r = _api_post("/api/dub/jobs/%s/voices/%s" % (job_id, which), timeout=timeout)
     if r.status_code == 404:
         raise Refusal("no such job: %s" % job_id)
-    if r.status_code in (409, 422, 507):
+    # 502 and 503 carry the voice engine's own sentence (busy, not running).
+    if r.status_code in (409, 422, 502, 503, 507):
         raise Refusal(r.json().get("detail", "this job's voices cannot be remade"))
     r.raise_for_status()
     return r.json()
 
 
+def _perso_remake_stale(job_id: str, confirm: bool) -> dict:
+    """remake_voices on a Perso dub: each changed line goes to Perso in turn."""
+    r = _api_get("/api/dub/jobs/%s/script" % job_id, timeout=60.0)
+    if r.status_code in PERSO_REFUSALS:
+        raise Refusal(r.json().get("detail", "no script for this job"))
+    r.raise_for_status()
+    lines = r.json()["lines"]
+    stale = [l["line"] for l in lines if l.get("voice_stale")]
+    if not stale:
+        return {"remade": [], "skipped": len(lines)}
+    if not confirm:
+        return _ask("remake_voices", {
+            "needs_confirmation": True,
+            "message": ("Perso will make %d voice%s again, in the voice it dubbed "
+                        "with. That spends Perso credits. Proceed?"
+                        % (len(stale), "" if len(stale) == 1 else "s")),
+        }, plan=job_id)
+    _answered("remake_voices", job_id, paid=True)
+    remade, reworded, credits = [], [], 0
+    for line in stale:
+        done = _perso_post("/api/dub/jobs/%s/perso/script/%d/voice" % (job_id, line),
+                           "cannot remake line %d" % line, changed_only=True, timeout=900.0)
+        if done.get("unchanged"):
+            continue
+        remade.append(line)
+        if done.get("reworded"):
+            reworded.append({"line": line, "you_wrote": done.get("you_wrote"),
+                             "perso_said": done.get("perso_said")})
+        credits += done.get("credits") or 0
+    return {"remade": remade, "skipped": len(lines) - len(remade), "credits": credits,
+            **({"reworded": reworded} if reworded else {})}
+
+
 @mcp.tool()
-def remake_line_voice(job_id: str, line: int) -> dict:
+def remake_line_voice(job_id: str, line: int, confirm: bool = False) -> dict:
     """Speak ONE line again, in the same voice, and rebuild the dub around it.
 
     Use this for one named line -- including a line nobody edited, when its
     voice simply came out wrong. remake_voices does the same thing to every
     line whose words changed, which is the usual way to catch up after a batch
     of rewrites.
+
+    On a Perso dub the voice is made BY PERSO, in the voice it dubbed with,
+    and THAT SPENDS PERSO CREDITS: without confirm=true this only returns the
+    confirmation question. confirm means nothing on any other job. Perso may
+    put its own words in place of the user's to fit the time: reworded=true,
+    with you_wrote and perso_said. Always tell the user, quoting both.
     """
+    edit = _perso_edit(job_id, _job(job_id))
+    if edit:
+        if edit.get("nightingale"):
+            raise Refusal(NIGHTINGALE_LINES)
+        if not confirm:
+            return _ask("remake_line_voice", {
+                "needs_confirmation": True,
+                "message": ("Perso will make line %d's voice again, in the voice it "
+                            "dubbed with. That spends Perso credits. Proceed?" % line),
+            }, plan="%s:%d" % (job_id, line))
+        _answered("remake_line_voice", "%s:%d" % (job_id, line), paid=True)
+        return _perso_post("/api/dub/jobs/%s/perso/script/%d/voice" % (job_id, line),
+                           "cannot remake line %d" % line, timeout=900.0)
     r = _api_post("/api/dub/jobs/%s/script/%d/voice" % (job_id, line), timeout=600.0)
     if r.status_code in (404, 409, 422, 507):
         raise Refusal(r.json().get("detail", "cannot remake line %d" % line))
@@ -276,23 +538,71 @@ def remake_line_voice(job_id: str, line: int) -> dict:
 
 
 @mcp.tool()
-def retranslate_lines(job_id: str, lines: Optional[List[int]] = None) -> dict:
-    """Translate the given lines again WITH CHATGPT, then remake their voices.
+def proofread_dub(job_id: str, confirm: bool = False) -> dict:
+    """Have PERSO go over a whole Perso dub again: every line is voiced again
+    with its quality pass (a line the user edited keeps its words), and the
+    script, the voices and the video here are replaced with the result.
 
-    Use this when the user asks for lines to be translated again by ChatGPT
-    (or "translated again" without naming a translator). `lines` is a list of
-    line numbers; leave it out for every line. It runs the dub's own
-    translation step -- ChatGPT, fitted to each line's time slot -- writes the
-    new words, speaks every changed line again and rebuilds the video in place.
+    Perso dubs only. THIS MAY SPEND PERSO CREDITS -- up to what the dub itself
+    cost (a run measured 2026-09-29 spent none, Perso's price list says
+    otherwise). Called without confirm=true it does nothing but return the
+    confirmation question: relay that message to the user, and call again
+    with confirm=true only after they clearly agree.
+
+    It takes minutes and this answers at once with {"started": true}.
+    get_job_status says when it is over: perso_edit.working is "proofread"
+    until then, and perso_edit.error carries the reason if it failed.
+    """
+    job = _job(job_id)
+    if job.get("dub_mode") != "perso":
+        raise Refusal("All at once works on Perso dubbing only. "
+                      "This job was dubbed on this computer.")
+    r = _api_get("/api/dub/jobs/%s/perso/edit" % job_id, timeout=60.0)
+    if r.status_code in PERSO_REFUSALS:
+        raise Refusal(r.json().get("detail", "cannot ask Perso about this job"))
+    r.raise_for_status()
+    edit = r.json()
+    if edit.get("working"):
+        raise Refusal("Perso is already working on this job. Wait for it to finish.")
+    if not edit.get("unfetched"):
+        if not edit.get("available"):
+            raise Refusal(edit.get("reason") or "Perso cannot redo this job")
+        # A NIGHTINGALE dub's new words go with the proofread, so whether
+        # Perso takes it is only known once it is asked.
+        if not edit.get("retranslate_available") and not edit.get("nightingale"):
+            raise Refusal("Perso has nothing to redo in this project yet.")
+        if not confirm:
+            return _ask("proofread_dub", {
+                "needs_confirmation": True,
+                "message": ("All at once sends the whole dubbing through Perso again and "
+                            "may spend Perso credits, up to what the dubbing itself cost%s. "
+                            "Every voice here is made again by Perso. Proceed?"
+                            % (" (the first time on this dubbing is free)"
+                               if edit.get("nightingale") else "")),
+            }, plan=job_id)
+        _answered("proofread_dub", job_id, paid=True)
+    return _perso_post("/api/dub/jobs/%s/perso/proofread" % job_id,
+                       "Perso cannot redo this job", timeout=120.0)
+
+
+@mcp.tool()
+def retranslate_lines(job_id: str, lines: Optional[List[int]] = None) -> dict:
+    """Translate the given lines again. WORDS ONLY: no voice is remade.
+
+    Use this when the user asks for lines to be translated again. `lines` is a
+    list of line numbers; leave it out for every line. A Perso dub is
+    translated by Perso, every other by the translator it was dubbed with,
+    fitted to each line's time slot, and the new words are written to the script.
 
     Returns {"changed": [{"line", "was", "text"}]}: show the user each line's
-    old and new words. Nothing is left to press afterwards. To rewrite a line
-    in your own words instead, use edit_script_line.
+    old and new words. The voices still say the old words until remake_voices
+    is called. To rewrite a line in your own words instead, use
+    edit_script_line.
     """
     r = _api_post("/api/dub/jobs/%s/retranslate" % job_id,
                   json={"lines": lines}, timeout=1800.0)
     if r.status_code in (404, 409, 422, 429, 502, 507):
-        raise Refusal(r.json().get("detail", "these lines cannot be translated again"))
+        raise Refusal(_dub_refusal_text(r.json().get("detail", "these lines cannot be translated again")))
     r.raise_for_status()
     return r.json()
 
@@ -308,14 +618,15 @@ def change_speaker(job_id: str, line: int, confirm: bool = False) -> dict:
     # Which kind of dub first: a local one got asked about Perso credits for a
     # change that cannot happen there (Windows, 2026-09-26).
     if _job(job_id).get("dub_mode") != "perso":
-        raise Refusal("Changing a line's speaker works on Perso dubs only. "
+        raise Refusal("Changing a line's speaker works on Perso dubbing only. "
                       "This job was dubbed on this computer.")
     if not confirm:
-        return {
+        return _ask("change_speaker", {
             "needs_confirmation": True,
             "message": ("Changing this line's speaker runs on Perso's side and "
                         "may spend Perso credits. Proceed?"),
-        }
+        }, plan="%s:%d" % (job_id, line))
+    _answered("change_speaker", "%s:%d" % (job_id, line), paid=True)
     r = _api_post("/api/dub/jobs/%s/perso/speaker" % job_id,
                   json={"line": line}, timeout=600.0)
     if r.status_code in (404, 409, 422):
@@ -358,7 +669,11 @@ def extract_subtitles(video_path: str, engine: str = "",
                    "about %d Perso credits%s. Proceed?"
                    % (est.get("seconds", 0), est.get("credits_estimate", 0),
                       "" if balance is None else " (balance: %s)" % balance))
-        return {"needs_confirmation": True, "message": message, "estimate": est}
+        return _ask("extract_subtitles",
+                    {"needs_confirmation": True, "message": message, "estimate": est},
+                    plan=os.path.basename(video_path))
+    if engine == "perso":
+        _answered("extract_subtitles", os.path.basename(video_path), paid=True)
     r = _api_post("/api/subtitles/extract",
                   json={"video_path": video_path, "engine": engine},
                   timeout=3600.0)
@@ -372,7 +687,8 @@ def extract_subtitles(video_path: str, engine: str = "",
 def queue_dub(video_path: str, target_language: str, dub_mode: str = "local",
               source_language: str = "", num_speakers: Optional[int] = None,
               translator: str = "", confirm: bool = False,
-              stt: str = "", separation: str = "") -> dict:
+              stt: str = "", separation: str = "", voice: str = "",
+              perso_model: str = "") -> dict:
     """Put ONE video into PersoDub's dubbing queue.
 
     target_language (and optional source_language, else auto-detected) are
@@ -381,12 +697,20 @@ def queue_dub(video_path: str, target_language: str, dub_mode: str = "local",
     "perso" (paid -- Perso's cloud, about 1 credit per SECOND of video,
     starts at once without waiting in the local line).
 
-    NOTHING STARTS UNASKED. Called without confirm=true it starts nothing
-    and returns the video's length and, for perso, the estimated credits and
-    balance: relay that to the user as a question and call again with
-    confirm=true only after they clearly agree. For SEVERAL videos, gather
-    every estimate first, ask the user ONCE with the total, then call each
-    with confirm=true -- never ask five separate questions.
+    NOTHING STARTS UNASKED, free or paid. Called without confirm=true it
+    starts nothing and returns the plan: the file, the language, the video's
+    length and, for perso, the estimated credits and balance. Relay that to
+    the user as a question and end your reply; confirm=true is refused in the
+    same reply, and goes in once they say yes. "You decide" does NOT let you
+    pick the mode: the mode is the user's money, so put both to them in one
+    question -- this machine (free, slower) or Perso (credits, the estimate)
+    -- and wait (the agent once chose for them, Windows F36, 2026-10-07).
+    Only when the user's own message already names the
+    file, the language and the mode and says to go, call with confirm=true
+    straight away, without asking (on perso they must also have seen the
+    credits). For SEVERAL videos, gather every estimate first, ask the user
+    ONCE with the total, then call each with confirm=true -- never ask five
+    separate questions.
 
     translator picks the translation engine for a local dub when the user
     names one -- "chatgpt" (the user's own ChatGPT account, the default),
@@ -401,90 +725,157 @@ def queue_dub(video_path: str, target_language: str, dub_mode: str = "local",
     wants one dub done differently -- never set_default, which changes every
     dub from then on.
 
+    voice picks, FOR THIS DUB ONLY, the engine that speaks a local dub:
+    "qwen3" (free, this machine); empty keeps the app's default.
+
+    perso_model picks the voice model of a perso dub when the user names one
+    -- "nightingale", "oriole" (the default) or "wren"; empty lets the app
+    choose. Not every language has every model: a refusal names the ones the
+    language has, so tell the user exactly that.
+
     Returns {"job_id", "status"}; the home screen's Up next card shows the
     queue, and get_job_status follows one job.
     """
-    if dub_mode not in ("local", "perso"):
-        raise Refusal('dub_mode must be "local" or "perso"')
-    if translator not in ("", "chatgpt", "gemma", "hunyuan", "gemini"):
-        raise Refusal('translator must be "chatgpt", "gemma", "hunyuan", "gemini" or empty')
-    for name, value in (("stt", stt), ("separation", separation)):
-        if value not in ("", "local", "perso"):
-            raise Refusal('%s must be "local", "perso" or empty' % name)
-    code = (target_language or "").strip()
-    if languages.lookup(dub_mode, code) is None:
-        known = [e["id"] for e in languages.languages_for(dub_mode)]
-        raise Refusal("target_language must be one of: %s" % " ".join(sorted(known)))
+    code = _check_dub_choices(target_language, dub_mode, translator, stt, separation, voice,
+                              perso_model)
     path = os.path.expanduser(video_path)
+    cloud_stages, spends = _paid_choices(dub_mode, stt, separation, translator)
+    plan = "%s|%s|%s|%s%s" % (os.path.basename(path), code, dub_mode, ",".join(cloud_stages),
+                              "|quota" if spends else "")
     if not confirm:
-        # A "local" dub still goes through Perso for whichever stages the
-        # saved defaults send there. The agent called such a dub free and
-        # never named the balance (0.6.2 full test, 2026-09-16).
-        cloud_stages = []
-        if dub_mode == "local":
-            defaults = _api_get("/api/setup", timeout=10.0).json().get("defaults", {})
-            # What this dub will really use: the engine named for it, else the default.
-            chosen = {"stt": stt or defaults.get("stt"),
-                      "separation": separation or defaults.get("separation")}
-            cloud_stages = [s for s in ("stt", "separation") if chosen[s] == "perso"]
-        # The estimate route already measures the video and, for perso, the
-        # balance. Dubbing costs ~1 credit per second (the route's own figure
-        # is STT's 1-per-5s, so only seconds and balance are read from it).
-        r = _api_get("/api/subtitles/estimate",
-                     params={"video_path": video_path,
-                             "engine": "perso" if dub_mode == "perso" or cloud_stages else "local"},
-                     timeout=60.0)
-        if r.status_code in (404, 422):
-            raise Refusal(r.json().get("detail", "cannot read that video"))
-        r.raise_for_status()
-        est = r.json()
-        seconds = est.get("seconds", 0)
-        balance = est.get("credits_balance")
-        balance_text = "" if balance is None else " (balance: %s)" % balance
-        if dub_mode == "perso":
-            message = ("Dubbing this video (%.0fs) on Perso will spend about "
-                       "%d credits%s. Proceed?"
-                       % (seconds, math.ceil(seconds), balance_text))
-        elif cloud_stages:
-            # Measured 2026-09-16: transcription 2 credits and separation 5
-            # credits for a 10-second clip.
-            credits = (math.ceil(seconds / 5.0) if "stt" in cloud_stages else 0) \
-                + (math.ceil(seconds / 2.0) if "separation" in cloud_stages else 0)
-            what = " and ".join({"stt": "transcription", "separation": "separation"}[s]
-                                for s in cloud_stages)
-            message = ("Dubbing this video (%.0fs) runs on this machine, but its "
-                       "%s goes through Perso: about %d credits%s. Proceed?"
-                       % (seconds, what, credits, balance_text))
-        else:
-            message = ("Dubbing this video (%.0fs) runs free on this machine "
-                       "and takes a while; queued dubs run one at a time. "
-                       "Proceed?" % seconds)
-        return {"needs_confirmation": True, "message": message,
-                "seconds": seconds}
+        return _ask("queue_dub", _dub_question(video_path, path, code, dub_mode, cloud_stages, spends),
+                    plan=plan)
+    _answered("queue_dub", plan, paid=dub_mode == "perso" or bool(cloud_stages) or bool(spends))
     if not os.path.isfile(path):
         raise Refusal("No such video: %s" % video_path)
-    fields = {"language": languages.lookup(dub_mode, code)["name"], "language_code": code}
-    if dub_mode == "perso":
-        fields["dub_mode"] = "perso"
-    if source_language:
-        fields["source_language_code"] = source_language.lower()
-    if num_speakers:
-        fields["num_speakers"] = str(num_speakers)
-    if translator and dub_mode == "local":
-        fields["translate_engine"] = translator
-    if stt and dub_mode == "local":
-        fields["stt_engine"] = stt
-    if separation and dub_mode == "local":
-        fields["sep_engine"] = separation
+    fields = _dub_start_fields(code, dub_mode, source_language, num_speakers, translator, stt,
+                               separation, voice, perso_model)
     with open(path, "rb") as f:
         r = _api_post("/api/dub/start", data=fields,
                       files={"video": (os.path.basename(path), f, "video/mp4")},
                       timeout=600.0)
     if r.status_code in (400, 404, 409, 422, 507):
-        detail = r.json().get("detail", "could not start this dub")
+        detail = r.json().get("detail", "could not start dubbing")
         raise Refusal(_dub_refusal_text(detail))
     r.raise_for_status()
     return r.json()
+
+
+def _check_dub_choices(target_language, dub_mode, translator, stt, separation, voice,
+                       perso_model) -> str:
+    """queue_dub's choices, checked before anything is asked or started: each
+    engine against the choices its stage offers (app/setup.py STAGES, the
+    table set_default and the Settings screen read too; "" keeps the app's
+    default), then the language against the chosen path's list. Returns the
+    language's code."""
+    if dub_mode not in STAGES["dub_mode"][1]:
+        raise Refusal('dub_mode must be "local" or "perso"')
+    if translator not in ("", *STAGES["translator"][1]):
+        raise Refusal('translator must be "chatgpt", "gemma", "hunyuan", "gemini" or empty')
+    for name, value in (("stt", stt), ("separation", separation)):
+        if value not in ("", *STAGES[name][1]):
+            raise Refusal('%s must be "local", "perso" or empty' % name)
+    if voice not in ("", *STAGES["voice"][1]):
+        raise Refusal('voice must be "qwen3" or empty')
+    code = (target_language or "").strip()
+    if languages.lookup(dub_mode, code) is None:
+        known = [e["id"] for e in languages.languages_for(dub_mode)]
+        raise Refusal("target_language must be one of: %s" % " ".join(sorted(known)))
+    if dub_mode == "perso":
+        try:
+            languages.model_for(languages.lookup(dub_mode, code), perso_model)
+        except ValueError as e:
+            raise Refusal(str(e))
+    return code
+
+
+def _paid_choices(dub_mode, stt, separation, translator):
+    """What a local dub pays for: (the stages it sends through Perso, what its
+    translator spends -- its TRANSLATORS entry, "Gemini API quota", or ""),
+    from the engines named for it or else the saved defaults. A Perso dub pays
+    for the whole, and its question says so.
+
+    A "local" dub still goes through Perso for whichever stages the saved
+    defaults send there. The agent called such a dub free and never named the
+    balance (0.6.2 full test, 2026-09-16).
+    """
+    if dub_mode != "local":
+        return [], ""
+    defaults = _api_get("/api/setup", timeout=10.0).json().get("defaults", {})
+    # What this dub will really use: the engine named for it, else the default.
+    chosen = {"stt": stt or defaults.get("stt"),
+              "separation": separation or defaults.get("separation")}
+    # The same word set_default asks about before Gemini becomes the default:
+    # a Gemini dub was called free and started on the user's word alone.
+    info = TRANSLATORS.get(translator or defaults.get("translator") or "")
+    return ([s for s in ("stt", "separation") if chosen[s] == "perso"],
+            info.spends if info else "")
+
+
+def _dub_question(video_path, path, code, dub_mode, cloud_stages, spends="") -> dict:
+    """The plan queue_dub puts to the user before anything starts: the file,
+    the language, the video's length and what the dub will spend."""
+    # The estimate route already measures the video and, for perso, the
+    # balance. Dubbing costs ~1 credit per second (the route's own figure
+    # is STT's 1-per-5s, so only seconds and balance are read from it).
+    r = _api_get("/api/subtitles/estimate",
+                 params={"video_path": video_path,
+                         "engine": "perso" if dub_mode == "perso" or cloud_stages else "local"},
+                 timeout=60.0)
+    if r.status_code in (404, 422):
+        raise Refusal(r.json().get("detail", "cannot read that video"))
+    r.raise_for_status()
+    est = r.json()
+    seconds = est.get("seconds", 0)
+    balance = est.get("credits_balance")
+    balance_text = "" if balance is None else " (balance: %s)" % balance
+    if dub_mode == "perso":
+        message = ("Dubbing this video (%.0fs) on Perso will spend about %d credits%s."
+                   % (seconds, math.ceil(seconds), balance_text))
+    elif cloud_stages:
+        # Measured 2026-09-16: transcription 2 credits and separation 5
+        # credits for a 10-second clip.
+        credits = (math.ceil(seconds / 5.0) if "stt" in cloud_stages else 0) \
+            + (math.ceil(seconds / 2.0) if "separation" in cloud_stages else 0)
+        what = " and ".join({"stt": "transcription", "separation": "separation"}[s]
+                            for s in cloud_stages)
+        message = ("Dubbing this video (%.0fs) runs on this machine, but its "
+                   "%s goes through Perso: about %d credits%s."
+                   % (seconds, what, credits, balance_text))
+    else:
+        message = ("Dubbing this video (%.0fs) runs %son this machine and takes a "
+                   "while; queued videos run one at a time." % (seconds, "" if spends else "free "))
+    if spends:
+        message += " Its translation uses the user's %s." % spends
+    # The plan says which file and which language: "Proceed?" alone let
+    # "2 dubbing, 1 erase" start without the user seeing which was which.
+    message = "%s into %s. %s Proceed?" % (os.path.basename(path),
+                                           languages.lookup(dub_mode, code)["name"], message)
+    return {"needs_confirmation": True, "message": message, "seconds": seconds}
+
+
+def _dub_start_fields(code, dub_mode, source_language, num_speakers, translator, stt, separation,
+                      voice, perso_model) -> dict:
+    """The form queue_dub posts to POST /api/dub/start, in dub_start's own
+    field names (tests/test_mcp_dub_contract.py holds the two sides together)."""
+    # Always said, local included: the server's own default is Perso in the
+    # production edition (app/setup.py), and a local dub that left it unsaid went to
+    # Perso and spent credits the agent had promised were not needed (Windows F10, 2026-10-07).
+    fields = {"language": languages.lookup(dub_mode, code)["name"], "language_code": code,
+              "dub_mode": dub_mode}
+    if dub_mode == "perso" and perso_model:
+        fields["perso_model"] = perso_model.upper()
+    if source_language:
+        fields["source_language_code"] = source_language.lower()
+    if num_speakers:
+        fields["num_speakers"] = str(num_speakers)
+    if dub_mode == "local":
+        # The engines named for this dub only; the rest keep the app's defaults.
+        for field, value in (("translate_engine", translator), ("stt_engine", stt),
+                             ("sep_engine", separation), ("tts_engine", voice)):
+            if value:
+                fields[field] = value
+    return fields
 
 
 def _dub_refusal_text(detail) -> str:
@@ -509,7 +900,7 @@ def _dub_refusal_text(detail) -> str:
 def get_setup() -> dict:
     """How the app is set up right now, stage by stage: which engine each
     stage uses when nobody chooses (dub_mode, separation, stt, translator,
-    voice_quality), the choices each stage offers, every optional model with
+    voice_quality, voice), the choices each stage offers, every optional model with
     its download state (ready / downloading / paused / not_downloaded), how
     far a download has got (progress_text, e.g. "downloading 41%") and its
     size, and whether a Perso or Gemini key is saved. Read this before
@@ -533,24 +924,37 @@ def get_setup() -> dict:
 def set_default(stage: str, choice: str, confirm: bool = False) -> dict:
     """Change what one stage uses from now on -- for every dub, from the
     screen or from here, no restart. NOT for one dub: queue_dub takes stt,
-    separation and translator for that. A choice that spends money (perso for
+    separation, translator and voice for that. A choice that spends money (perso for
     any stage, gemini for translation) answers needs_confirmation=true first:
     put its message to the user and call again with confirm=true only after
     they clearly agree -- the assistant once switched transcription to Perso
     before asking, the user declined the dub, and the paid default stayed. stage is one of dub_mode (local |
     perso), separation (local | perso), stt (local | perso), translator
-    (chatgpt | hunyuan | gemma | gemini), voice_quality (fast | high). Cloud choices
+    (chatgpt | hunyuan | gemma | gemini), voice_quality (fast | high),
+    voice (qwen3). Cloud choices
     need the matching key saved (see get_setup); a local model that is not
     downloaded is not a reason to refuse -- download_model handles that.
     Returns the defaults now in force.
     """
-    paid = choice == "perso" or (stage == "translator" and choice == "gemini")
+    # Read the way the app saves it (trimmed, lowercased, one the stage offers),
+    # so the choice judged paid or free below is the one that is saved.
+    try:
+        choice = checked_choice(stage, choice)
+    except ValueError as e:
+        raise Refusal(str(e))
+    # A translator that spends the user's money says so in its TRANSLATORS entry.
+    info = TRANSLATORS.get(choice) if stage == "translator" else None
+    paid = choice == "perso" or bool(info and info.spends)
+    plan = "%s:%s" % (stage, choice)
     if paid and not confirm:
-        return {"needs_confirmation": True, "message": (
-            "This makes %s the default %s for every dub from now on, and each of "
-            "them will spend %s. To do it for one dub only, queue that dub with "
+        spend = "Perso credits" if choice == "perso" else info.spends
+        return _ask("set_default", {"needs_confirmation": True, "message": (
+            "This makes %s the default %s for every dubbing from now on, and each of "
+            "them will spend %s. To do it for one dubbing only, queue that one with "
             "the engine named instead. Change the default?"
-            % (choice, stage, "Perso credits" if choice == "perso" else "Gemini API quota"))}
+            % (choice, stage, spend))}, plan=plan)
+    if paid:
+        _answered("set_default", plan, paid=True)
     r = _api_post("/api/setup", json={stage: choice}, timeout=10.0)
     if r.status_code in (422, 503):
         raise Refusal(r.json().get("detail", "could not change that setting"))
@@ -767,12 +1171,20 @@ def _check_eraser(r) -> None:
 @mcp.tool()
 def erase_subtitles(video_path: str, area: Union[str, List[int]] = "auto",
                     start: Optional[float] = None,
-                    end: Optional[float] = None) -> dict:
+                    end: Optional[float] = None, confirm: bool = False) -> dict:
     """Rub out the subtitles BURNED INTO a video and keep the rest of the picture.
 
     Free and local (no Perso, no credits), but slow -- minutes per minute of
-    video -- so it goes in the same queue a dub does and this answers at once
-    with {job_id, status, area_used}. Follow it with get_job_status, which
+    video -- so NOTHING STARTS UNASKED: called without confirm=true it starts
+    nothing and returns the plan (which file, which part of the frame). Relay
+    it to the user as a question and end your reply; confirm=true is refused
+    in the same reply. Only when the user's own message already names the
+    file and says to go, call with confirm=true straight away. With several
+    videos, put the whole plan (which file is erased, which is dubbed) to the
+    user in one question.
+
+    It goes in the same queue a dub does and, with confirm=true, answers at
+    once with {job_id, status, area_used}. Follow it with get_job_status, which
     gives a percent, and once it says done=true call save_erased(job_id) to put
     the cleaned video under the user's Downloads folder (Downloads/<day>/<project>).
 
@@ -795,6 +1207,17 @@ def erase_subtitles(video_path: str, area: Union[str, List[int]] = "auto",
         raise Refusal("No such video: %s" % video_path)
     if (start is None) != (end is None):
         raise Refusal("give both start and end, or neither")
+    if not confirm:
+        where = {"auto": "where the app finds them", "whole": "anywhere in the frame",
+                 "bottom": "in the bottom quarter", "top": "in the top quarter"}
+        said = (where.get(area.strip().lower(), "in the area given")
+                if isinstance(area, str) else "in the box you gave")
+        part = "" if start is None else " from %gs to %gs" % (start, end)
+        return _ask("erase_subtitles", {"needs_confirmation": True, "message": (
+            "Erase the subtitles in %s%s, %s. Free on this machine, but it takes "
+            "minutes per minute of video. Proceed?" % (os.path.basename(path), part, said))},
+            plan="%s|%s|%s|%s" % (os.path.basename(path), area, start, end))
+    _answered("erase_subtitles", "%s|%s|%s|%s" % (os.path.basename(path), area, start, end))
     band, area_used = _erase_area(path, area)
     fields = {"area": band if band == "whole" else json.dumps(band)}
     if start is not None:
@@ -827,7 +1250,9 @@ def save_erased(job_id: str, dir: str = "") -> dict:
 def list_jobs(active_only: bool = True) -> List[dict]:
     """What PersoDub is working on right now, newest first.
 
-    Each entry carries id, kind ("dub" or "erase"), title and status. This is
+    Each entry carries id, kind ("dub" or "erase"), title, status, the
+    target language_code and project_id: the dubbings of one video into
+    several languages share one project_id (the first one's id). This is
     how "stop it", "how far along is it?" or "what is it doing?" becomes a job
     id: work the user started on the screen has an id they have never seen and
     cannot be asked for. Follow it with get_job_status for the percentage, or
@@ -840,14 +1265,16 @@ def list_jobs(active_only: bool = True) -> List[dict]:
     r.raise_for_status()
     body = r.json()
     jobs = body.get("jobs", body) if isinstance(body, dict) else body
-    live = ("queued", "running", "cancelling")
+    live = (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCELLING)
     out = []
     for j in jobs:
         status = j.get("status") or ""
         if active_only and status not in live:
             continue
         out.append({"id": j.get("id"), "kind": j.get("kind") or "dub",
-                    "title": j.get("project") or "", "status": status})
+                    "title": j.get("project") or "", "status": status,
+                    "language_code": j.get("language_code"),
+                    "project_id": j.get("project_id") or j.get("id")})
     return out
 
 
@@ -866,7 +1293,7 @@ def cancel_dub(job_id: str) -> dict:
     """
     job = _job(job_id)
     status = job.get("status")
-    if status in ("done", "error", "cancelled"):
+    if status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED):
         raise Refusal("nothing to cancel: this job is already %s" % status)
     r = _api_post("/api/dub/jobs/%s/cancel" % job_id, timeout=30.0)
     if r.status_code in (404, 409):

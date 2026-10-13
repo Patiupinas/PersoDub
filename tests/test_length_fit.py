@@ -12,9 +12,10 @@ from app.text.length_fit import (
     pick_candidate,
     syllable_budget,
 )
+from app.translate import TranslationEngine
 
 
-class FakeEngine:
+class FakeEngine(TranslationEngine):
     """A fake translator that returns preset responses in order."""
 
     def __init__(self, responses, max_budget_retries=None):
@@ -30,6 +31,14 @@ class FakeEngine:
 
 def j(arr):
     return json.dumps(arr, ensure_ascii=False)
+
+
+@pytest.fixture(autouse=True)
+def _korean_at_4_4(monkeypatch):
+    # The budgets and windows worked out below assume Korean at 4.4 characters
+    # a second (the table's value before 2026-10-02); they test the mechanics.
+    from app.text import srt
+    monkeypatch.setitem(srt._SYL_PER_SEC, "ko", 4.4)
 
 
 def test_budget_uses_cps_and_margin():
@@ -351,7 +360,7 @@ def test_what_cannot_be_read_as_text_is_no_candidate_at_all():
             assert "{" not in cand and "[" not in cand
 
 
-class _OneBadLineEngine:
+class _OneBadLineEngine(TranslationEngine):
     """Answers every chunk with the wrong count, so each line is asked alone;
     the line "bad" never comes back readable (issue #88's answer cut off
     mid-string), every other line gets three candidates."""
@@ -378,7 +387,7 @@ def test_a_line_that_keeps_failing_is_left_untranslated_not_fatal(durations):
     # raise out of the loop and end a 969-line job. Now it is left empty
     # (untranslated: silent, and marked on the script) and the rest go on --
     # on both the candidates path (with slots) and the plain one (without).
-    from app.translate import UNTRANSLATED
+    from app.text.dub_prompt import UNTRANSLATED
     eng = _OneBadLineEngine()
     out = fit_translate(eng, ["good one", "bad", "good two"], "ko", "en", durations)
     assert out[1] == UNTRANSLATED
@@ -405,6 +414,40 @@ def test_a_bad_opening_is_not_taken_for_a_broken_translator():
     assert out[:6] == [""] * 6 and all(out[6:12]) and out[12:] == [""] * 6
 
 
+class _UnreadableEngine(TranslationEngine):
+    """Declares what ChatGPT does (app/translate.py ChatGptTranslator): one
+    retry round, and one more ask when an answer cannot be read, not two.
+    `first` are answers that can be read; none after them can."""
+    max_budget_retries = 1
+    format_tries = 2
+
+    def __init__(self, first=()):
+        self.prompts = []
+        self.first = list(first)
+
+    def _ask(self, prompt):
+        self.prompts.append(prompt)
+        return self.first.pop(0) if self.first else "Sorry, I can't format that."
+
+
+@pytest.mark.parametrize("durations", [[2.0] * 6, None])
+def test_the_length_fit_asks_only_as_often_as_the_translator_says(durations):
+    # Its asks took 3 tries whatever the translator said, so one unreadable
+    # chunk cost a free ChatGPT plan 21 messages (2026-10-10). Now the chunk
+    # is asked twice, then each of its six lines alone twice.
+    eng = _UnreadableEngine()
+    assert fit_translate(eng, ["line"] * 6, "ko", "en", durations) == [""] * 6
+    assert len(eng.prompts) == 2 + 6 * 2
+
+
+def test_the_length_retry_asks_only_as_often_as_the_translator_says():
+    # A draft too long for its slot (2.95s in 1.5s), then rewrites that
+    # cannot be read: the one round asks twice, and the draft stays.
+    eng = _UnreadableEngine(first=[j(["다섯 명이나 죽게 내버려 뒀잖아"])])
+    assert fit_translate(eng, ["You let five people die."], "ko", "en", [1.5]) == ["다섯 명이나 죽게 내버려 뒀잖아"]
+    assert len(eng.prompts) == 1 + 2
+
+
 # --- the scene beside each request is the lines around it, not the whole job ----
 # The whole job went into every request; on a long video the prompt ran past the
 # model's 4096-token window (the bundled Ollama's -c 4096) and was cut (#82, #88).
@@ -420,7 +463,7 @@ def _context_of(prompt):
     return [ln[2:] for ln in block.splitlines()]
 
 
-class _RecordingEngine:
+class _RecordingEngine(TranslationEngine):
     """Answers every request well, and keeps every prompt it was sent."""
 
     def __init__(self, max_budget_retries=0, fit=True):

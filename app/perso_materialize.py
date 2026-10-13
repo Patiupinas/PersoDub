@@ -17,7 +17,7 @@ import os
 import shutil
 import subprocess
 
-from app.text.srt import build_srt
+from app.text.srt import build_srt, parse_srt
 
 
 def _ffmpeg_to_wav(src: str, dest: str) -> None:
@@ -29,20 +29,51 @@ def _ffmpeg_to_wav(src: str, dest: str) -> None:
                                                          (r.stderr or "").strip()[-120:]))
 
 
+def _cue_count(path: str) -> int:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return len(parse_srt(f.read()))
+    except OSError:
+        return -1
+
+
+def fetch_line(pc, audio_url: str, work_dir: str, n: int, to_wav=None) -> str:
+    """Bring line n's voice (0-based, as the files are numbered) home from
+    Perso. The old wav stays whole until the new one is: a download or a
+    conversion that fails halfway leaves the line sounding as it did."""
+    to_wav = to_wav or _ffmpeg_to_wav
+    src = os.path.join(work_dir, "perso_line_%d.src" % n)
+    new = os.path.join(work_dir, "perso_line_%d.new.wav" % n)
+    wav = os.path.join(work_dir, "qwen_line_%d.wav" % n)
+    try:
+        pc.download_media(audio_url, src)
+        to_wav(src, new)
+        os.replace(new, wav)
+    finally:
+        for leftover in (src, new):
+            with contextlib.suppress(OSError):
+                os.remove(leftover)
+    return wav
+
+
 def materialize(pc, project_seq: int, work_dir: str, language: str,
-                to_wav=None, log=None) -> dict:
+                to_wav=None, log=None, refresh: bool = False, space_seq=None) -> dict:
     """Download a Perso dub's parts and write the local job files.
 
     Idempotent: audio already on disk is not fetched again, and the script
     files are simply rewritten with the same content. Never touches
     edited.srt -- a user's edits survive a re-run.
+
+    refresh=True is for a project Perso has worked on again (a proofread):
+    every line's voice is fetched afresh, over the one on disk. The background
+    bed is the source video's and does not change, so it is kept.
     """
     to_wav = to_wav or _ffmpeg_to_wav
     log = log or (lambda m: None)
     os.makedirs(work_dir, exist_ok=True)
 
     log("Reading the script from Perso…")
-    sents = pc.get_project_script(project_seq).get("sentences") or []
+    sents = pc.get_project_script(project_seq, space_seq).get("sentences") or []
 
     cues_t, cues_o, spans, lines = [], [], [], []
     for n, s in enumerate(sents):
@@ -56,14 +87,10 @@ def materialize(pc, project_seq: int, work_dir: str, language: str,
         lines.append({"i": n, "start": start, "gain": None, "speaker": spk})
 
         wav = os.path.join(work_dir, "qwen_line_%d.wav" % n)
-        if not os.path.exists(wav):
+        if refresh or not os.path.exists(wav):
             if s.get("audioUrl"):
                 log("Fetching line %d of %d…" % (n + 1, len(sents)))
-                src = os.path.join(work_dir, "perso_line_%d.src" % n)
-                pc.download_media(s["audioUrl"], src)
-                to_wav(src, wav)
-                with contextlib.suppress(OSError):
-                    os.remove(src)
+                fetch_line(pc, s["audioUrl"], work_dir, n, to_wav)
             else:
                 # Happens right after a server-side change (e.g. a new
                 # speaker): Perso is still regenerating that sentence.
@@ -74,15 +101,20 @@ def materialize(pc, project_seq: int, work_dir: str, language: str,
     if not os.path.exists(bg):
         log("Fetching the background bed…")
         src = os.path.join(work_dir, "perso_background.src")
-        pc.download_target(project_seq, "backgroundAudio", src)
+        pc.download_target(project_seq, "backgroundAudio", src, space_seq)
         to_wav(src, bg)
         with contextlib.suppress(OSError):
             os.remove(src)
 
     with open(os.path.join(work_dir, "translated.srt"), "w", encoding="utf-8") as f:
         f.write(build_srt(cues_t))
-    with open(os.path.join(work_dir, "original.srt"), "w", encoding="utf-8") as f:
-        f.write(build_srt(cues_o))
+    # A line edited through Perso has the new words as its source there
+    # (PersoClient.edit_sentence), and a proofread makes that permanent. The
+    # video's own words do not change, so on a refresh the ones here stay.
+    source = os.path.join(work_dir, "original.srt")
+    if not (refresh and _cue_count(source) == len(cues_o)):
+        with open(source, "w", encoding="utf-8") as f:
+            f.write(build_srt(cues_o))
     with open(os.path.join(work_dir, "speakers.json"), "w", encoding="utf-8") as f:
         json.dump(spans, f, ensure_ascii=False)
     with open(os.path.join(work_dir, "lines.json"), "w", encoding="utf-8") as f:
@@ -111,5 +143,5 @@ def materialize(pc, project_seq: int, work_dir: str, language: str,
                   if not os.path.exists(os.path.join(work_dir, "qwen_line_%d.wav" % n)))
     if missing:
         log("%d line(s) are still being made on Perso -- refetch later." % missing)
-    log("This dub is editable now.")
+    log("This dubbing is editable now.")
     return {"lines": len(lines), "speakers": len(best), "missing_audio": missing}

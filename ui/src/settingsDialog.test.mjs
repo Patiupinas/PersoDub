@@ -8,7 +8,8 @@
 // Run with: node --test ui/src/settingsDialog.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { initSettingsUi } from "./settingsDialog.mjs";
+import { initSettingsUi, SETTINGS_TABS } from "./settingsDialog.mjs";
+import { currentLanguage, setLanguage } from "./i18n.mjs";
 
 function makeEl(id) {
   const classes = new Set();
@@ -33,20 +34,21 @@ function makeEl(id) {
     appendChild: function (kid) { this.children.push(kid); },
     append: function (...kids) { this.children.push(...kids); },
     replaceChildren: function () { this.children = []; },
+    focus: function () { this.focused = true; },
     addEventListener: function (ev, fn) { (this.listeners[ev] ||= []).push(fn); },
     fire: async function (ev, arg) { for (const fn of this.listeners[ev] || []) await fn(arg); },
   };
 }
 
 /** A page, a fetch log and a stopped clock. `responses` answers per URL. */
-function harness({ responses = {} } = {}) {
+function harness({ responses = {}, refreshModelCatalog = null } = {}) {
   const els = new Map();
   const $ = (id) => {
     if (!els.has(id)) els.set(id, makeEl(id));
     return els.get(id);
   };
   const state = { calls: [], bodies: [], timers: [], saved: 0, models: 0, docKeydown: [],
-                  stored: new Map() };
+                  stored: new Map(), startedAgain: 0 };
 
   const real = {
     fetch: globalThis.fetch,
@@ -57,10 +59,10 @@ function harness({ responses = {} } = {}) {
     clearTimeout: globalThis.clearTimeout,
   };
   globalThis.document = {
+    documentElement: {},
+    body: { dataset: {} },
     createElement: (tag) => makeEl(tag),
     addEventListener: (ev, fn) => { if (ev === "keydown") state.docKeydown.push(fn); },
-    // Appearance writes the chosen theme onto <html>; a dataset is all it needs.
-    documentElement: { dataset: {} },
   };
   globalThis.localStorage = {
     getItem: (k) => (state.stored.has(k) ? state.stored.get(k) : null),
@@ -94,7 +96,8 @@ function harness({ responses = {} } = {}) {
   const api = initSettingsUi({
     $,
     onSaved: () => { state.saved += 1; },
-    refreshModelCatalog: () => { state.models += 1; },
+    refreshModelCatalog: () => { state.models += 1; return refreshModelCatalog && refreshModelCatalog($); },
+    startAgain: () => { state.startedAgain += 1; },
   });
   return { $, api, state };
 }
@@ -222,7 +225,7 @@ test("emptying the key field empties the picker instead of leaving the old key's
 
   const sel = h.$("persoSpaceSelect");
   assert.deepEqual(sel.children.map((o) => o.textContent),
-    ["Enter a Perso API key to see its workspaces"]);
+    ["Add a Perso API key first"]);
   assert.equal(sel.disabled, true);
 });
 
@@ -279,28 +282,62 @@ test("a save the engine refuses keeps the sheet open and says so beside Save", a
   await h.api.saveSettings();
 
   assert.equal(h.$("settingsOverlay").classList.has("open"), true);
-  assert.equal(h.$("settingsChanges").textContent, "Could not save. Is the engine running?");
+  assert.equal(h.$("settingsChanges").textContent, "Could not save. Is PersoDub running?");
 });
 
-test("Cancel and closing leave without saving", async (t) => {
+test("Cancel with nothing changed closes at once; closing from code leaves without saving", async (t) => {
   const h = harness();
   t.after(h.state.restore);
+  // As the sheet shows them before it has read anything: both switches on.
+  h.$("analyticsToggle").checked = true;
+  h.$("reportsToggle").checked = true;
 
-  h.$("geminiKeyInput").value = "typed-then-cancelled";
   h.$("settingsOverlay").classList.add("open");
   await h.$("settingsCancelBtn").fire("click");
   await settle();
   assert.equal(h.$("settingsOverlay").classList.has("open"), false);
+  assert.equal(h.$("settingsDiscardOverlay").classList.has("open"), false, "nothing to ask about");
 
+  h.$("geminiKeyInput").value = "typed-then-closed";
   h.$("settingsOverlay").classList.add("open");
   h.api.closeSettings();
   await settle();
+  assert.equal(h.$("settingsOverlay").classList.has("open"), false);
+  assert.equal(h.state.bodies.some((b) => b.url === "/api/settings"), false);
+});
+
+test("Cancel with something typed asks once: Keep editing stays, Discard leaves without saving", async (t) => {
+  const h = harness();
+  t.after(h.state.restore);
+  // As the sheet shows them before it has read anything: both switches on.
+  h.$("analyticsToggle").checked = true;
+  h.$("reportsToggle").checked = true;
+
+  h.$("geminiKeyInput").value = "typed-then-cancelled";
+  h.$("settingsOverlay").classList.add("open");
+  await h.$("settingsCancelBtn").fire("click");
+  assert.equal(h.$("settingsDiscardOverlay").classList.has("open"), true);
+  assert.equal(h.$("settingsOverlay").classList.has("open"), true, "still there under the question");
+
+  await h.$("settingsDiscardKeep").fire("click");
+  assert.equal(h.$("settingsDiscardOverlay").classList.has("open"), false);
+  assert.equal(h.$("settingsOverlay").classList.has("open"), true);
+  assert.equal(h.$("geminiKeyInput").value, "typed-then-cancelled", "what was typed is kept");
+
+  await h.$("settingsCancelBtn").fire("click");
+  await h.$("settingsDiscardYes").fire("click");
+  await settle();
+  assert.equal(h.$("settingsDiscardOverlay").classList.has("open"), false);
+  assert.equal(h.$("settingsOverlay").classList.has("open"), false);
   assert.equal(h.state.bodies.some((b) => b.url === "/api/settings"), false);
 });
 
 test("Escape closes the sheet only while it is open", async (t) => {
   const h = harness();
   t.after(h.state.restore);
+  // As the sheet shows them before it has read anything: both switches on.
+  h.$("analyticsToggle").checked = true;
+  h.$("reportsToggle").checked = true;
   const onKey = h.state.docKeydown[0];
   assert.ok(onKey, "the sheet has to answer Escape");
 
@@ -314,20 +351,21 @@ test("Escape closes the sheet only while it is open", async (t) => {
   assert.equal(h.$("settingsOverlay").classList.has("open"), false);
 });
 
-test("Show keys unmasks both fields and the button offers the way back", async (t) => {
+test("the Show keys switch unmasks both fields, and masks them again when turned off", async (t) => {
   const h = harness();
   t.after(h.state.restore);
   h.$("persoKeyInput").type = "password";
   h.$("geminiKeyInput").type = "password";
 
-  await h.$("showKeysToggle").fire("click");
+  h.$("showKeysToggle").checked = true;
+  await h.$("showKeysToggle").fire("change");
   assert.equal(h.$("persoKeyInput").type, "text");
   assert.equal(h.$("geminiKeyInput").type, "text");
-  assert.equal(h.$("showKeysToggle").textContent, "Hide keys");
 
-  await h.$("showKeysToggle").fire("click");
+  h.$("showKeysToggle").checked = false;
+  await h.$("showKeysToggle").fire("change");
   assert.equal(h.$("persoKeyInput").type, "password");
-  assert.equal(h.$("showKeysToggle").textContent, "Show keys");
+  assert.equal(h.$("geminiKeyInput").type, "password");
 });
 
 test("the finished-videos button is named for this computer and asks the engine to open the folder", async (t) => {
@@ -353,7 +391,7 @@ test("a folder that will not open says so under the button", async (t) => {
     "Could not open the folder.");
 });
 
-test("the two switches and the theme are saved with Save, each as its own setting", async (t) => {
+test("the two switches are saved with Save, each as its own setting", async (t) => {
   const h = harness({ responses: { "/api/settings": ok({ analytics_off: false, reports_off: false }) } });
   t.after(h.state.restore);
   await h.api.openSettings();
@@ -362,26 +400,12 @@ test("the two switches and the theme are saved with Save, each as its own settin
   await h.$("analyticsToggle").fire("change");
   h.$("reportsToggle").checked = false;
   await h.$("reportsToggle").fire("change");
-  h.$("themeSelect").value = "light";
-  await h.$("themeSelect").fire("change");
-  assert.equal(globalThis.document.documentElement.dataset.theme, undefined, "the theme waits for Save");
-  assert.equal(h.$("settingsChanges").textContent, "3 changes");
+  assert.equal(h.$("settingsChanges").textContent, "2 changes");
 
   await h.$("settingsSaveBtn").fire("click");
 
   assert.deepEqual(h.state.bodies.map((b) => b.body),
     [{ analytics_off: true }, { reports_off: true }]);
-  assert.equal(globalThis.document.documentElement.dataset.theme, "light");
-  assert.equal(h.state.stored.get("persodub.theme"), "light");
-});
-
-test("Settings opens showing the theme that is saved", async (t) => {
-  const h = harness();
-  t.after(h.state.restore);
-  h.state.stored.set("persodub.theme", "light");
-
-  await h.api.openSettings();
-  assert.equal(h.$("themeSelect").value, "light");
 });
 
 test("Acknowledgements folds open and shut", async (t) => {
@@ -400,3 +424,210 @@ test("Acknowledgements folds open and shut", async (t) => {
 
 /** Let the module's own awaits run out (its fetches resolve immediately). */
 function settle() { return new Promise((r) => setImmediate(r)); }
+
+// ---------------- the five tabs ----------------
+const selected = (h) => SETTINGS_TABS.filter((t) => h.$(`settingsTab-${t}`).attrs["aria-selected"] === "true");
+const showing = (h) => SETTINGS_TABS.filter((t) => h.$(`settingsPanel-${t}`).hidden === false);
+const tick = () => new Promise((r) => setImmediate(r));
+
+test("the tabs are Models, API keys, Storage, Privacy and About", () => {
+  assert.deepEqual(SETTINGS_TABS, ["models", "keys", "storage", "privacy", "about"]);
+});
+
+test("the gear opens on Models the first time, one tab selected and one panel showing", async (t) => {
+  const h = harness();
+  t.after(h.state.restore);
+
+  // The gear hands over its click event, which is not a tab.
+  await h.api.openSettings({ type: "click" });
+
+  assert.deepEqual(selected(h), ["models"]);
+  assert.deepEqual(showing(h), ["models"]);
+  assert.equal(h.$("settingsTab-models").tabIndex, 0);
+  assert.equal(h.$("settingsTab-keys").tabIndex, -1);
+});
+
+test("clicking a tab shows its panel alone", async (t) => {
+  const h = harness();
+  t.after(h.state.restore);
+  await h.api.openSettings();
+
+  await h.$("settingsTab-privacy").fire("click");
+
+  assert.deepEqual(selected(h), ["privacy"]);
+  assert.deepEqual(showing(h), ["privacy"]);
+  assert.equal(h.api.currentTab(), "privacy");
+});
+
+test("the arrow keys move along the tabs and wrap, Home and End go to the ends", async (t) => {
+  const h = harness();
+  t.after(h.state.restore);
+  await h.api.openSettings();
+  const press = (from, key) => h.$(`settingsTab-${from}`).fire("keydown", { key, preventDefault() {} });
+
+  await press("models", "ArrowRight");
+  assert.deepEqual(selected(h), ["keys"]);
+  assert.equal(h.$("settingsTab-keys").focused, true);
+  await press("keys", "ArrowLeft");
+  await press("models", "ArrowLeft");
+  assert.deepEqual(selected(h), ["about"]);
+  await press("about", "ArrowRight");
+  assert.deepEqual(selected(h), ["models"]);
+  await press("models", "End");
+  assert.deepEqual(showing(h), ["about"]);
+  await press("about", "Home");
+  assert.deepEqual(showing(h), ["models"]);
+  // Any other key is left alone.
+  await press("models", "a");
+  assert.deepEqual(showing(h), ["models"]);
+});
+
+test("the sheet reopens on the tab last chosen", async (t) => {
+  const h = harness();
+  t.after(h.state.restore);
+  await h.api.openSettings();
+  await h.$("settingsTab-storage").fire("click");
+  h.api.closeSettings();
+
+  await h.api.openSettings();
+
+  assert.deepEqual(showing(h), ["storage"]);
+});
+
+test("a way in that needs a key opens API keys, and does not change the tab to come back to", async (t) => {
+  const h = harness();
+  t.after(h.state.restore);
+  await h.api.openSettings();
+  await h.$("settingsTab-about").fire("click");
+  h.api.closeSettings();
+
+  await h.api.openSettings("keys");
+  assert.deepEqual(showing(h), ["keys"]);
+  h.api.closeSettings();
+
+  await h.api.openSettings();
+  assert.deepEqual(showing(h), ["about"]);
+});
+
+test("a model that needs attention opens Models, whatever tab was last", async (t) => {
+  const h = harness();
+  t.after(h.state.restore);
+  await h.api.openSettings();
+  await h.$("settingsTab-privacy").fire("click");
+  h.api.closeSettings();
+  h.$("modelsFold").dataset.attention = "1";
+
+  await h.api.openSettings();
+
+  assert.deepEqual(showing(h), ["models"]);
+});
+
+test("a model problem found just after opening moves to Models, unless a tab was chosen meanwhile", async (t) => {
+  const late = async ($) => { await tick(); $("modelsFold").dataset.attention = "1"; };
+  const h = harness({ refreshModelCatalog: late });
+  t.after(h.state.restore);
+  await h.api.openSettings();
+  await h.$("settingsTab-about").fire("click");
+  h.api.closeSettings();
+  h.$("modelsFold").dataset.attention = "";
+
+  await h.api.openSettings();
+  assert.deepEqual(showing(h), ["about"]);
+  await tick(); await tick();
+  assert.deepEqual(showing(h), ["models"]);
+
+  h.api.closeSettings();
+  h.$("modelsFold").dataset.attention = "";
+  await h.api.openSettings();
+  await h.$("settingsTab-storage").fire("click");
+  await tick(); await tick();
+  assert.deepEqual(showing(h), ["storage"]);
+});
+
+test("a key asked for wins over a model that needs attention", async (t) => {
+  const h = harness();
+  t.after(h.state.restore);
+  h.$("modelsFold").dataset.attention = "1";
+
+  await h.api.openSettings("keys");
+  await tick();
+
+  assert.deepEqual(showing(h), ["keys"]);
+});
+
+test("Save rests until something changed, and rests again when it is changed back", async (t) => {
+  const h = harness({ responses: { "/api/settings": ok(SAVED), "/api/perso/spaces": ok(SPACES) } });
+  t.after(h.state.restore);
+  await h.api.openSettings();
+  assert.equal(h.$("settingsSaveBtn").disabled, true);
+  assert.equal(h.$("settingsChanges").textContent, "");
+
+  h.$("geminiKeyInput").value = "another-key";
+  await h.$("geminiKeyInput").fire("input");
+  assert.equal(h.$("settingsSaveBtn").disabled, false);
+  assert.equal(h.$("settingsChanges").textContent, "1 change");
+
+  h.$("geminiKeyInput").value = "gem-key";
+  await h.$("geminiKeyInput").fire("input");
+  assert.equal(h.$("settingsSaveBtn").disabled, true);
+  assert.equal(h.$("settingsChanges").textContent, "");
+});
+
+// ---------------- the language (About) ----------------
+test("the language picker shows the saved setting, and Auto when there is none", async (t) => {
+  const h = harness({ responses: { "/api/settings": ok({ ui_language: "ko" }) } });
+  t.after(h.state.restore);
+  await h.api.loadSavedSetup();
+  assert.equal(h.$("uiLanguageSelect").value, "ko");
+
+  const older = harness({ responses: { "/api/settings": ok({}) } });
+  t.after(older.state.restore);
+  await older.api.loadSavedSetup();
+  assert.equal(older.$("uiLanguageSelect").value, "auto");
+});
+
+test("a changed language is one change, saved with Save, and the page starts again in it", async (t) => {
+  const h = harness({ responses: { "/api/settings": ok({ ui_language: "auto" }) } });
+  t.after(h.state.restore);
+  await h.api.openSettings();
+
+  h.$("uiLanguageSelect").value = "ko";
+  await h.$("uiLanguageSelect").fire("change");
+  assert.equal(h.$("settingsChanges").textContent, "1 change");
+
+  await h.$("settingsSaveBtn").fire("click");
+
+  assert.deepEqual(h.state.bodies.map((b) => b.body), [{ ui_language: "ko" }]);
+  // Started again from the saved setting, which is what every screen reads.
+  assert.equal(h.state.startedAgain, 1);
+});
+
+test("while the Dub Agent is answering, a changed language redraws the page in place instead", async (t) => {
+  const h = harness({ responses: { "/api/settings": ok({ ui_language: "auto" }) } });
+  t.after(h.state.restore);
+  // Leaving the page would end the agent's turn (app/api/agent.py).
+  globalThis.document.body.dataset.agentTurn = "on";
+  // The redraw walks the page's marked words; this page has none.
+  globalThis.document.querySelectorAll = () => [];
+  t.after(() => setLanguage("en"));
+  await h.api.openSettings();
+
+  h.$("uiLanguageSelect").value = "ko";
+  await h.$("uiLanguageSelect").fire("change");
+  await h.$("settingsSaveBtn").fire("click");
+
+  assert.deepEqual(h.state.bodies.map((b) => b.body), [{ ui_language: "ko" }]);
+  assert.equal(h.state.startedAgain, 0);
+  assert.ok(h.state.calls.includes("GET /i18n/ui.ko.json"), "the Korean table was read");
+  assert.equal(currentLanguage(), "ko");
+});
+
+test("a sheet that could not read the settings has no language change to save", async (t) => {
+  const h = harness({ responses: { "/api/settings": { ok: false, status: 503, json: async () => ({}) } } });
+  t.after(h.state.restore);
+  await h.api.openSettings();
+  const before = h.$("settingsChanges").textContent;
+  h.$("uiLanguageSelect").value = "ko";
+  await h.$("uiLanguageSelect").fire("change");
+  assert.equal(h.$("settingsChanges").textContent, before);
+});

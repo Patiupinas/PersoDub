@@ -42,3 +42,20 @@ def url(name: str) -> str:
         return value if isinstance(value, str) else ""
     attr = _DEV_FALLBACK.get(name)
     return getattr(config, attr, "") if attr else ""
+
+
+def state(name: str) -> str:
+    """What the shell last said about pack `name` while it has no URL:
+    "starting" (its process is coming up) or "failed" (it did not come up),
+    else "". Written next to the URL in runtime.json and removed once the
+    process answers (desktop/src/orchestrator.js PACK_STATE_KEY)."""
+    kit = os.environ.get("PERSODUB_KIT_DIR")
+    if not kit:
+        return ""
+    try:
+        with open(os.path.join(kit, "runtime.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    value = data.get(f"{name}_state") if isinstance(data, dict) else None
+    return value if value in ("starting", "failed") else ""

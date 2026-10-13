@@ -14,6 +14,9 @@ mcp==2.2.0
 # hf CLI arrived in huggingface_hub 0.34; <1.0 keeps the flags this code was
 # verified against.
 huggingface_hub[cli]>=0.34,<1.0
+# Digits written out before Qwen3-TTS reads a line (app/text/numbers.py).
+# LGPL-2.1, pure Python; pinned to the version its readings were checked with.
+num2words==0.5.14
 # Pinned: the ffmpeg step parses this package's function return shape, so an
 # upstream change must not reach fresh installs unpinned. 3.0 is the version
 # the 2026-09-03 device install produced.

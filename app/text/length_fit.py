@@ -14,8 +14,8 @@ Principle (a syllable budget + paraphrase loop):
 import json
 import re
 
+from app.text.dub_prompt import UNTRANSLATED, ask_with_retry, one_line_or_untranslated, register_rule, script_ok
 from app.text.srt import _SYL_PER_SEC, estimate_seconds
-from app.translate import UNTRANSLATED, _ask_with_retry, _one_line_or_untranslated, register_rule, script_ok
 
 # ±15% budget window (2026-07-30 calibration, replaces the old single MARGIN multiplier):
 # a line's estimated speech time must land inside [slot*WINDOW_LOW, slot*WINDOW_HIGH], or it
@@ -24,7 +24,6 @@ from app.translate import UNTRANSLATED, _ask_with_retry, _one_line_or_untranslat
 # under-fill check) into one judgment. Calibrated in the speech-rate budget revision of 2026-07-30 (section 5b).
 WINDOW_LOW = 0.85
 WINDOW_HIGH = 1.15
-MAX_RETRY = 3      # number of re-requests
 NO_BUDGET_SLOT_S = 1.0  # slots shorter than this get no budget (a breeding ground for bad grammar)
 
 # Lines translated per draft call. Small enough that the output JSON array stays aligned
@@ -33,7 +32,7 @@ NO_BUDGET_SLOT_S = 1.0  # slots shorter than this get no budget (a breeding grou
 DRAFT_CHUNK = 6
 
 # A line the translator cannot answer is left UNTRANSLATED and the draft goes on
-# (app/translate.py). But a translator with no usable answer for ANY of the first
+# (app/text/dub_prompt.py). But a translator with no usable answer for ANY of the first
 # this-many lines is not stuck on a line, it is not working (a wrong model, one
 # that only rambles) -- and going on would ask about every line of the video, a
 # few times each, for hours before failing anyway. Two chunks, so one odd opening
@@ -388,7 +387,7 @@ def parse_candidates_array(raw, n):
     s = re.sub(r"^```[a-zA-Z]*", "", s).strip().strip("`").strip()
     start, end = s.find("["), s.rfind("]")
     if start == -1 or end == -1:
-        # Length only, for the reason given in app/translate.py parse_json_array.
+        # Length only, for the reason given in app/text/dub_prompt.py parse_json_array.
         raise ValueError("Could not find a JSON array in the candidates response (response length %d)" % len(raw))
     arr = json.loads(s[start:end + 1])
     # One line asked for, the three candidates handed back bare: the model
@@ -407,7 +406,7 @@ def parse_candidates_array(raw, n):
 
 def _ask_candidates_with_retry(ask, prompt, n, tries=3):
     # type: (Callable[[str], str], str, int, int) -> List[List[str]]
-    """Same format-recovery pattern as app.translate._ask_with_retry, for the nested
+    """Same format-recovery pattern as app.text.dub_prompt.ask_with_retry, for the nested
     candidates format."""
     last_err = None
     for attempt in range(tries):
@@ -508,22 +507,23 @@ def _draft_in_chunks(engine, texts, target_lang, source_lang, budgets):
     candidates). Each call sees the whole scene as read-only context (for flow) but only
     translates its chunk, so the JSON array stays short and aligned. Falls back to one line
     at a time if a chunk's count keeps mismatching; a line that fails even alone is left
-    UNTRANSLATED (app/translate.py)."""
+    UNTRANSLATED (app/text/dub_prompt.py)."""
     out = []  # type: List[str]
     for a in range(0, len(texts), DRAFT_CHUNK):
         chunk, chunk_budgets = texts[a:a + DRAFT_CHUNK], budgets[a:a + DRAFT_CHUNK]
         try:
-            out.extend(_ask_with_retry(
-                engine._ask,
+            out.extend(ask_with_retry(
+                engine.ask,
                 build_budget_prompt(chunk, target_lang, source_lang, chunk_budgets,
                                     scene_context=_scene_window(texts, a, a + len(chunk))),
-                len(chunk)))
+                len(chunk), engine.format_tries))
         except ValueError:
             for k, (t, b) in enumerate(zip(chunk, chunk_budgets)):
-                out.append(_one_line_or_untranslated(
-                    engine._ask,
+                out.append(one_line_or_untranslated(
+                    engine.ask,
                     build_budget_prompt([t], target_lang, source_lang, [b],
-                                        scene_context=_scene_window(texts, a + k, a + k + 1))))
+                                        scene_context=_scene_window(texts, a + k, a + k + 1)),
+                    engine.format_tries))
         _stop_if_nothing_works(out)
     return out
 
@@ -535,7 +535,7 @@ def _draft_candidates_in_chunks(engine, texts, target_lang, source_lang, budgets
     This is what makes a paid translator's single, retry-free call (max_budget_retries=0)
     already get a best-of-3 choice instead of a single shot -- see fit_translate. Falls back
     to one line at a time if a chunk's count keeps mismatching; a line that fails even alone
-    is left UNTRANSLATED (app/translate.py).
+    is left UNTRANSLATED (app/text/dub_prompt.py).
     """
     out = []  # type: List[str]
     for a in range(0, len(texts), DRAFT_CHUNK):
@@ -544,10 +544,10 @@ def _draft_candidates_in_chunks(engine, texts, target_lang, source_lang, budgets
         chunk_windows = windows[a:a + DRAFT_CHUNK]
         try:
             candidate_lists = _ask_candidates_with_retry(
-                engine._ask,
+                engine.ask,
                 build_candidates_draft_prompt(chunk, target_lang, source_lang, chunk_budgets,
                                               scene_context=_scene_window(texts, a, a + len(chunk))),
-                len(chunk))
+                len(chunk), engine.format_tries)
         except ValueError:
             candidate_lists = []
             for k, (t, b) in enumerate(zip(chunk, chunk_budgets)):
@@ -555,14 +555,14 @@ def _draft_candidates_in_chunks(engine, texts, target_lang, source_lang, budgets
                 # becomes UNTRANSLATED below -- not the end of the whole job.
                 try:
                     candidate_lists.extend(_ask_candidates_with_retry(
-                        engine._ask,
+                        engine.ask,
                         build_candidates_draft_prompt([t], target_lang, source_lang, [b],
                                                       scene_context=_scene_window(texts, a + k, a + k + 1)),
-                        1))
+                        1, engine.format_tries))
                 except ValueError:
                     candidate_lists.append([])
         for idx, (cands, w) in enumerate(zip(candidate_lists, chunk_windows)):
-            if getattr(engine, "recheck_script", True):
+            if engine.recheck_script:
                 cands = [c for c in cands if script_ok(c, target_lang)] or cands
             if not cands:
                 out.append(UNTRANSLATED)
@@ -576,7 +576,7 @@ def _draft_candidates_in_chunks(engine, texts, target_lang, source_lang, budgets
 
 
 def fit_translate(
-    engine,                       # TranslationEngine (uses ._ask)
+    engine,                       # TranslationEngine (uses .ask)
     texts,                        # List[str] original lines
     target_lang,                  # str
     source_lang=None,             # Optional[str]
@@ -607,7 +607,7 @@ def fit_translate(
     """
     log = log or (lambda m: None)
     if max_retry is None:
-        max_retry = getattr(engine, "max_budget_retries", MAX_RETRY)
+        max_retry = engine.max_budget_retries
     if not texts:
         return []
     if not durations:
@@ -615,7 +615,9 @@ def fit_translate(
         # plain single-candidate draft is all this case needs.
         budgets = [999] * len(texts)  # no budget info → effectively unlimited
         windows = [None] * len(texts)  # no slot → nothing to judge against
-        best = _draft_in_chunks(engine, texts, target_lang, source_lang, budgets)
+        # A translation-only model is not handed a scene to answer as an array.
+        best = (engine.translate(texts, target_lang, source_lang) if engine.plain_lines
+                else _draft_in_chunks(engine, texts, target_lang, source_lang, budgets))
     else:
         budgets = [syllable_budget(d, target_lang) for d in durations]
         windows = list(durations)
@@ -654,19 +656,19 @@ def fit_translate(
             part = out[c:c + DRAFT_CHUNK]
             try:
                 pairs.extend(zip(part, _ask_candidates_with_retry(
-                    engine._ask,
+                    engine.ask,
                     build_candidates_prompt([texts[i] for i in part],
                                             [best[i] for i in part],
                                             target_lang,
                                             [budgets[i] for i in part],
                                             directions[c:c + DRAFT_CHUNK]),
-                    len(part))))
+                    len(part), engine.format_tries)))
             except ValueError:
                 continue  # this chunk keeps its current lines; the others still get theirs
         if not pairs:
             break  # if format failures keep recurring, stop and keep the current result
         for i, cands in pairs:
-            if getattr(engine, "recheck_script", True):
+            if engine.recheck_script:
                 cands = [c for c in cands if script_ok(c, target_lang)]
             if not cands:
                 continue  # nothing usable came back for this line -- keep the current best

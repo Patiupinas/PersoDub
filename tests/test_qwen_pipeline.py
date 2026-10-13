@@ -1,7 +1,9 @@
 """Pure-function selection logic + mocked orchestration for the Qwen3-TTS dub path."""
+import json
 import os
 
 from app import qwen_pipeline as qp
+from app.engines.base import TTSEngine
 
 
 def _cue(start, end, text, speaker):
@@ -67,6 +69,29 @@ def test_unknown_speaker_returns_none():
     assert qp.pick_speaker_ref_span(cues, "B") is None
 
 
+def test_a_reference_does_not_run_to_where_the_video_cuts_the_speaker_off():
+    """Trump (2026-10-04): the most speech was the last line, cut off by the
+    end of the clip ("...and it always will"), and the clone said "will"
+    before its next line. An earlier, slightly shorter window wins."""
+    cues = [
+        _cue(0.0, 5.0, "what I tell them you should put your country first", "A"),
+        _cue(5.0, 11.3, "whatever the country may be but for us it's America first and it always will", "A"),
+    ]
+    assert qp.pick_speaker_ref_span(cues, "A") == {"start": 0.0, "end": 5.0}
+
+
+def test_a_reference_that_ends_a_sentence_wins_over_more_speech():
+    """The Shuka lecture (2026-10-04): "...노태우 여권인데 제1기 신도시가" stops
+    mid-sentence, and the clone began lines with "가" or "아"."""
+    cues = [
+        _cue(0.0, 2.0, "사건이 1990년대에 펼쳐지거든요.", "A"),
+        _cue(2.0, 4.5, "그때 당시에 대통령이 누구였죠?", "A"),
+        _cue(4.5, 7.0, "노태우 여권인데 제1기 신도시가", "A"),
+        _cue(7.0, 9.0, "건설이 돼요.", "A"),
+    ]
+    assert qp.pick_speaker_ref_span(cues, "A") == {"start": 0.0, "end": 4.5}
+
+
 # --- speakers_in / map_segments_to_speakers --------------------------------
 
 def test_speakers_in_sorted_unique():
@@ -111,12 +136,13 @@ def test_build_speaker_refs_icl_mode_uses_cut_vocals_span_local_and_ref_text(mon
     assert captured["spans"] == [[0.0, 5.0]]
 
 
-def test_build_speaker_refs_timbre_mode_skips_ref_text_by_default(monkeypatch):
-    # Default mode (config.QWEN_VOICE_MODE == "timbre"): audio span still gets cut,
-    # but no transcript is assembled -- ref_text is None.
+def test_build_speaker_refs_timbre_mode_skips_ref_text(monkeypatch):
+    # Timbre mode: the audio span still gets cut, but no transcript is
+    # assembled -- ref_text is None. (The default is icl since 2026-10-03:
+    # tests/test_voice_reference.py.)
     ref_cues = [_cue(0.0, 5.0, "hello this is speaker A talking now", "A")]
     monkeypatch.setattr(qp, "cut_vocals_span_local", lambda vocals_path, spans: b"WAVBYTES" * 200)
-    refs = qp.build_speaker_refs(ref_cues, ["A"], "/local/vocals.wav")
+    refs = qp.build_speaker_refs(ref_cues, ["A"], "/local/vocals.wav", mode="timbre")
     assert "A" in refs
     assert refs["A"]["wav_bytes"] == b"WAVBYTES" * 200
     assert refs["A"]["ref_text"] is None
@@ -143,12 +169,15 @@ def test_build_speaker_refs_skips_empty_wav(monkeypatch):
     assert refs == {}
 
 
-# --- register_speaker_voices / synth_lines (mocked engine) -----------------
+# --- assign_voices / synth_lines (mocked engine) ---------------------------
 
-class _FakeEngine:
+class _FakeEngine(TTSEngine):
     def __init__(self):
         self.cloned = []
         self.synth_calls = []
+
+    def is_available(self):
+        return True
 
     def clone(self, ref_audio_path, ref_text, mode=None):
         self.cloned.append((ref_audio_path, ref_text, mode))
@@ -161,10 +190,10 @@ class _FakeEngine:
         return _Res()
 
 
-def test_register_speaker_voices_writes_ref_file_and_clones(tmp_path):
+def test_assign_voices_writes_ref_file_and_clones(tmp_path):
     engine = _FakeEngine()
     refs = {"A": {"wav_bytes": b"RIFFxxxx", "ref_text": "hi there", "span": {"start": 0, "end": 5}}}
-    voice_ids = qp.register_speaker_voices(engine, refs, str(tmp_path))
+    voice_ids = engine.assign_voices(refs, ["A"], str(tmp_path), lambda m: None)
     assert voice_ids == {"A": "voice-hi t"}
     assert len(engine.cloned) == 1
     path, ref_text, mode = engine.cloned[0]
@@ -395,7 +424,7 @@ def test_run_qwen_dub_orchestrates_full_flow(monkeypatch, tmp_path):
     placed = {}
 
     def fake_place_lines(background, line_paths, starts, out_path, gains=None,
-                         vocals_path=None, speech_regions=None, log=None):
+                         vocals_path=None, speech_regions=None, log=None, clipped=None):
         placed["background"] = background
         placed["line_paths"] = line_paths
         placed["starts"] = starts
@@ -459,7 +488,7 @@ def test_run_qwen_dub_safe_mode_flag_off_skips_whitelist(monkeypatch, tmp_path):
     monkeypatch.setattr(qp, "cut_vocals_span_local", lambda vocals_path, spans: b"REF" * 500)
 
     def fake_place_lines(background, line_paths, starts, out_path, gains=None,
-                         vocals_path=None, speech_regions=None, log=None):
+                         vocals_path=None, speech_regions=None, log=None, clipped=None):
         with open(out_path, "wb") as f:
             f.write(b"MIXED")
         return out_path
@@ -477,6 +506,58 @@ def test_run_qwen_dub_safe_mode_flag_off_skips_whitelist(monkeypatch, tmp_path):
     assert whitelisted == []
 
 
+def test_run_qwen_dub_writes_no_clips_when_place_lines_cut_nothing(monkeypatch, tmp_path):
+    ref_cues = [_cue(0.0, 5.0, "hello this is speaker A talking a lot right now", "A")]
+    segments = [{"start": 0.5, "end": 2.0, "text": "translated line"}]
+    monkeypatch.setattr(qp, "cut_vocals_span_local", lambda vocals_path, spans: b"REF" * 500)
+
+    def fake_place_lines(background, line_paths, starts, out_path, gains=None,
+                         vocals_path=None, speech_regions=None, log=None, clipped=None):
+        with open(out_path, "wb") as f:
+            f.write(b"MIXED")
+        return out_path
+
+    monkeypatch.setattr(qp, "place_lines", fake_place_lines)
+    monkeypatch.setattr(qp, "match_line_gains", lambda vocals_wav, cues, line_wavs: [2.5])
+    monkeypatch.setattr(qp, "apply_nonverbal_whitelist", lambda *a, **k: {})
+
+    qp.run_qwen_dub(_FakeEngine(), segments, ref_cues, str(tmp_path),
+                    vocals_path="/local/vocals.wav", background_path="/local/background.wav",
+                    language="Korean")
+
+    with open(os.path.join(str(tmp_path), "clipped_lines.json"), encoding="utf-8") as f:
+        assert json.load(f) == {"clipped": [], "clipped_count": 0}
+
+
+def test_run_qwen_dub_carries_place_lines_clips_into_the_sidecar_file(monkeypatch, tmp_path):
+    # What the UI will later read: line 0 cut short by 0.4s, recorded by
+    # place_lines (app/qwen_assemble.py) into the shared `clipped` list this
+    # function passes it, then saved here so app/pipeline.py's run_dub can
+    # fold it into the job's result data.
+    ref_cues = [_cue(0.0, 5.0, "hello this is speaker A talking a lot right now", "A")]
+    segments = [{"start": 0.5, "end": 2.0, "text": "translated line"}]
+    monkeypatch.setattr(qp, "cut_vocals_span_local", lambda vocals_path, spans: b"REF" * 500)
+
+    def fake_place_lines(background, line_paths, starts, out_path, gains=None,
+                         vocals_path=None, speech_regions=None, log=None, clipped=None):
+        if clipped is not None:
+            clipped.append({"line": 0, "cut_s": 0.4})
+        with open(out_path, "wb") as f:
+            f.write(b"MIXED")
+        return out_path
+
+    monkeypatch.setattr(qp, "place_lines", fake_place_lines)
+    monkeypatch.setattr(qp, "match_line_gains", lambda vocals_wav, cues, line_wavs: [2.5])
+    monkeypatch.setattr(qp, "apply_nonverbal_whitelist", lambda *a, **k: {})
+
+    qp.run_qwen_dub(_FakeEngine(), segments, ref_cues, str(tmp_path),
+                    vocals_path="/local/vocals.wav", background_path="/local/background.wav",
+                    language="Korean")
+
+    with open(os.path.join(str(tmp_path), "clipped_lines.json"), encoding="utf-8") as f:
+        assert json.load(f) == {"clipped": [{"line": 0, "cut_s": 0.4}], "clipped_count": 1}
+
+
 def test_run_qwen_dub_preserve_mode_passes_vocals_path_for_gating(monkeypatch, tmp_path):
     # Opt-in QWEN_GATE_MODE="preserve": the original vocals track DOES reach
     # place_lines (for the gated laughter/breaths-preserving path).
@@ -490,7 +571,7 @@ def test_run_qwen_dub_preserve_mode_passes_vocals_path_for_gating(monkeypatch, t
     placed = {}
 
     def fake_place_lines(background, line_paths, starts, out_path, gains=None,
-                         vocals_path=None, speech_regions=None, log=None):
+                         vocals_path=None, speech_regions=None, log=None, clipped=None):
         placed["vocals_path"] = vocals_path
         placed["speech_regions"] = speech_regions
         with open(out_path, "wb") as f:
@@ -524,7 +605,7 @@ def test_run_qwen_dub_company_mode_layers_ambience_and_disables_whitelist(monkey
     placed = {}
 
     def fake_place_lines(background, line_paths, starts, out_path, gains=None,
-                         vocals_path=None, speech_regions=None, log=None):
+                         vocals_path=None, speech_regions=None, log=None, clipped=None):
         placed["vocals_path"] = vocals_path
         with open(out_path, "wb") as f:
             f.write(b"MIXED")
@@ -588,7 +669,7 @@ def test_run_qwen_dub_company_mode_uses_trimmed_placed_spans(monkeypatch, tmp_pa
     monkeypatch.setattr(qp, "match_line_gains", lambda *a: [1.0])
 
     def fake_place_lines(background, line_paths, starts, out_path, gains=None,
-                         vocals_path=None, speech_regions=None, log=None):
+                         vocals_path=None, speech_regions=None, log=None, clipped=None):
         with open(out_path, "wb") as f:
             f.write(b"MIXED")
         return out_path
@@ -616,7 +697,7 @@ def test_run_qwen_dub_falls_back_to_single_speaker_when_unlabeled(monkeypatch, t
     monkeypatch.setattr(qp, "cut_vocals_span_local", lambda vocals_path, spans: b"REF" * 500)
 
     def fake_place_lines(background, line_paths, starts, out_path, gains=None,
-                         vocals_path=None, speech_regions=None, log=None):
+                         vocals_path=None, speech_regions=None, log=None, clipped=None):
         with open(out_path, "wb") as f:
             f.write(b"MIXED")
         return out_path
@@ -736,12 +817,11 @@ def test_run_qwen_dub_fails_when_no_line_synthesizes(monkeypatch, tmp_path):
     import pytest
 
     monkeypatch.setattr(qp, "build_speaker_refs", lambda *a, **k: {})
-    monkeypatch.setattr(qp, "register_speaker_voices", lambda *a, **k: {})
     monkeypatch.setattr(qp, "write_speaker_refs_manifest", lambda *a, **k: None)
     monkeypatch.setattr(qp, "synth_lines", lambda *a, **k: [None, None])
     segments = [_cue(0.0, 1.0, "a", "A"), _cue(1.0, 2.0, "b", "A")]
     with pytest.raises(RuntimeError, match="synthesized"):
-        qp.run_qwen_dub(None, segments, segments, str(tmp_path), "/v.wav", "/b.wav")
+        qp.run_qwen_dub(_FakeEngine(), segments, segments, str(tmp_path), "/v.wav", "/b.wav")
 
 
 # --- a line left untranslated stays silent ------------------------------------
@@ -826,3 +906,509 @@ def test_ultra_short_lines_do_not_merge_across_an_untranslated_one(tmp_path):
                            str(tmp_path), usable_slots=[1.0, 0.3, 0.3])
     assert [c.text for c in engine.synth_calls] == ["zero", "two"]
     assert paths[1] is None and paths[0] and paths[2]
+
+
+def test_rebuild_dub_rewrites_which_lines_were_cut_short(monkeypatch, tmp_path):
+    """A remade voice has a new length; the record of cut lines must follow it."""
+    (tmp_path / "background.wav").write_bytes(b"")
+    (tmp_path / "clipped_lines.json").write_text(
+        json.dumps({"clipped": [{"line": 1, "cut_s": 0.9}], "clipped_count": 1}))
+
+    def place(bg, paths, starts, out, gains=None, log=None, clipped=None):
+        clipped.append({"line": 2, "cut_s": 0.3})   # line 1 fits now, line 2 does not
+
+    class Ok:
+        returncode = 0
+    monkeypatch.setattr(qp, "place_lines", place)
+    monkeypatch.setattr(qp.media, "mux", lambda *a: Ok())
+    monkeypatch.setattr(qp.media, "video_duration", lambda p: 1.0)
+    monkeypatch.setattr(qp.media, "ensure_video_length", lambda *a: None)
+
+    qp.rebuild_dub(str(tmp_path), {"lines": [{"i": 0, "start": 0}, {"i": 1, "start": 2}]},
+                   str(tmp_path / "in.mp4"), str(tmp_path / "out.mp4"))
+
+    assert json.loads((tmp_path / "clipped_lines.json").read_text()) == {
+        "clipped": [{"line": 2, "cut_s": 0.3}], "clipped_count": 1}
+
+
+
+def test_a_qwen_line_loses_the_stray_sound_before_its_sentence(tmp_path):
+    # Qwen3-TTS opened 6.5% of lines with a short sound in the cloned voice,
+    # a pause, then the sentence (2026-10-01): the file starts at the sentence.
+    import wave
+
+    from tests.test_lead_burst import _wav
+
+    class _BurstEngine(_FakeEngine):
+        needs_spoken_numbers = adds_stray_sounds = free_retakes = True   # as Qwen3-TTS
+
+        def synthesize(self, req):
+            self.synth_calls.append(req)
+            class _Res:
+                audio_bytes = _wav([(0.2, 4000), (0.6, 0), (1.5, 9000)])
+            return _Res()
+
+    logs = []
+    paths = qp.synth_lines(_BurstEngine(), [{"text": "Me siento orgulloso."}], ["A"], {"A": "v"},
+                           "Spanish", str(tmp_path), log=logs.append)
+    with wave.open(paths[0]) as w:
+        assert abs(w.getnframes() / w.getframerate() - 1.55) < 0.05
+    assert any("cut a stray sound before the sentence" in m for m in logs)
+
+
+# --- Fast mode hears every line back (2026-10-01) ---------------------------
+
+class _QwenWavEngine(_FakeEngine):
+    """Answers with 1s of tone and records each seed asked for."""
+    needs_spoken_numbers = adds_stray_sounds = free_retakes = True   # as Qwen3-TTS
+
+    def synthesize(self, req):
+        from tests.test_lead_burst import _wav
+        self.synth_calls.append(req)
+        class _Res:
+            audio_bytes = _wav([(1.0, 9000 if req.seed < 100000 else 5000)])
+        return _Res()
+
+
+def _fake_heard(answers):
+    """transcribe_batch stand-in: what was 'heard' in each file, by its name."""
+    def run(paths, language=None, timeout=None):
+        run.languages.append(language)
+        return {p: answers(os.path.basename(p)) for p in paths}
+    run.languages = []
+    return run
+
+
+def test_fast_line_with_added_words_is_made_again_and_the_clean_try_kept(monkeypatch, tmp_path):
+    heard = _fake_heard(lambda name: "get get get get get going hurry" if name == "qwen_line_0.wav"
+                        else "get going hurry")
+    monkeypatch.setattr(qp, "transcribe_batch", heard)
+    engine = _QwenWavEngine()
+    logs = []
+    segments = [{"start": 0.0, "end": 1.0, "text": "get going. Hurry"}]
+    paths = qp.synth_lines(engine, segments, ["A"], {"A": "v"}, "English", str(tmp_path),
+                           usable_slots=[2.5], log=logs.append)
+    assert [c.seed for c in engine.synth_calls] == [0, 100]
+    assert paths == [str(tmp_path / "qwen_line_0.wav")]
+    assert heard.languages == ["en", "en"]
+    assert any("line 0: heard" in m and "made again" in m for m in logs)
+    assert sorted(f for f in os.listdir(tmp_path) if f.startswith("qwen_")) == ["qwen_line_0.wav"]
+
+
+def test_fast_line_that_never_comes_out_right_keeps_the_closest_try(monkeypatch, tmp_path):
+    words = {"qwen_line_0.wav": "G G G G G hear my call", "qwen_line_0_r1.wav": "zzz",
+             "qwen_line_0_r2.wav": "Ginu Ginu can"}
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: words[name]))
+    engine = _QwenWavEngine()
+    logs = []
+    qp.synth_lines(engine, [{"text": "Ginu! Ginu! Can you hear my call?"}], ["A"], {"A": "v"},
+                           "English", str(tmp_path), usable_slots=[3.0], log=logs.append)
+    assert [c.seed for c in engine.synth_calls] == [0, 100, 200]
+    assert any("no try came out right, kept the closest" in m for m in logs)
+    assert [f for f in os.listdir(tmp_path) if f.startswith("qwen_")] == ["qwen_line_0.wav"]
+
+
+def test_fast_check_without_whisper_leaves_the_lines_as_made(monkeypatch, tmp_path):
+    monkeypatch.setattr(qp, "transcribe_batch", lambda paths, language=None, timeout=None: None)
+    engine = _QwenWavEngine()
+    logs = []
+    paths = qp.synth_lines(engine, [{"text": "hello"}], ["A"], {"A": "v"}, "Korean", str(tmp_path),
+                           usable_slots=[3.0], log=logs.append)
+    assert len(engine.synth_calls) == 1 and os.path.exists(paths[0])
+    assert any("line check skipped" in m for m in logs)
+
+
+def test_fast_check_is_for_qwen_only(monkeypatch, tmp_path):
+    def boom(*a, **k):
+        raise AssertionError("a line from an engine without free retakes is not heard back")
+    monkeypatch.setattr(qp, "transcribe_batch", boom)
+    qp.synth_lines(_FakeEngine(), [{"text": "hello"}], ["A"], {"A": "v"}, "Korean", str(tmp_path))
+
+
+# --- Fast mode: a short line is made three times (2026-10-02) ----------------
+
+class _TakesEngine(_FakeEngine):
+    """Answers each seed with a tone of the length given for it."""
+    needs_spoken_numbers = adds_stray_sounds = free_retakes = True   # as Qwen3-TTS
+
+    def __init__(self, secs_by_seed):
+        super().__init__()
+        self.secs_by_seed = secs_by_seed
+
+    def synthesize(self, req):
+        from tests.test_lead_burst import _wav
+        self.synth_calls.append(req)
+        secs = self.secs_by_seed[req.seed]
+        class _Res:
+            audio_bytes = _wav([(secs, 9000)])
+        return _Res()
+
+
+def _secs(path):
+    import wave
+    with wave.open(path) as w:
+        return w.getnframes() / float(w.getframerate())
+
+
+def test_short_line_keeps_the_take_that_says_its_text_and_fits(monkeypatch, tmp_path):
+    words = {"qwen_line_0.wav": "come here", "qwen_line_0_s1.wav": "come come come here",
+             "qwen_line_0_s2.wav": "come here"}
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: words[name]))
+    engine = _TakesEngine({0: 1.8, 1: 1.1, 2: 1.2})
+    paths = qp.synth_lines(engine, [{"text": "Come here!"}], ["A"], {"A": "v"}, "English", str(tmp_path),
+                           usable_slots=[1.2])
+    assert [c.seed for c in engine.synth_calls] == [0, 1, 2]
+    assert abs(_secs(paths[0]) - 1.2) < 0.03          # 1.8s runs past 1.1x, take 2 stutters
+    assert [f for f in os.listdir(tmp_path) if f.startswith("qwen_")] == ["qwen_line_0.wav"]
+
+
+def test_short_line_keeps_the_fitting_take_closest_to_its_slot(monkeypatch, tmp_path):
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: "come here"))
+    engine = _TakesEngine({0: 0.6, 1: 1.5, 2: 1.0})
+    paths = qp.synth_lines(engine, [{"text": "Come here!"}], ["A"], {"A": "v"}, "English", str(tmp_path),
+                           usable_slots=[1.2])
+    assert abs(_secs(paths[0]) - 1.0) < 0.03
+
+
+def test_a_line_with_a_longer_slot_is_made_once(monkeypatch, tmp_path):
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: "come here"))
+    engine = _TakesEngine({0: 1.0})
+    qp.synth_lines(engine, [{"text": "Come here!"}], ["A"], {"A": "v"}, "English", str(tmp_path),
+                   usable_slots=[2.0])
+    assert [c.seed for c in engine.synth_calls] == [0]
+
+
+# --- Fast mode: a sound right before or after the sentence (2026-10-02) ------
+
+class _StrayEngine(_FakeEngine):
+    """Seed 0 opens with a short quiet sound and a 0.24s dip; others do not."""
+    needs_spoken_numbers = adds_stray_sounds = free_retakes = True   # as Qwen3-TTS
+
+    def synthesize(self, req):
+        from tests.test_lead_burst import _wav
+        self.synth_calls.append(req)
+        parts = [(0.12, 2000), (0.24, 0), (1.5, 9000)] if req.seed == 0 else [(1.5, 9000)]
+        class _Res:
+            audio_bytes = _wav(parts)
+        return _Res()
+
+
+def test_fast_line_loses_a_stray_sound_whisper_does_not_miss(monkeypatch, tmp_path):
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: "come here"))
+    engine = _StrayEngine()
+    logs = []
+    paths = qp.synth_lines(engine, [{"text": "Come here!"}], ["A"], {"A": "v"}, "English", str(tmp_path),
+                           usable_slots=[3.0], log=logs.append)
+    assert [c.seed for c in engine.synth_calls] == [0]
+    assert abs(_secs(paths[0]) - 1.55) < 0.03
+    assert any("cut a stray sound next to the sentence" in m for m in logs)
+    assert [f for f in os.listdir(tmp_path) if f.startswith("qwen_")] == ["qwen_line_0.wav"]
+
+
+def test_fast_line_whose_edge_sound_sits_too_close_to_cut_is_made_again(monkeypatch, tmp_path):
+    # "Com-paring" (2026-10-07): the sound is a syllable's shape away from the
+    # sentence, so no cut is tried; the line is made again and the clean try kept.
+    class _CloseEngine(_StrayEngine):
+        def synthesize(self, req):
+            from tests.test_lead_burst import _wav
+            self.synth_calls.append(req)
+            parts = [(0.12, 2000), (0.12, 0), (1.5, 9000)] if req.seed == 0 else [(1.5, 9000)]
+            class _Res:
+                audio_bytes = _wav(parts)
+            return _Res()
+
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: "come here"))
+    engine = _CloseEngine()
+    logs = []
+    paths = qp.synth_lines(engine, [{"text": "Come here!"}], ["A"], {"A": "v"}, "English", str(tmp_path),
+                           usable_slots=[3.0], log=logs.append)
+    assert [c.seed for c in engine.synth_calls] == [0, 100]
+    assert abs(_secs(paths[0]) - 1.5) < 0.03
+    assert any("set apart at its start or end - made again" in m for m in logs)
+    assert not any("cut a stray sound next to the sentence" in m for m in logs)
+
+
+def test_fast_line_whose_edge_sound_is_part_of_a_word_is_made_again(monkeypatch, tmp_path):
+    # Without the sound Whisper hears less: it was a word said with a gap in
+    # it ("있 ... 어요"), so the line is made again and the clean try kept.
+    words = {"qwen_line_0.wav": "come here", "qwen_line_0_e.wav": "come",
+             "qwen_line_0_r1.wav": "come here"}
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: words[name]))
+    engine = _StrayEngine()
+    logs = []
+    paths = qp.synth_lines(engine, [{"text": "Come here!"}], ["A"], {"A": "v"}, "English", str(tmp_path),
+                           usable_slots=[3.0], log=logs.append)
+    assert [c.seed for c in engine.synth_calls] == [0, 100]
+    assert abs(_secs(paths[0]) - 1.5) < 0.03
+    assert any("set apart at its start or end - made again" in m for m in logs)
+    assert [f for f in os.listdir(tmp_path) if f.startswith("qwen_")] == ["qwen_line_0.wav"]
+
+
+def test_fast_line_heard_without_its_first_word_is_made_again(monkeypatch, tmp_path):
+    # The lead cut took "We'll" with it and Whisper still matched 0.97 (2026-10-07).
+    words = {"qwen_line_0.wav": "start with the brain", "qwen_line_0_r1.wav": "we will start with the brain"}
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: words[name]))
+    engine = _QwenWavEngine()
+    logs = []
+    qp.synth_lines(engine, [{"text": "We'll start with the brain."}], ["A"], {"A": "v"}, "English",
+                   str(tmp_path), usable_slots=[4.0], log=logs.append)
+    assert [c.seed for c in engine.synth_calls] == [0, 100]
+    assert any("its first or last word was not heard - made again" in m for m in logs)
+    assert [f for f in os.listdir(tmp_path) if f.startswith("qwen_")] == ["qwen_line_0.wav"]
+
+
+def test_an_edge_cut_that_loses_the_first_word_is_not_kept(monkeypatch, tmp_path):
+    # Heard better without the edge sound only because the stutter went too: the
+    # cut copy no longer says "come", so it is not kept and the line is made again.
+    words = {"qwen_line_0.wav": "come here now now now now now", "qwen_line_0_e.wav": "here now",
+             "qwen_line_0_r1.wav": "come here now"}
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: words[name]))
+    engine = _StrayEngine()
+    logs = []
+    paths = qp.synth_lines(engine, [{"text": "Come here now!"}], ["A"], {"A": "v"}, "English", str(tmp_path),
+                           usable_slots=[3.0], log=logs.append)
+    assert not any("cut a stray sound next to the sentence" in m for m in logs)
+    assert [c.seed for c in engine.synth_calls] == [0, 100]
+    assert abs(_secs(paths[0]) - 1.5) < 0.03
+
+
+def test_voice_samples_are_cut_from_the_sample_cues_when_given(monkeypatch, tmp_path):
+    """The Shuka lecture (2026-10-04): merged into lines of 9, 9 and 7 s, its
+    only line short enough for a sample was the last, cut off by the end of
+    the video mid-sentence. The transcript's own lines give a sample that
+    ends a sentence before that."""
+    ref_cues = [_cue(0.0, 9.0, "그때 당시에 대통령이 누구였죠? 노태우 여권인데 제1기 신도시가", "A")]
+    sample_cues = [_cue(0.0, 4.5, "그때 당시에 대통령이 누구였죠?", "A"),
+                   _cue(4.5, 9.0, "노태우 여권인데 제1기 신도시가", "A")]
+    segments = [{"start": 0.5, "end": 2.0, "text": "translated line"}]
+    cut = []
+    monkeypatch.setattr(qp, "cut_vocals_span_local", lambda vocals_path, spans: cut.append(spans) or b"REF" * 500)
+
+    def fake_place_lines(background, line_paths, starts, out_path, **k):
+        with open(out_path, "wb") as f:
+            f.write(b"MIXED")
+        return out_path
+
+    monkeypatch.setattr(qp, "place_lines", fake_place_lines)
+    monkeypatch.setattr(qp, "match_line_gains", lambda vocals_wav, cues, line_wavs: [1.0])
+    monkeypatch.setattr(qp, "apply_nonverbal_whitelist", lambda *a, **k: {})
+    engine = _FakeEngine()
+    qp.run_qwen_dub(engine, segments, ref_cues, str(tmp_path),
+                    vocals_path="/local/vocals.wav", background_path="/local/background.wav",
+                    language="Korean", sample_cues=sample_cues)
+    assert cut == [[[0.0, 4.5]]]
+    refs = json.load(open(tmp_path / "speaker_refs.json", encoding="utf-8"))
+    assert refs["A"]["ref_text"] == "그때 당시에 대통령이 누구였죠?"
+
+
+# --- A line in another voice is made again (2026-10-06) ----------------------
+
+def _fake_embedder(vectors):
+    """_embed_files stand-in: a fixed unit vector per file name."""
+    def run(paths):
+        run.calls.append(list(paths))
+        return [vectors(os.path.basename(p)) for p in paths], [1.0] * len(paths)
+    run.calls = []
+    return run
+
+
+def test_fast_line_in_another_voice_is_made_again_and_the_speakers_voice_kept(monkeypatch, tmp_path):
+    # The anchor briefing came out as different people line by line, though
+    # every line said its words (2026-10-06): the check heard the words and
+    # never the voice. Against the speaker's reference, lines that drifted
+    # measured 0.07-0.49 and lines that did not 0.52-0.81 (160 lines).
+    from tests.test_lead_burst import _wav
+    (tmp_path / "qwen_ref_A.wav").write_bytes(_wav([(1.0, 9000)]))
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: "get going hurry"))
+    embed = _fake_embedder(lambda name: [0.3, 0.954] if name == "qwen_line_0.wav" else [1.0, 0.0])
+    monkeypatch.setattr(qp, "_embed_files", embed)
+    engine = _QwenWavEngine()
+    logs = []
+    paths = qp.synth_lines(engine, [{"text": "get going. Hurry"}], ["A"], {"A": "v"}, "English",
+                           str(tmp_path), usable_slots=[2.5], log=logs.append)
+    assert [c.seed for c in engine.synth_calls] == [0, 100]
+    assert any("line 0: its voice is unlike the speaker's (0.30) - made again" in m for m in logs)
+    assert embed.calls[0][0].endswith("qwen_ref_A.wav")
+    assert paths == [str(tmp_path / "qwen_line_0.wav")]
+    assert sorted(f for f in os.listdir(tmp_path) if f.startswith("qwen_line")) == ["qwen_line_0.wav"]
+
+
+def test_fast_line_in_another_voice_every_time_keeps_the_closest_voice(monkeypatch, tmp_path):
+    from tests.test_lead_burst import _wav
+    (tmp_path / "qwen_ref_A.wav").write_bytes(_wav([(1.0, 9000)]))
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: "get going hurry"))
+    near = {"qwen_line_0.wav": [0.1, 0.995], "qwen_line_0_r1.wav": [0.45, 0.893], "qwen_line_0_r2.wav": [0.2, 0.98]}
+    monkeypatch.setattr(qp, "_embed_files", _fake_embedder(lambda name: near.get(name, [1.0, 0.0])))
+    made = {}
+    real_replace = qp.shutil.copyfile
+    monkeypatch.setattr(qp.shutil, "copyfile", lambda a, b: made.setdefault("kept", os.path.basename(a)) and real_replace(a, b))
+    logs = []
+    qp.synth_lines(_QwenWavEngine(), [{"text": "get going. Hurry"}], ["A"], {"A": "v"}, "English",
+                   str(tmp_path), usable_slots=[2.5], log=logs.append)
+    assert made["kept"] == "qwen_line_0_r1.wav"
+    assert any("no try came out right" in m and "voice 0.45" in m for m in logs)
+
+
+def test_fast_check_without_cam_keeps_the_lines_the_words_check_passed(monkeypatch, tmp_path):
+    from tests.test_lead_burst import _wav
+    (tmp_path / "qwen_ref_A.wav").write_bytes(_wav([(1.0, 9000)]))
+    monkeypatch.setattr(qp, "transcribe_batch", _fake_heard(lambda name: "get going hurry"))
+    engine = _QwenWavEngine()
+    logs = []
+    qp.synth_lines(engine, [{"text": "get going. Hurry"}], ["A"], {"A": "v"}, "English",
+                   str(tmp_path), usable_slots=[2.5], log=logs.append)
+    assert len(engine.synth_calls) == 1
+    assert any("voice check skipped" in m for m in logs)
+
+
+def test_a_made_line_never_starts_with_a_click(tmp_path):
+    import struct
+
+    from tests.test_lead_burst import _first_ms_peak
+
+    class _LoudStartEngine(_FakeEngine):
+        needs_spoken_numbers = adds_stray_sounds = free_retakes = True   # as Qwen3-TTS
+
+        def synthesize(self, req):
+            from tests.test_lead_burst import _wav
+            w = _wav([(1.0, 0)])
+            class _Res:
+                audio_bytes = w[:44] + b"".join(struct.pack("<h", 9000) for _ in range(len(w[44:]) // 2))
+            return _Res()
+
+    paths = qp.synth_lines(_LoudStartEngine(), [{"text": "hello"}], ["A"], {"A": "v"}, "English",
+                           str(tmp_path), log=lambda m: None)
+    assert _first_ms_peak(open(paths[0], "rb").read(), 1) < 1000
+
+
+# --- The voice sample's own words leaking in its language (2026-10-06) -------
+
+def _refs_json(tmp_path, ref_text):
+    import json
+    with open(tmp_path / "speaker_refs.json", "w", encoding="utf-8") as f:
+        json.dump({"A": {"ref_wav": "qwen_ref_A.wav", "ref_text": ref_text}}, f, ensure_ascii=False)
+
+
+class _PieceEngine(_FakeEngine):
+    """Answers with 0.6 s of sound, 0.5 s quiet, then the sentence; a remake
+    (any seed past the first) with the sentence alone."""
+    needs_spoken_numbers = adds_stray_sounds = free_retakes = True   # as Qwen3-TTS
+
+    def synthesize(self, req):
+        from tests.test_lead_burst import _wav
+        self.synth_calls.append(req)
+        audio = _wav([(0.6, 6000), (0.5, 0), (2.0, 9000)]) if req.seed == 0 else _wav([(2.0, 9000)])
+        class _Res:
+            audio_bytes = audio
+        return _Res()
+
+
+def test_a_line_opening_with_the_voice_samples_last_words_is_made_again(monkeypatch, tmp_path):
+    # "…살아왔는지가 보입니다" was the Korean voice sample; English line 8
+    # opened with "(보)입니다", which the English-only check could not hear.
+    _refs_json(tmp_path, "뇌 MRI를 보면 그동안 이 사람이 어떻게 살아왔는지가 보입니다")
+    heard = _fake_heard(lambda name: "손입니다" if "_p" in name else "this shows blockages")
+    monkeypatch.setattr(qp, "transcribe_batch", heard)
+    engine = _PieceEngine()
+    logs = []
+    qp.synth_lines(engine, [{"text": "This shows blockages."}], ["A"], {"A": "v"}, "English",
+                   str(tmp_path), usable_slots=[4.0], log=logs.append)
+    assert [c.seed for c in engine.synth_calls] == [0, 100]
+    assert "ko" in heard.languages
+    assert any("line 0: the voice sample's own words were heard (" in m for m in logs)
+    # How much was heard, not what: the job log goes out with a failure report,
+    # and docs/privacy.md says the logs never record what was said (2026-10-12).
+    assert any("line 0: the voice sample's own words were heard (4 characters)" in m for m in logs)
+    assert not any("손입니다" in m for m in logs)
+    assert not [f for f in os.listdir(tmp_path) if "_p" in f]
+
+
+def test_a_piece_that_is_not_the_voice_samples_words_is_left(monkeypatch, tmp_path):
+    _refs_json(tmp_path, "뇌 MRI를 보면 그동안 이 사람이 어떻게 살아왔는지가 보입니다")
+    monkeypatch.setattr(qp, "transcribe_batch",
+                        _fake_heard(lambda name: "디스" if "_p" in name else "this shows blockages"))
+    engine = _PieceEngine()
+    qp.synth_lines(engine, [{"text": "This shows blockages."}], ["A"], {"A": "v"}, "English",
+                   str(tmp_path), usable_slots=[4.0], log=lambda m: None)
+    assert [c.seed for c in engine.synth_calls] == [0]
+
+
+def test_a_sample_in_the_same_script_as_the_line_is_not_heard_twice(monkeypatch, tmp_path):
+    _refs_json(tmp_path, "and that is how it always will be")
+    heard = _fake_heard(lambda name: "will be" if "_p" in name else "esto muestra bloqueos")
+    monkeypatch.setattr(qp, "transcribe_batch", heard)
+    qp.synth_lines(_PieceEngine(), [{"text": "Esto muestra bloqueos."}], ["A"], {"A": "v"}, "Spanish",
+                   str(tmp_path), usable_slots=[4.0], log=lambda m: None)
+    assert heard.languages == ["es"]
+
+
+def test_whisper_making_up_a_polite_ending_in_a_quiet_piece_is_not_a_leak(monkeypatch, tmp_path):
+    # Whisper hears "감사합니다" or "다음 영상에서 만나요" in short quiet
+    # pieces of many lines (2026-10-06). Two letters in common with the
+    # sample's end ("니다" of "보입니다") is a made-up ending, not the sample.
+    _refs_json(tmp_path, "뇌 MRI를 보면 그동안 이 사람이 어떻게 살아왔는지가 보입니다")
+    monkeypatch.setattr(qp, "transcribe_batch",
+                        _fake_heard(lambda name: "감사합니다." if "_p" in name else "this shows blockages"))
+    engine = _PieceEngine()
+    qp.synth_lines(engine, [{"text": "This shows blockages."}], ["A"], {"A": "v"}, "English",
+                   str(tmp_path), usable_slots=[4.0], log=lambda m: None)
+    assert [c.seed for c in engine.synth_calls] == [0]
+
+
+# --- A line starts where its cue starts (2026-10-06) ---------------------------
+
+def test_a_line_longer_than_its_slot_still_starts_where_the_speaker_did(monkeypatch, tmp_path):
+    # A line whose voice runs into the next line used to be started up to 0.8 s
+    # before its cue to spare its last word (the leading-pause borrow). The
+    # owner heard the dub speak before the mouth moved and ruled it out: a
+    # line starts where the speaker started, and what does not fit is sped up
+    # or cut, never moved.
+    from tests.test_lead_burst import _wav
+
+    class _LongVoice(TTSEngine):
+        id = "cloud"
+
+        def assign_voices(self, refs, speakers, work_dir, log, mode=None):
+            return {s: "voice-" + s for s in speakers}
+
+        def is_available(self):
+            return True
+
+        def synthesize(self, req):
+            from app.engines.base import SynthesisResult
+            return SynthesisResult(audio_bytes=_wav([(3.0, 9000)]), duration=3.0)
+
+    segments = [{"start": 4.0, "end": 5.0, "text": "one"}, {"start": 10.0, "end": 11.5, "text": "two"},
+                {"start": 12.0, "end": 13.0, "text": "three"}]
+    cues = [dict(s, speaker_id="A") for s in segments]
+    monkeypatch.setattr(qp, "build_speaker_refs", lambda *a, **k: {})
+    monkeypatch.setattr(qp, "match_line_gains", lambda *a, **k: [1.0, 1.0, 1.0])
+    placed = {}
+    monkeypatch.setattr(qp, "place_lines", lambda bg, paths, starts, out, **k: placed.update(starts=starts))
+    monkeypatch.setattr(qp, "QWEN_GATE_MODE", "preserve")
+    qp.run_qwen_dub(_LongVoice(), segments, cues, str(tmp_path), "v.wav", "bg.wav", language="English",
+                    log=lambda m: None)
+    assert placed["starts"] == [4.0, 10.0, 12.0]
+
+
+def test_synth_lines_restarts_a_bloated_engine_between_lines(tmp_path):
+    # The engine's memory is read before every line; past ENGINE_RESTART_MB it
+    # is started again (and its voices cloned again), then the line is made.
+    class _BigEngine(_FakeEngine):
+        def __init__(self):
+            super().__init__()
+            self.readings = [qp.ENGINE_RESTART_MB - 1, qp.ENGINE_RESTART_MB + 1, 100]
+            self.restarts = 0
+        def memory_mb(self):
+            return self.readings.pop(0) if self.readings else 100
+        def restart(self):
+            self.restarts += 1
+
+    engine = _BigEngine()
+    logs = []
+    segments = [{"text": "line zero"}, {"text": "line one"}, {"text": "line two"}]
+    paths = qp.synth_lines(engine, segments, ["A"] * 3, {"A": "vidA"}, "Korean", str(tmp_path), log=logs.append)
+    assert engine.restarts == 1
+    assert all(paths)
+    assert [req.text for req in engine.synth_calls] == ["line zero", "line one", "line two"]
+    assert any("starting it again" in m for m in logs)

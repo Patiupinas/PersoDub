@@ -66,7 +66,7 @@ def test_get_reports_unset_keys(tmp_path, monkeypatch):
     assert body == {"gemini_key_set": False, "perso_key_set": False,
                     "gemini_api_key": None, "perso_api_key": None,
                     "perso_space_seq": None, "analytics_off": False,
-                    "reports_off": False}
+                    "reports_off": False, "ui_language": "auto"}
 
 
 def test_get_carries_the_utm_tagged_signup_link(tmp_path, monkeypatch):

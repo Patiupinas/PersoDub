@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, truncateSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   buildSteps, writeKitEnv, PYTHON_URL, PYTHON_SHA256, CAMPPLUS_SHA256,
   OLLAMA_TGZ_SHA256, bytesStillNeeded, STEP_IDS, MODEL_MARKERS,
-  OPTIONAL_MODEL_MARKERS, baseSteps, packSteps, packInstalled, PACK_DIRS,
-  ERASER_SRC_URL, ERASER_SRC_SHA256, syncEraserKitEnv,
+  OPTIONAL_MODEL_MARKERS, baseSteps, packSteps, packInstalled, bootSteps, PACK_DIRS,
+  ERASER_SRC_URL, ERASER_SRC_SHA256, syncEraserKitEnv, WHISPER_BASE_PT_BYTES,
 } from "./installSpec.js";
 import { runInstall } from "./installer.js";
 import { IS_WIN, venvBin, exeName, TTS_DEVICE, TORCH_VARIANT } from "./platform.js";
@@ -78,6 +78,16 @@ test("packInstalled means the pack's stamp: a folder without it is a paused pack
   assert.equal(packInstalled(ctx.kitDir, "engine"), true);
 });
 
+test("the boot install is the base steps plus only the packs already on the kit's disk", () => {
+  const ctx = freshCtx();
+  const steps = buildSteps(ctx);
+  assert.deepEqual(bootSteps(steps, ctx.kitDir).map((s) => s.id), baseSteps(steps).map((s) => s.id));
+  mkdirSync(join(ctx.kitDir, ".install"), { recursive: true });
+  writeFileSync(join(ctx.kitDir, ".install", "venv-eraser.ok"), "fp");
+  assert.deepEqual(bootSteps(steps, ctx.kitDir).map((s) => s.id),
+    ["payload", "python", "venv-app", "ffmpeg", "cleanup", "kit-env", "eraser-src", "venv-eraser"]);
+});
+
 test("ollama-runtime step downloads and extracts the runtime, never pulls a model", async () => {
   // The Gemma pull moved to the in-app model catalog (the Python server
   // downloads it on first use); the installer lays down the runtime only.
@@ -106,6 +116,14 @@ test("ollama-runtime step is done once the ollama binary exists, no manifest nee
   mkdirSync(join(ctx.kitDir, "ollama"), { recursive: true });
   writeFileSync(join(ctx.kitDir, "ollama", exeName("ollama")), "");
   assert.equal(byId(ctx)["ollama-runtime"].isDone(), true);
+});
+
+// Windows measured 1.5-1.9 GB on disk once unpacked; the old flat 0.5 GB
+// budget let a Windows install start this step without enough room left.
+test("ollama-runtime budget follows the platform (Windows needs more room)", () => {
+  const GB = 1024 ** 3;
+  const expected = IS_WIN ? 2.0 * GB : 0.5 * GB;
+  assert.equal(byId(freshCtx())["ollama-runtime"].bytes, expected);
 });
 
 test("payload step copies bundle including campplus and marks done", async () => {
@@ -520,14 +538,38 @@ function withXdgCache(dir, fn) {
   });
 }
 
-test("nonverbal-weights step is skipped when the whisper cache already has base.pt", async () => {
+test("nonverbal-weights step is skipped when the whisper cache already has a full base.pt", async () => {
   const ctx = freshCtx();
   const cacheDir = mkdtempSync(join(tmpdir(), "odcache-"));
   await withXdgCache(cacheDir, async () => {
     mkdirSync(join(cacheDir, "whisper"), { recursive: true });
-    writeFileSync(join(cacheDir, "whisper", "base.pt"), "weights");
+    const path = join(cacheDir, "whisper", "base.pt");
+    writeFileSync(path, "");
+    truncateSync(path, WHISPER_BASE_PT_BYTES);   // sparse -- same size, no real bytes
     const step = byId(ctx)["nonverbal-weights"];
     assert.equal(await step.isDone(), true);
+  });
+});
+
+// A death mid-download (a force-quit installer, a killed app) can leave a
+// base.pt of any size short of the real one -- existsSync alone read that as
+// done and this step's python call never ran to notice (the 2026-08-14
+// "install died halfway = broken forever" shape, this time for a file that
+// step's own python step, not the app, downloads).
+test("nonverbal-weights step is not skipped for a partial base.pt, and clears it before redownloading", async () => {
+  const ctx = freshCtx();
+  const cacheDir = mkdtempSync(join(tmpdir(), "odcache-"));
+  const calls = [];
+  ctx.run = async (argv) => { calls.push(argv); };
+  await withXdgCache(cacheDir, async () => {
+    mkdirSync(join(cacheDir, "whisper"), { recursive: true });
+    const path = join(cacheDir, "whisper", "base.pt");
+    writeFileSync(path, "weights");   // far short of WHISPER_BASE_PT_BYTES
+    const step = byId(ctx)["nonverbal-weights"];
+    assert.equal(await step.isDone(), false);
+    await step.run(() => {});
+    assert.equal(existsSync(path), false, "the stale partial file is removed before redownloading");
+    assert.equal(calls.length, 1);
   });
 });
 
@@ -604,7 +646,7 @@ test("kit-env step appends missing managed keys to a legacy kit.env, preserving 
   const env = readFileSync(join(ctx.kitDir, "kit.env"), "utf8");
   assert.ok(env.includes("PERSODUB_KIT_DIR=/old/kit"), "existing line must survive");
   assert.ok(env.includes("GEMINI_API_KEY=sk-legacy-key"), "user API key must survive");
-  for (const key of ["PERSODUB_LEAKAGE_GATE=measure", "PERSODUB_SCORER_ASR_TIMEOUT=60",
+  for (const key of ["PERSODUB_LEAKAGE_GATE=on", "PERSODUB_SCORER_ASR_TIMEOUT=60",
                       "PERSODUB_DIAR_TIMEOUT=1800",
                       // A kit.env without the key predates the CPU wheel: its venv has
                       // the build there was (CUDA on Windows, MPS on Mac), whatever this
@@ -646,11 +688,12 @@ test("writeKitEnv substitutes kitDir everywhere", () => {
   assert.ok(s.includes(`PERSODUB_BIN_DIR=${k("bin")}`));
 });
 
-// gate=measure: log leakage, never rewrite the mix, until validated on Mac.
+// gate=on: the leakage check fixes what it finds in the finished dub (the
+// owner heard the difference on a 35.7 s spot, 2026-10-06).
 // Timeouts are Mac-CPU-calibrated versions of backend defaults 15/300/600.
 test("writeKitEnv includes the leakage-gate and worker-timeout additions", () => {
   const s = writeKitEnv({ kitDir: "/K" });
-  assert.ok(s.includes("PERSODUB_LEAKAGE_GATE=measure"));
+  assert.ok(s.includes("PERSODUB_LEAKAGE_GATE=on"));
   assert.ok(s.includes("PERSODUB_SCORER_ASR_TIMEOUT=60"));
   assert.ok(s.includes("PERSODUB_DIAR_TIMEOUT=1800"));
 });
@@ -679,8 +722,10 @@ test("the whole kit adds up to roughly what the installing screen promises", () 
   // for everything downloads. Windows runs larger for its CUDA torch wheels,
   // twice over now that the eraser has a torch of its own.
   // If this drifts far past that, something big crept into a step.
+  // Windows comes to 21.5 GB and macOS to 8.5 GB (2026-10-03): the old ceiling
+  // of 21 failed on every Windows run, so it now sits a little above Windows.
   const total = buildSteps(freshCtx()).reduce((n, s) => n + s.bytes, 0) / 1024 ** 3;
-  assert.ok(total > 2 && total < 21, `total is ${total.toFixed(1)} GB`);
+  assert.ok(total > 2 && total < 24, `total is ${total.toFixed(1)} GB`);
 });
 
 test("only the steps still missing are counted", async () => {
@@ -962,4 +1007,28 @@ test("cleanup keeps an abandoned kit that still holds its models", async () => {
   const step = byId({ ...ctx, abandonedKitDir: old })["cleanup"];
   await step.run(() => {});
   assert.equal(existsSync(join(old, "models", "whisper")), true, "models never deleted by cleanup");
+});
+
+
+// The installer wrote PERSODUB_LEAKAGE_GATE=measure into every kit.env from
+// 0.7.0 on ("log only until validated on Mac"). Validated by ear 2026-10-06:
+// an existing kit is moved to "on" the same way a missing key is added, with
+// every other line untouched.
+test("kit-env step turns the dark-launch measure setting into on and leaves the rest alone", async () => {
+  const ctx = freshCtx();
+  mkdirSync(ctx.kitDir, { recursive: true });
+  const before = "PERSODUB_KIT_DIR=/old/kit\nGEMINI_API_KEY=sk-legacy-key\n"
+    + "# Stage-5/6 leakage gate: log-only dark launch until validated on Mac.\nPERSODUB_LEAKAGE_GATE=measure\n"
+    + "PERSODUB_SCORER_ASR_TIMEOUT=60\nPERSODUB_DIAR_TIMEOUT=1800\n"
+    + `PERSODUB_TORCH_VARIANT=${IS_WIN ? "cu128" : "mps"}\n`;
+  writeFileSync(join(ctx.kitDir, "kit.env"), before);
+  const step = byId(ctx)["kit-env"];
+  assert.equal(await step.isDone(), false);
+  await step.run(() => {});
+  const env = readFileSync(join(ctx.kitDir, "kit.env"), "utf8");
+  assert.ok(env.includes("PERSODUB_LEAKAGE_GATE=on"));
+  assert.ok(!env.includes("PERSODUB_LEAKAGE_GATE=measure"));
+  assert.ok(env.includes("GEMINI_API_KEY=sk-legacy-key"));
+  assert.equal(await step.isDone(), true);
+  assert.equal(withMissingKitEnvKeys(env), env, "a second pass changes nothing");
 });

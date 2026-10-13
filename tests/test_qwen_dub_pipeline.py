@@ -8,6 +8,7 @@ import pytest
 
 from app import pipeline
 from app.jobs import JobCancelled
+from app.translate import TranslationEngine
 
 
 class _FakeSeparationEngine:
@@ -45,7 +46,8 @@ class _FakeQwenEngine:
 def _stub_qwen_io(monkeypatch):
     """Neutralize the pieces that would otherwise hit ffmpeg/the sidecar for real."""
     def _fake_run_qwen_dub(engine, segments, ref_cues, work_dir, vocals_path, background_path,
-                           language=None, n_takes=1, log=None, on_notice=None, video_duration=None):
+                           language=None, n_takes=1, log=None, on_notice=None, video_duration=None,
+                           translator=None, sample_cues=None):
         engine.clone("/fake/ref.wav", "hello there friend")
         for i, s in enumerate(segments):
             engine.synthesize(type("Req", (), {"text": s["text"], "seed": 1000 * i})())
@@ -128,6 +130,41 @@ def test_run_dub_end_to_end_qwen_only(monkeypatch, tmp_path):
     assert len(engine.cloned) == 1
     assert len(engine.synth_calls) == 1
     assert any("Qwen3-TTS" in m for m in logs)
+    # No clipped_lines.json written by this fake -- the default is empty, not
+    # a missing key (the UI can rely on both always being present).
+    assert result["clipped"] == []
+    assert result["clipped_count"] == 0
+
+
+def test_run_dub_result_carries_the_clipped_lines_synthesis_recorded(monkeypatch, tmp_path):
+    # app/qwen_pipeline.run_qwen_dub writes clipped_lines.json to work_dir
+    # (app/qwen_assemble.place_lines' clipped param -- see its own tests);
+    # run_dub's job result is what the UI will read it from later.
+    _stub_qwen_io(monkeypatch)
+
+    def _fake_run_qwen_dub_with_clips(engine, segments, ref_cues, work_dir, vocals_path, background_path,
+                                      language=None, n_takes=1, log=None, on_notice=None, video_duration=None, sample_cues=None):
+        import json as _json
+        p = os.path.join(work_dir, "qwen_dub_48k.wav")
+        with open(p, "wb") as f:
+            f.write(b"MIXED")
+        with open(os.path.join(work_dir, "clipped_lines.json"), "w", encoding="utf-8") as f:
+            _json.dump({"clipped": [{"line": 0, "cut_s": 0.4}], "clipped_count": 1}, f)
+        return p
+
+    monkeypatch.setattr(pipeline, "run_qwen_dub", _fake_run_qwen_dub_with_clips)
+    monkeypatch.setattr(pipeline, "_video_duration", lambda path: 2.0)
+    monkeypatch.setattr(pipeline, "_mux", _fake_mux)
+    monkeypatch.setattr(pipeline, "ensure_video_length", lambda *a, **k: None)
+
+    video, out, srt = _write_inputs(tmp_path)
+    result = pipeline.run_dub(
+        video_path=video, out_path=out, srt_path=srt,
+        language="Korean", language_code="ko", log=lambda m: None,
+    )
+
+    assert result["clipped"] == [{"line": 0, "cut_s": 0.4}]
+    assert result["clipped_count"] == 1
 
 
 def test_run_dub_passes_local_separation_paths_to_run_qwen_dub(monkeypatch, tmp_path):
@@ -136,7 +173,7 @@ def test_run_dub_passes_local_separation_paths_to_run_qwen_dub(monkeypatch, tmp_
     captured = {}
 
     def fake_run_qwen_dub(engine, segments, ref_cues, work_dir, vocals_path, background_path,
-                          language=None, n_takes=1, log=None, on_notice=None, video_duration=None):
+                          language=None, n_takes=1, log=None, on_notice=None, video_duration=None, sample_cues=None):
         captured["vocals_path"] = vocals_path
         captured["background_path"] = background_path
         p = os.path.join(work_dir, "qwen_dub_48k.wav")
@@ -194,7 +231,7 @@ def test_n_takes_reaches_run_qwen_dub(monkeypatch, tmp_path):
     captured = {}
 
     def fake_run_qwen_dub(engine, segments, ref_cues, work_dir, vocals_path, background_path,
-                          language=None, n_takes=1, log=None, on_notice=None, video_duration=None):
+                          language=None, n_takes=1, log=None, on_notice=None, video_duration=None, sample_cues=None):
         captured["n_takes"] = n_takes
         p = os.path.join(work_dir, "qwen_dub_48k.wav")
         with open(p, "wb") as f:
@@ -244,7 +281,7 @@ def test_step3_log_names_the_translation_engine(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pipeline, "_auto_translate_srt", fake_auto_translate)
 
-    class _NamedTranslator:
+    class _NamedTranslator(TranslationEngine):
         display_name = "Google Gemini (AI Studio)"
         model = "gemini-2.5-flash"
 
@@ -388,3 +425,33 @@ def test_run_dub_stops_at_the_next_stage_boundary_when_cancelled_mid_run(monkeyp
         )
     assert any("Separating background audio locally" in m for m in logs)
     assert not any("Cloning & synthesizing" in m for m in logs)
+
+
+def test_voice_samples_come_from_the_transcript_lines_not_the_merged_ones(monkeypatch, tmp_path):
+    """The merged lines run long and the voice samples are at most 7 s, so the
+    samples are cut from the transcript's own lines (2026-10-04)."""
+    captured = {}
+
+    def fake_run_qwen_dub(engine, segments, ref_cues, work_dir, vocals_path, background_path,
+                          language=None, n_takes=1, log=None, on_notice=None, video_duration=None,
+                          sample_cues=None):
+        captured["ref_cues"], captured["sample_cues"] = ref_cues, sample_cues
+        p = os.path.join(work_dir, "qwen_dub_48k.wav")
+        with open(p, "wb") as f:
+            f.write(b"MIXED")
+        return p
+
+    monkeypatch.setattr(pipeline, "run_qwen_dub", fake_run_qwen_dub)
+    monkeypatch.setattr(pipeline, "SeparationEngine", _FakeSeparationEngine)
+    monkeypatch.setattr(pipeline, "transcribe_local", lambda audio_path, language=None, **k: [
+        {"start": 0.0, "end": 2.0, "text": "First sentence."}, {"start": 2.1, "end": 4.0, "text": "Second one."}])
+    monkeypatch.setattr(pipeline, "diarize", lambda vocals_path, cues, num_speakers=None, video_duration=None: cues)
+    monkeypatch.setattr(pipeline, "_video_duration", lambda path: 4.0)
+    monkeypatch.setattr(pipeline, "_mux", _fake_mux)
+    monkeypatch.setattr(pipeline, "ensure_video_length", lambda *a, **k: None)
+
+    video, _, srt = _write_inputs(tmp_path)
+    pipeline.run_dub(video_path=video, out_path=str(tmp_path / "d.mp4"), srt_path=srt,
+                     language="Korean", language_code="ko", qwen_engine=_FakeQwenEngine(), log=[].append)
+    assert len(captured["ref_cues"]) == 1                      # merged: one 4 s line
+    assert [c["text"] for c in captured["sample_cues"]] == ["First sentence.", "Second one."]

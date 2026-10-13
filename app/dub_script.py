@@ -18,6 +18,7 @@ import os
 import wave
 from typing import List, Optional
 
+from app.i18n import t
 from app.text.cues import match_cue_index
 from app.text.length_fit import in_window
 from app.text.srt import Cue, build_srt, estimate_seconds, parse_srt
@@ -184,6 +185,9 @@ def load_lines(work_dir: str, lang: str) -> List[dict]:
             "end": round(c["end"], 2),
             "slot": slot,
             "source": originals[k]["text"] if k is not None else None,
+            # Which source line, by number: a sentence the dub split over
+            # several lines shares one, and the same words said twice do not.
+            "source_line": k + 1 if k is not None else None,
             "text": c["text"],
             "estimated": estimated,
             "fits": (over == 0.0) if audio_sec is not None else fits_estimate,
@@ -198,7 +202,7 @@ def load_lines(work_dir: str, lang: str) -> List[dict]:
             "voice_stale": stale(n, c["text"], wav)
                            or (n <= len(dubbed) and not dubbed[n - 1]["text"].strip()
                                and bool(c["text"].strip()) and not os.path.exists(wav)),
-            # The translator gave this line nothing (app/translate.py
+            # The translator gave this line nothing (app/text/dub_prompt.py
             # UNTRANSLATED): no words and so no voice. The screen marks it
             # "Not translated". Read off the words rather than kept in a file
             # of its own, so writing the line in clears it and nothing can go
@@ -219,9 +223,9 @@ def edit_line(work_dir: str, line: int, text: str, lang: str) -> dict:
     if not cues:
         raise FileNotFoundError("this job has no script: %s" % work_dir)
     if not 1 <= line <= len(cues):
-        raise ValueError(
-            "there is no line %d -- this script runs from line 1 to %d" % (line, len(cues))
-        )
+        raise ValueError(t(
+            "there is no line {line} -- this script runs from line 1 to {last}", line=line, last=len(cues)
+        ))
 
     cues[line - 1]["text"] = text
     with open(os.path.join(work_dir, EDITED_NAME), "w", encoding="utf-8") as f:
@@ -282,7 +286,7 @@ def export_srt(work_dir: str, out_path: str) -> str:
         # A ValueError like the two above, because it reaches the same readers:
         # the assistant's export_script tool showed the bare exception name, and
         # "FileNotFoundError" tells the user nothing about what to do.
-        raise ValueError("this job has no script yet -- dub it first, then export")
+        raise ValueError("this job has no script yet. Finish dubbing first, then export")
     with open(src, encoding="utf-8-sig") as f:
         body = f.read()
     with open(out_path, "w", encoding="utf-8") as f:

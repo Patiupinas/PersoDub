@@ -8,19 +8,24 @@ from. Shelling out to a heavy tool also matches how app/stt_local.py and
 app/qwen_scoring.py already work.
 """
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
+import threading
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from app.i18n import t
 from app.jobs import JobCancelled
 
 # The "0/6" prefix only, from the leaf module that owns the stage table --
 # never from app/pipeline.py, which would make "download a video" import the
 # whole orchestrator (TTS engine, diarizer, Qwen pipeline) for one string.
 from app.stages import pre_stage_marker
+
+logger = logging.getLogger("persodub.source_fetch")
 
 YTDLP_BASE = [sys.executable, "-m", "yt_dlp", "--no-playlist"]
 FETCH_TIMEOUT = 1800
@@ -38,6 +43,19 @@ class FetchError(RuntimeError):
         self.message = message
         self.detail = detail
         super().__init__(message)
+
+    @property
+    def shown(self) -> str:
+        """The message in the user's language, for an answer the page shows.
+        The message itself stays in English: a dub that fetches its own link
+        fails with it, and the desktop app sorts failures by their words."""
+        return {
+            "network": t("Check your internet connection."),
+            "login": t("This video needs a sign-in, so it can't be fetched."),
+            "geo": t("This video isn't available in your region."),
+            "gone": t("This video is private or has been deleted."),
+            "unsupported": t("This site isn't supported yet."),
+        }.get(self.reason, t("Could not fetch the video."))
 
 
 # Ordered: the first group whose needle appears in stderr wins. "network" is
@@ -70,7 +88,7 @@ _PATTERNS: List[Tuple[str, Tuple[str, ...], str]] = [
         "unsupported url", "is not a valid url",
     ), "This site isn't supported yet."),
 ]
-_UNKNOWN = ("unknown", "Couldn't fetch the video.")
+_UNKNOWN = ("unknown", "Could not fetch the video.")
 
 
 def classify(stderr: str) -> Tuple[str, str]:
@@ -142,9 +160,16 @@ def probe(url: str) -> dict:
     """Read a link's metadata without downloading a byte.
 
     Cheap enough (seconds) to run the moment a URL is pasted, which is what
-    makes the confirm card possible.
+    makes the confirm card possible. A link it cannot read gets the one
+    upgrade-and-retry a download gets: every pasted link is probed before it
+    is fetched, so a stale yt-dlp fails here first, and with no retry here the
+    download's own was never reached (Windows test B6, 2026-10-10).
     """
     validate_url(url)
+    return _once_more_after_upgrade(lambda: _probe_once(url))
+
+
+def _probe_once(url: str) -> dict:
     code, out, err = _run(
         YTDLP_BASE + ["--dump-single-json", "--skip-download", url],
         timeout=PROBE_TIMEOUT,
@@ -167,6 +192,9 @@ def probe(url: str) -> dict:
 
 _PERCENT = re.compile(r"\[download\]\s+([\d.]+)%")
 UPGRADE_TIMEOUT = 300
+# One install at a time: two into the same venv can leave it half-written, and
+# a probe and a download (or two pasted links) can reach the upgrade together.
+_UPGRADE_LOCK = threading.Lock()
 
 
 def _upgrade() -> None:
@@ -176,10 +204,45 @@ def _upgrade() -> None:
     Failure is swallowed by the caller: an upgrade that cannot happen must not
     replace the download error the user actually needs to read.
     """
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=UPGRADE_TIMEOUT,
-    )
+    with _UPGRADE_LOCK:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=UPGRADE_TIMEOUT,
+        )
+
+
+def _once_more_after_upgrade(attempt: Callable, upgrading: Optional[Callable[[], None]] = None):
+    """attempt(), and once more after upgrading yt-dlp when it failed for any
+    reason but the network; upgrading() is told just before the upgrade.
+
+    YouTube changes how it serves video every few weeks and yt-dlp ships a fix
+    within days; a copy pinned at install time goes stale and the user reads it
+    as "the app broke". One upgrade-and-retry turns most of those into a delay
+    nobody notices. Exactly one, though -- a loop would strand the user.
+    """
+    try:
+        return attempt()
+    except FetchError as first:
+        if first.reason == "network":
+            # Fetching a new yt-dlp over a dead connection fails too, and costs
+            # the user another couple of minutes to learn nothing.
+            raise
+        # The kind of failure only: yt-dlp's words name the video by its id,
+        # and this log goes out with a failure report.
+        logger.info("yt-dlp failed (%s); updating it and trying once more", first.reason)
+        if upgrading:
+            upgrading()
+        try:
+            _upgrade()
+        except Exception:
+            raise first
+    try:
+        result = attempt()
+    except FetchError as again:
+        logger.info("yt-dlp failed again after the update (%s)", again.reason)
+        raise
+    logger.info("yt-dlp worked after the update")
+    return result
 
 
 def _download_once(url: str, dest: str, log, cancel_check) -> None:
@@ -206,26 +269,12 @@ def _download_once(url: str, dest: str, log, cancel_check) -> None:
 
 
 def fetch(url: str, dest: str, log=None, cancel_check=None) -> None:
-    """Download url to dest. Upgrades yt-dlp and retries once on failure.
-
-    YouTube changes how it serves video every few weeks and yt-dlp ships a fix
-    within days; a copy pinned at install time goes stale and the user reads it
-    as "the app broke". One upgrade-and-retry turns most of those into a delay
-    nobody notices. Exactly one, though -- a loop would strand the user.
-    """
+    """Download url to dest. Upgrades yt-dlp and retries once on failure
+    (_once_more_after_upgrade)."""
     validate_url(url)
-    try:
-        _download_once(url, dest, log, cancel_check)
-        return
-    except FetchError as first:
-        if first.reason == "network":
-            # Fetching a new yt-dlp over a dead connection fails too, and costs
-            # the user another couple of minutes to learn nothing.
-            raise
+
+    def upgrading() -> None:
         if log:
             log(f"{pre_stage_marker()} Updating the downloader…")
-        try:
-            _upgrade()
-        except Exception:
-            raise first
-    _download_once(url, dest, log, cancel_check)
+
+    _once_more_after_upgrade(lambda: _download_once(url, dest, log, cancel_check), upgrading)

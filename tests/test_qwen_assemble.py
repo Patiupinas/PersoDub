@@ -17,6 +17,7 @@ from app.qwen_assemble import (
     match_line_gains,
     place_lines,
 )
+from tests.marks import needs_ffmpeg
 
 
 def _write_wav(path, framerate, nchannels, sampwidth, frames: bytes):
@@ -128,7 +129,8 @@ def test_place_lines_skips_none_paths(tmp_path):
         assert w.getnframes() > 0
 
 
-def test_place_lines_overlap_fades_tail_before_next_line_starts(tmp_path):
+def test_place_lines_overlap_fades_tail_before_next_line_starts(tmp_path, monkeypatch):
+    monkeypatch.setattr(qa, "QWEN_MAX_SPEEDUP", 1.0)  # the cut itself, without the speed-up first
     # Deliberate behavior change from the old "overlap sums" model: a line that
     # would still be sounding when the next line starts must fade out first,
     # not sum with it (ported from desktop-app's anti-overlap rule).
@@ -154,6 +156,127 @@ def test_place_lines_overlap_fades_tail_before_next_line_starts(tmp_path):
 
     assert sample_at(0.25) == 8000  # well before b starts: a is still audible, unfaded
     assert sample_at(0.4) == 2000   # at b's start: only b -- a has faded out, not summed (would be 10000)
+
+
+def test_place_lines_records_a_cut_into_the_next_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(qa, "QWEN_MAX_SPEEDUP", 1.0)  # the cut itself, without the speed-up first
+    # A line truncated by a neighbor's start (not fully skipped) used to
+    # happen silently -- no log line, nothing kept anywhere.
+    bg = tmp_path / "bg.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, SR, 2))  # 1s silence
+    line_a = tmp_path / "a.wav"
+    _write_wav(line_a, SR, 1, 2, _const_frames(8000, int(0.3 * SR), 1))  # 0.3s tone
+    line_b = tmp_path / "b.wav"
+    _write_wav(line_b, SR, 1, 2, _const_frames(2000, 4800, 1))  # 0.1s @2000
+
+    out = tmp_path / "out.wav"
+    logs, clipped = [], []
+    # a starts at 0.2s (0.3s long, ends 0.5s) but b starts at 0.4s -- a is cut
+    # short by ~0.13s (0.1s overlap + the 30ms end-headroom).
+    place_lines(str(bg), [str(line_a), str(line_b)], [0.2, 0.4], str(out),
+               log=logs.append, clipped=clipped)
+
+    assert clipped == [{"line": 1, "cut_s": clipped[0]["cut_s"]}]
+    assert abs(clipped[0]["cut_s"] - 0.13) < 0.01
+    cut_logs = [m for m in logs if "cut short" in m]
+    assert len(cut_logs) == 1
+    assert "line 0" in cut_logs[0] and "next line" in cut_logs[0]
+    assert "8000" not in cut_logs[0]  # never the line's own audio/text
+
+
+def test_place_lines_records_a_cut_at_the_end_of_the_video(tmp_path, monkeypatch):
+    monkeypatch.setattr(qa, "QWEN_MAX_SPEEDUP", 1.0)  # the cut itself, without the speed-up first
+    # The last placed line has no neighbor to be cut by, but it must still
+    # never sound past the video's own end -- previously it just grew the
+    # output past the background's length, silently, for ffmpeg's later
+    # -t trim to chop off with no fade and no record of it.
+    bg = tmp_path / "bg.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, SR, 2))  # 1s silence
+    line = tmp_path / "line0.wav"
+    _write_wav(line, SR, 1, 2, _const_frames(5000, int(0.3 * SR), 1))  # 0.3s tone
+
+    out = tmp_path / "out.wav"
+    logs, clipped = [], []
+    # starts at 0.9s, 0.3s long -> would run to 1.2s, 0.2s past the 1s bg.
+    place_lines(str(bg), [str(line)], [0.9], str(out), log=logs.append, clipped=clipped)
+
+    assert clipped == [{"line": 1, "cut_s": 0.2}]
+    cut_logs = [m for m in logs if "cut short" in m]
+    assert len(cut_logs) == 1
+    assert "line 0" in cut_logs[0] and "end of the video" in cut_logs[0]
+    with wave.open(str(out), "rb") as w:
+        # the output was not grown past the background's own length
+        assert w.getnframes() == SR
+
+
+@needs_ffmpeg
+def test_place_lines_speeds_up_a_slightly_long_line_instead_of_cutting_it(tmp_path):
+    bg = tmp_path / "bg.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, SR, 2))  # 1s silence
+    line = tmp_path / "line0.wav"
+    _write_wav(line, SR, 1, 2, _const_frames(5000, int(0.3 * SR), 1))  # 0.3s tone
+    out = tmp_path / "out.wav"
+    logs, clipped = [], []
+    # starts at 0.72s: 0.28s of room before the 1s end, 0.3s of line -> x1.07
+    place_lines(str(bg), [str(line)], [0.72], str(out), log=logs.append, clipped=clipped)
+    assert clipped == []
+    assert any("line 0 sped up x1.07" in m for m in logs)
+
+
+@needs_ffmpeg
+def test_place_lines_speeds_up_at_most_1_1_and_cuts_the_rest(tmp_path):
+    bg = tmp_path / "bg.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, SR, 2))  # 1s silence
+    line = tmp_path / "line0.wav"
+    _write_wav(line, SR, 1, 2, _const_frames(5000, int(0.3 * SR), 1))  # 0.3s tone
+    out = tmp_path / "out.wav"
+    logs, clipped = [], []
+    # 0.1s of room: x1.10 makes it ~0.273s, the remaining ~0.173s is cut
+    place_lines(str(bg), [str(line)], [0.9], str(out), log=logs.append, clipped=clipped)
+    assert any("line 0 sped up x1.100" in m for m in logs)
+    assert abs(clipped[0]["cut_s"] - 0.173) < 0.01
+
+
+def test_place_lines_records_a_cut_under_the_script_line_number(tmp_path, monkeypatch):
+    monkeypatch.setattr(qa, "QWEN_MAX_SPEEDUP", 1.0)  # the cut itself, without the speed-up first
+    # The screen numbers lines from 1. Recorded from 0, the second line's cut
+    # showed on the first line and the second showed nothing (night test
+    # 2026-10-01).
+    bg = tmp_path / "bg.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, SR, 2))  # 1s silence
+    short = tmp_path / "a.wav"
+    _write_wav(short, SR, 1, 2, _const_frames(5000, 4800, 1))  # 0.1s, fits
+    long = tmp_path / "b.wav"
+    _write_wav(long, SR, 1, 2, _const_frames(5000, int(0.3 * SR), 1))  # 0.3s
+
+    clipped = []
+    # The second line starts at 0.9s and runs 0.2s past the 1s video.
+    place_lines(str(bg), [str(short), str(long)], [0.1, 0.9], str(tmp_path / "out.wav"),
+                clipped=clipped)
+    assert clipped == [{"line": 2, "cut_s": 0.2}]
+
+
+def test_place_lines_a_line_that_fits_is_never_recorded_as_clipped(tmp_path):
+    bg = tmp_path / "bg.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, SR, 2))  # 1s silence
+    line = tmp_path / "line0.wav"
+    _write_wav(line, SR, 1, 2, _const_frames(5000, 4800, 1))  # 0.1s, well inside
+
+    out = tmp_path / "out.wav"
+    clipped = []
+    place_lines(str(bg), [str(line)], [0.5], str(out), clipped=clipped)
+    assert clipped == []
+
+
+def test_place_lines_clipped_param_is_optional(tmp_path):
+    # Every existing caller omits `clipped` -- must not require it.
+    bg = tmp_path / "bg.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, SR, 2))
+    line = tmp_path / "line0.wav"
+    _write_wav(line, SR, 1, 2, _const_frames(5000, int(0.3 * SR), 1))
+    out = tmp_path / "out.wav"
+    # starts at 0.9s, runs past the 1s background -- must still just work.
+    place_lines(str(bg), [str(line)], [0.9], str(out))
 
 
 def test_place_lines_identical_starts_resolved_deterministically_not_summed(tmp_path):
@@ -1092,56 +1215,3 @@ def test_place_lines_preserve_mode_hard_mutes_bed_residue_too(tmp_path, monkeypa
     # both the bed residue and the vocals-gate's own speech pass are hard-
     # muted in preserve mode -- nothing left to sum at all.
     assert total == 0
-
-
-# --- leading-pause borrow (v3: port of the 2026-07-30 emergency reassembly fix
-# into the real pipeline -- a line whose audio would be cut by the next line's
-# start may begin up to 0.8s BEFORE its cue start, as long as it keeps >=120ms
-# after the previous placed line's audio ends; never any time-stretch) ---
-
-def test_borrow_shifts_cut_line_earlier():
-    # Line 1 (3.0s of audio) starts at 10.0 but line 2 starts at 12.0 -> ~1.03s
-    # would be cut. Previous line 0 ends at 5.0, so a full 0.8s borrow is legal.
-    starts = [4.0, 10.0, 12.0]
-    durs = [1.0, 3.0, 1.0]
-    new = qa.borrow_lead_starts(starts, durs)
-    assert new[0] == 4.0 and new[2] == 12.0
-    assert abs(new[1] - 9.2) < 1e-6  # capped at the 0.8s max borrow
-
-
-def test_borrow_respects_previous_tail_gap():
-    # Previous line's audio ends at 9.5 -> line 1 may move back only to 9.62
-    # (>=120ms gap), not the full 0.8s.
-    starts = [4.0, 10.0, 12.0]
-    durs = [5.5, 3.0, 1.0]
-    new = qa.borrow_lead_starts(starts, durs)
-    assert abs(new[1] - 9.62) < 1e-6
-
-
-def test_borrow_not_applied_when_line_fits():
-    starts = [4.0, 10.0, 14.0]
-    durs = [1.0, 3.0, 1.0]
-    assert qa.borrow_lead_starts(starts, durs) == starts
-
-
-def test_borrow_chain_effect_multiple_passes():
-    # Line 1 borrows, freeing nothing for line 2 directly -- but line 2 is also
-    # cut and can borrow only until 120ms after line 1's SHIFTED audio end.
-    # line1: start 10, dur 2.5, next start 12 -> cut 0.53 -> shift to 9.47 (prev end 5.0, fine)
-    # line1 audio now ends 11.97; line2: start 12, dur 2.0, next start 13.5 ->
-    # cut 0.53 -> wants 11.47+..., floor = 11.97+0.12 = 12.09 > 12.0 -> no shift possible.
-    starts = [4.0, 10.0, 12.0, 13.5]
-    durs = [1.0, 2.5, 2.0, 1.0]
-    new = qa.borrow_lead_starts(starts, durs)
-    assert abs(new[1] - (12.0 - qa.END_HEADROOM_SECONDS - 2.5)) < 1e-6
-    assert new[2] == 12.0  # floor blocked: never overlaps the previous tail
-    assert new[3] == 13.5
-
-
-def test_borrow_skips_missing_lines():
-    # A None/0-duration line is not placed -- it neither borrows nor blocks others.
-    starts = [4.0, 8.0, 10.0, 12.0]
-    durs = [1.0, 0.0, 3.0, 1.0]
-    new = qa.borrow_lead_starts(starts, durs)
-    assert new[1] == 8.0
-    assert abs(new[2] - 9.2) < 1e-6  # borrowed relative to line 0's tail, 0.8 cap

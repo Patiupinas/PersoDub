@@ -1,4 +1,4 @@
-// Integration dry run: the exact flow main.js drives, minus the window.
+// Integration dry run: the exact flow bootFlow.js drives, minus the window.
 // Proves start -> healthy -> UI served -> stop -> zero leftover processes.
 import { test } from "node:test";
 import assert from "node:assert/strict";

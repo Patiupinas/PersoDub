@@ -7,14 +7,13 @@ GeminiTranslator uses a consumer AI Studio API key (GEMINI_API_KEY), never shown
 screen. VertexTranslator uses a service-account (OAuth) instead -- see its docstring.
 """
 import hashlib
-import json
 import os
 import re
 import subprocess
 import tempfile
 import threading
 import time
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import requests
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -32,145 +31,16 @@ from app.config import (
     VERTEX_MODEL,
     VERTEX_SA_KEY_PATH,
 )
-
-
-# --- Dubbing translation prompt/parsing (shared across engines, testable without network) ---
-def build_dub_prompt(
-    texts: List[str],
-    target_lang: str,
-    source_lang: Optional[str],
-    durations: Optional[List[float]],
-    fuller: bool = False,
-) -> str:
-    lines = []
-    for i, t in enumerate(texts):
-        if durations and durations[i] < 0.8:
-            # Ultra-short line: impossible instructions like "within 0.3s" break the model
-            slot = " (very short exclamation — one or two words only)"
-        elif durations:
-            slot = f" (must fit within {durations[i]:.1f}s)"
-        else:
-            slot = ""
-        lines.append(f"{i + 1}.{slot} {t}")
-    src = f"from {source_lang} " if source_lang else ""
-    length_rule = (
-        "★Most important: translate each line to a length that can be spoken at a natural pace within its time. "
-        "It must not be longer than the original (keep the syllable count similar to or shorter than the original).\n"
-    )
-    if fuller:
-        length_rule = (
-            "★These lines are too short for the given time, so dubbing them leaves long silences. "
-            "Bring out more of the original's nuance and flavor, and translate again to a length that "
-            "naturally fills the time. But never exceed the given time.\n"
-        )
-    return (
-        f"You are a professional dubbing translator. Translate the {len(texts)} subtitle lines below {src}into natural "
-        f"colloquial {target_lang}.\n"
-        + length_rule
-        + "Keep the original tone (informal stays informal, formal stays formal), preserve the emotion and mood, "
-        "and translate into natural colloquial dubbing lines an actor can perform. No stiff literary or translationese style.\n"
-        + register_rule(target_lang)
-        + "Do not merge or split lines.\n"
-        "These lines are spoken aloud: no dashes (— – --), parentheses or brackets. Use commas and periods only.\n"
-        f"Output only a JSON array containing exactly {len(texts)} strings in order. No other text.\n\n"
-        + "\n".join(lines)
-    )
-
-
-def parse_json_array(raw: str, n: int) -> List[str]:
-    s = raw.strip()
-    # Reasoning models (e.g. Qwen3) prepend a <think>...</think> block — drop it.
-    s = re.sub(r"<think>.*?</think>", "", s, flags=re.DOTALL).strip()
-    s = re.sub(r"^```[a-zA-Z]*", "", s).strip().strip("`").strip()
-    start, end = s.find("["), s.rfind("]")
-    if start == -1 or end == -1:
-        # The answer's length, never the answer: it is the video's dialogue in
-        # translation, and this sentence goes into the job log and, on a
-        # failure, into a public issue's Error box (issues #86, #88, #102).
-        raise ValueError(f"Could not find a JSON array in the translation response (response length {len(raw)})")
-    arr = json.loads(s[start : end + 1])
-    if len(arr) != n:
-        raise ValueError(f"Translated line count mismatch: got {len(arr)}, need {n}")
-    # A line is a string. str() of whatever else came back used to go straight
-    # into the script -- a dict's braces and quotes, read aloud by the voice
-    # (Windows full test, 2026-09-17). An object holding exactly one string is
-    # that string; anything else is a malformed answer, and raising here is what
-    # makes the caller ask again.
-    out = []
-    for x in arr:
-        if isinstance(x, dict):
-            strings = [v for v in x.values() if isinstance(v, str)]
-            x = strings[0] if len(strings) == 1 else x
-        if not isinstance(x, str):
-            raise ValueError(f"A translated line is not text (it is a {type(x).__name__})")
-        out.append(x)
-    return out
-
-
-_NON_LATIN = re.compile(r"[가-힣ぁ-んァ-ヶ一-鿕]")
-_HANGUL_CHAR = re.compile(r"[가-힣]")
-_LATIN_CHAR = re.compile(r"[a-zA-ZÀ-ɏ]")  # includes extended Latin (đ, é, etc.)
-# An all-capitals short word Korean itself writes in Latin letters: AI, PM,
-# UI UX, GPT-4.0, 오픈AI. ChatGPT keeps them, and treating them as English
-# re-asked every such line twice and warned "needs review" on a good script
-# (5-minute runs, 2026-09-24).
-_ACRONYM = re.compile(r"(?<![A-Za-z])[A-Z]{1,6}[0-9]*(?:[.\-][A-Z0-9]+)*(?![a-z])")
-
-
-def register_rule(target_lang: str) -> str:
-    """One speech level for a whole Korean script. English has none to keep,
-    so "keep the original tone" let each line pick its own and a video came
-    out half 해요체, half 반말 (user chose 해요체, 2026-09-25)."""
-    if target_lang.lower() in ("ko", "korean"):
-        return ("Korean speech level: write EVERY line in polite 해요체 (sentences end in -요), "
-                "the same for the whole video, even when the original is casual.\n")
-    return ""
-
-
-def script_ok(text: str, lang: str) -> bool:
-    """Quick check that the translation is in the target language's script (prevents wrong-language output)."""
-    lang = lang.lower()
-    if lang in ("ko", "korean"):
-        # Dubbing lines must be pure Hangul for the TTS to read — mixed-in Latin letters are invalid
-        # (blocks real cases like "덴 đâu?", "dent 자리에")
-        return bool(_HANGUL_CHAR.search(text)) and not _LATIN_CHAR.search(_ACRONYM.sub("", text))
-    if lang in ("ja", "japanese", "zh", "chinese"):
-        return bool(_NON_LATIN.search(text))
-    # Latin-script languages: invalid if Hangul, kana, or Han characters are mixed in
-    return not _NON_LATIN.search(text)
-
-
-def _ask_with_retry(ask, prompt: str, n: int, tries: int = 3) -> List[str]:
-    """(tries: an engine whose every ask is a message off an account's allowance
-    says so with `format_tries`; see _translate_with_fallback.)"""
-    """If the LLM doesn't respect the line count, re-ask with a correction appended (up to `tries` times)."""
-    last_err = None
-    for attempt in range(tries):
-        raw = ask(prompt if attempt == 0 else prompt + f"\n\n(Note: do not merge lines; answer only with a JSON array of exactly {n} items.)")
-        try:
-            return parse_json_array(raw, n)
-        except ValueError as e:
-            last_err = e
-    raise last_err
-
-
-# What a line the translator never answered in a usable form is left holding.
-# Empty on purpose: an empty line is not spoken (app/qwen_pipeline.py synth_lines
-# leaves it silent), and the script marks it "Not translated" (app/dub_script.py
-# load_lines) so it can be written by hand or by the agent. One such line used
-# to fail the whole job -- issue #82 lost a 969-line dub to it.
-UNTRANSLATED = ""
-
-
-def _one_line_or_untranslated(ask, prompt: str, tries: int = 3) -> str:
-    """The last-resort single-line ask. A line that still cannot be read after
-    its retries is UNTRANSLATED rather than the end of the job. Only a bad
-    answer is forgiven: a translator that cannot be reached at all still raises,
-    because it would fail every other line the same way."""
-    try:
-        return _ask_with_retry(ask, prompt, 1, tries)[0]
-    except ValueError:
-        return UNTRANSLATED
+from app.text.dub_prompt import (
+    UNTRANSLATED,
+    ask_with_retry,
+    build_dub_prompt,
+    one_line_or_untranslated,
+    register_rule,
+    script_ok,  # noqa: F401 -- re-exported: app/pipeline.py imports it from here
+)
+from app.text.length_fit import DRAFT_CHUNK, build_shorten_prompt, syllable_budget
+from app.text.srt import _count_syllables
 
 
 def _translate_with_fallback(engine, texts, target_lang, source_lang, durations, fuller):
@@ -179,30 +49,35 @@ def _translate_with_fallback(engine, texts, target_lang, source_lang, durations,
     than the model will write, and it comes back cut off. A chunk that keeps
     breaking the line count is asked again one line at a time (guarantees the
     count); a line that fails even then is left UNTRANSLATED."""
-    from app.text.length_fit import DRAFT_CHUNK  # length_fit imports this module
-    tries = getattr(engine, "format_tries", 3)
+    tries = engine.format_tries
     out = []
     for a in range(0, len(texts), DRAFT_CHUNK):
         chunk = texts[a:a + DRAFT_CHUNK]
         chunk_durations = durations[a:a + DRAFT_CHUNK] if durations else None
         try:
             prompt = build_dub_prompt(chunk, target_lang, source_lang, chunk_durations, fuller)
-            out.extend(_ask_with_retry(engine._ask, prompt, len(chunk), tries))
+            out.extend(ask_with_retry(engine.ask, prompt, len(chunk), tries))
         except ValueError:
             for i, t in enumerate(chunk):
                 d = [chunk_durations[i]] if chunk_durations else None
                 prompt = build_dub_prompt([t], target_lang, source_lang, d, fuller)
-                out.append(_one_line_or_untranslated(engine._ask, prompt, tries))
+                out.append(one_line_or_untranslated(engine.ask, prompt, tries))
     return out
 
 
 class TranslationEngine:
+    """What every translator is, and what it declares about itself. The
+    pipeline and the length passes (app/text/length_fit.py, pace_fit.py) read
+    these attributes as they are -- a translator states what it can do here
+    rather than being probed for it -- and send every request through ask()."""
     id: str = ""
     display_name: str = ""
+    # The model it runs, named in the job log beside display_name.
+    model: Optional[str] = None
 
     # How many "still outside the ±15% budget window" retry rounds app.text.length_fit.fit_translate
-    # may spend re-asking a line (see app/text/length_fit.py MAX_RETRY). Default 3, for local/free
-    # engines -- paid Google engines override this to 0 (cost/429-driven, see GeminiTranslator).
+    # may spend re-asking a line. Default 3, for local/free engines -- paid Google engines
+    # override this to 0 (cost/429-driven, see GeminiTranslator).
     max_budget_retries: int = 3
     # Whether a line with the wrong letters in it (Latin inside Korean, say) is
     # asked again. True for the local models, which do slip into another
@@ -213,6 +88,37 @@ class TranslationEngine:
     # budgets, the re-asks, the seconds a line must fit). False for a model that
     # cannot follow such a rule -- see OllamaTranslator.
     length_rules: bool = True
+    # Whether this engine is a translation-only model: asked one line at a
+    # time in plain words and answering in plain words, never a JSON array of
+    # a scene -- see OllamaTranslator.
+    plain_lines: bool = False
+    # How many times a request is asked in all while its answer cannot be read
+    # (the tries of app.text.dub_prompt.ask_with_retry): in the length fit
+    # (app/text/length_fit.py), the plain translation (_translate_with_fallback)
+    # and the pace fit's rewrites (app/text/pace_fit.py). See ChatGptTranslator.
+    format_tries: int = 3
+    # Where each answer is kept for this job (set by the pipeline). A job that
+    # stops at the usage limit and is resumed asks the same questions again;
+    # a translator that keeps its answers (ChatGPT, see ChatGptTranslator._ask)
+    # takes the ones already answered from here instead of from the user's
+    # allowance. The others keep nothing.
+    answers_dir: Optional[str] = None
+    # Run before every request (see ask). The pipeline sets its cancel check
+    # here, so a cancelled job stops between two requests: whatever this
+    # raises stops the request from being sent.
+    before_ask: Optional[Callable[[], None]] = None
+
+    def ask(self, prompt: str) -> str:
+        """Send one prompt and return the raw answer. Every request goes
+        through here -- the length passes, the plain translation and a
+        translator's own per-line asks -- so before_ask runs before each."""
+        if self.before_ask is not None:
+            self.before_ask()
+        return self._ask(prompt)
+
+    def _ask(self, prompt: str) -> str:
+        """One request to this translator's model: the prompt out, its answer back."""
+        raise NotImplementedError
 
     def translate(
         self,
@@ -323,7 +229,28 @@ class ChatGptNotSignedInError(RuntimeError):
 
 
 class ChatGptLimitError(RuntimeError):
-    """The ChatGPT account's usage allowance is used up for now."""
+    """The ChatGPT account's usage allowance is used up for now. `resets` is
+    when OpenAI said it comes back ("Oct 24, 1:07 PM"), or None when its
+    message named no time."""
+
+    def __init__(self, message: str, resets: Optional[str] = None):
+        super().__init__(message)
+        self.resets = resets
+
+
+# OpenAI's own words when a free account is out: "... or try again at Oct
+# 24th, 2026 1:07 PM." -- a lockout that can last weeks, so the time is worth
+# repeating on the screen.
+_RESET_TIME = re.compile(
+    r"try again at\s+([A-Z][a-z]{2,8})\.? (\d{1,2})(?:st|nd|rd|th)?,?(?: \d{4})?,? "
+    r"(\d{1,2}:\d{2}\s?[AP]M)", re.IGNORECASE)
+
+
+def reset_time_in(text: str) -> Optional[str]:
+    """The reset time in OpenAI's limit message, short ("Oct 24, 1:07 PM"),
+    or None when the message names none."""
+    m = _RESET_TIME.search(text)
+    return f"{m.group(1)} {m.group(2)}, {m.group(3).upper()}" if m else None
 
 
 class ChatGptTranslator(TranslationEngine):
@@ -365,11 +292,6 @@ class ChatGptTranslator(TranslationEngine):
             wanted = CHATGPT_DEFAULT_MODEL
         self.model = model if model is not None else wanted
         self.timeout = timeout
-        # Where each answer is kept for this job (set by the pipeline). A job
-        # that stops at the usage limit and is resumed asks the same questions
-        # again; the ones already answered come from here instead of from the
-        # user's ChatGPT allowance.
-        self.answers_dir: Optional[str] = None
 
     def _command(self, workdir: str, out_path: str) -> List[str]:
         cmd = [self.binary, "exec",
@@ -392,20 +314,39 @@ class ChatGptTranslator(TranslationEngine):
             cmd += ["-m", self.model]
         return cmd + ["-"]   # the prompt comes on stdin
 
+    # A passing failure -- a timeout, a dropped process, a network blip -- gets
+    # two more tries (5s, then 15s) before the job gives up on it. Sign-in and
+    # usage-limit errors are the account's own state, not a blip, so they are
+    # never retried and surface on the first try, as before.
+    RETRY_WAITS = (5, 15)
+
     def _ask(self, prompt: str) -> str:
         if not self.answers_dir:
-            return self._ask_chatgpt(prompt)
+            return self._ask_chatgpt_retrying(prompt)
         key = hashlib.sha256(f"{self.model}\n{prompt}".encode()).hexdigest()[:32]
         path = os.path.join(self.answers_dir, key + ".txt")
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
                 return f.read()
-        reply = self._ask_chatgpt(prompt)
+        reply = self._ask_chatgpt_retrying(prompt)
         os.makedirs(self.answers_dir, exist_ok=True)
         with open(path + ".part", "w", encoding="utf-8") as f:
             f.write(reply)
         os.replace(path + ".part", path)
         return reply
+
+    def _ask_chatgpt_retrying(self, prompt: str) -> str:
+        last_err = None
+        for wait in (0,) + self.RETRY_WAITS:
+            if wait:
+                time.sleep(wait)
+            try:
+                return self._ask_chatgpt(prompt)
+            except (ChatGptNotSignedInError, ChatGptLimitError):
+                raise
+            except RuntimeError as e:
+                last_err = e
+        raise last_err
 
     def _ask_chatgpt(self, prompt: str) -> str:
         if not self.binary:
@@ -452,7 +393,7 @@ class ChatGptTranslator(TranslationEngine):
         if agent_base._says(agent_base._NOT_LOGGED_IN, errors):
             raise ChatGptNotSignedInError("ChatGPT is not signed in")
         if agent_base._says(agent_base._RATE_LIMITED, errors):
-            raise ChatGptLimitError("ChatGPT usage limit reached")
+            raise ChatGptLimitError("ChatGPT usage limit reached", reset_time_in(errors))
         if code != 0:
             last = errors.strip().splitlines()[-1][:160] if errors.strip() else "exit %d" % code
             raise RuntimeError(f"ChatGPT translation failed ({last})")
@@ -515,6 +456,10 @@ class VertexTranslator(GeminiTranslator):
         }
         # Same retry/backoff shape as GeminiTranslator._ask -- long prompts can take over 2
         # minutes, and Vertex can still 429 under sustained load even on a paid project.
+        # Not one shared loop, because the two end differently: a 429 here ends as a plain
+        # HTTPError (not GeminiQuotaExhaustedError) and a 5xx is raised by raise_for_status
+        # (not as GeminiUnavailableError), so the pipeline's quota/overload notices never
+        # come from Vertex.
         last_err = None
         for attempt in range(4):
             try:
@@ -553,6 +498,12 @@ OLLAMA_BACKOFF_S = 5
 # model finishes cleanly, and the per-line fallback is the better road for it.
 # A prompt with no numbered lines keeps the old 2048.
 _ASKED_LINE = re.compile(r"^\d+\. ", re.MULTILINE)
+
+
+# What a translation-only model is asked (Tencent's own prompt for Hunyuan MT),
+# and the most it may write for one line.
+PLAIN_LINE_PROMPT = "Translate the following segment into %s, without additional explanation.\n\n%s"
+PLAIN_LINE_PREDICT = 512
 
 
 def _num_predict(prompt: str) -> int:
@@ -596,7 +547,13 @@ class OllamaTranslator(TranslationEngine):
         # characters, it gave the request back as the line ("반드시 10자 이내"
         # spoken in 30 of 152 lines, 2026-09-19). It gets no length rules; a
         # line that runs long is the Dub Agent's to trim (owner, 2026-08-20).
-        self.length_rules = model != OLLAMA_HUNYUAN_MODEL
+        # Asked for a JSON array of a scene's lines under the dubbing rules, it
+        # left 5 of 8 lines empty, put lines in their neighbours' places and
+        # wrote the "-요" of the speech-level rule onto finished sentences
+        # ("감사합니다요", 2026-10-02). It is asked one line at a time with the
+        # prompt it was trained on, and answers with the line alone.
+        self.plain_lines = model == OLLAMA_HUNYUAN_MODEL
+        self.length_rules = not self.plain_lines
 
     def _ask(self, prompt: str) -> str:
         if "qwen3" in self.model:
@@ -615,8 +572,11 @@ class OllamaTranslator(TranslationEngine):
             # missing the ±15% length window. Translation wants the conservative end either way.
             # No "format": "json": Ollama's JSON mode forces an object at the top, and every prompt
             # here asks for an array -- gemma3:12b answered {"line one": "line two"} under it (2026-09-18).
-            "options": {"temperature": 0.3, "top_k": 40, "top_p": 0.9,
-                        "num_predict": _num_predict(prompt)},
+            # A translation-only model keeps the sampling its own model file
+            # carries (config.HUNYUAN_PARAMETERS), the values it was checked with.
+            "options": ({"num_predict": PLAIN_LINE_PREDICT} if self.plain_lines else
+                        {"temperature": 0.3, "top_k": 40, "top_p": 0.9,
+                         "num_predict": _num_predict(prompt)}),
         }
         # Same retry shape as GeminiTranslator._ask -- see OLLAMA_TRIES for what is retried.
         last_err = None
@@ -647,9 +607,24 @@ class OllamaTranslator(TranslationEngine):
     ) -> List[str]:
         if not texts:
             return []
+        if self.plain_lines:
+            return [self._plain_line(t, target_lang) for t in texts]
         return _translate_with_fallback(
             self, texts, target_lang, source_lang, durations, fuller
         )
+
+    def _plain_line(self, text: str, target_lang: str, tries: int = 3) -> str:
+        """One line through a translation-only model: its own prompt in, the
+        translated line out, on one row. An answer that stays empty after its
+        retries is UNTRANSLATED, as for every other translator."""
+        if not text.strip():
+            return UNTRANSLATED
+        prompt = PLAIN_LINE_PROMPT % (target_lang, text)
+        for _ in range(tries):
+            answer = " ".join(self.ask(prompt).split())
+            if answer:
+                return answer
+        return UNTRANSLATED
 
 
 # Engine name -> how to build that translator. Each entry is a lambda rather
@@ -705,16 +680,14 @@ def build_draft_prompt(texts, target_lang, source_lang, speakers=None):
 
 
 def _fit_lengths(engine, sources, draft, durations, target_lang, max_retry=3):
-    from app.text.length_fit import build_shorten_prompt, syllable_budget
-    from app.text.srt import _count_syllables
     best = list(draft)
     budgets = [syllable_budget(d, target_lang) for d in durations]
     for _ in range(max_retry):
         over = [i for i in range(len(best)) if _count_syllables(best[i], target_lang) > budgets[i]]
         if not over:
             break
-        redo = _ask_with_retry(
-            engine._ask,
+        redo = ask_with_retry(
+            engine.ask,
             build_shorten_prompt(
                 [sources[i] for i in over],
                 [best[i] for i in over],
@@ -732,15 +705,15 @@ def _draft(engine, texts, target_lang, source_lang, speakers):
     """Draft-translate the whole scene at once. If the model returns the wrong line
     count, fall back to line-by-line (guarantees the count, at the cost of context)."""
     try:
-        return _ask_with_retry(
-            engine._ask, build_draft_prompt(texts, target_lang, source_lang, speakers), len(texts)
+        return ask_with_retry(
+            engine.ask, build_draft_prompt(texts, target_lang, source_lang, speakers), len(texts)
         )
     except ValueError:
         out = []
         for i, t in enumerate(texts):
             sp = [speakers[i]] if speakers and i < len(speakers) else None
-            out.append(_ask_with_retry(
-                engine._ask, build_draft_prompt([t], target_lang, source_lang, sp), 1)[0])
+            out.append(ask_with_retry(
+                engine.ask, build_draft_prompt([t], target_lang, source_lang, sp), 1)[0])
         return out
 
 

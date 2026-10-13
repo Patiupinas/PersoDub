@@ -21,6 +21,8 @@ reference clip (qwen_ref_<Speaker>.wav):
 Line->speaker assignment comes from the job's own record, in order of trust:
   1. qwen_scorer_input.json  ("lines": [{"i": N, "spk": "Name", ...}]) --
      written by the actual synthesis run, so it IS the assignment used.
+     lines.json ("lines": [{"i": N, "speaker": "Name", ...}]) is the same
+     record for a Fast mode job, which has no scorer input.
   2. translated.srt + source_cues.json, recomputed with the same
      app.qwen_pipeline.map_segments_to_speakers call the pipeline uses.
 
@@ -182,13 +184,14 @@ def load_assignments(workdir):
         raise ValueError("no qwen_line_N.wav files in %s" % workdir)
 
     spk_by_idx = {}
-    scorer_in = os.path.join(workdir, "qwen_scorer_input.json")
-    if os.path.exists(scorer_in):
-        with open(scorer_in, encoding="utf-8") as f:
-            data = json.load(f)
-        for ln in data.get("lines") or []:
-            if "i" in ln and ln.get("spk"):
-                spk_by_idx[int(ln["i"])] = ln["spk"]
+    for record, key in (("qwen_scorer_input.json", "spk"), ("lines.json", "speaker")):
+        path = os.path.join(workdir, record)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            for ln in data.get("lines") or []:
+                if "i" in ln and ln.get(key):
+                    spk_by_idx.setdefault(int(ln["i"]), ln[key])
 
     missing = [i for i in present if i not in spk_by_idx]
     if missing:

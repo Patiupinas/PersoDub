@@ -1,6 +1,13 @@
 // Electron preload (CommonJS — sandboxed preloads cannot use ESM).
 const { contextBridge, ipcRenderer } = require("electron");
 
+// The window passes the repository the build's edition points at on its
+// command line (src/windowFactory.js additionalArguments): a value fixed for
+// the whole run needs no channel.
+const REPO_ARG = "--persodub-repo=";
+// The computer's language the same way (src/i18n.js): what Auto means.
+const LOCALE_ARG = "--persodub-locale=";
+
 contextBridge.exposeInMainWorld("persodubShell", {
   retry: () => ipcRenderer.send("shell:retry"),
   // Downloads land in <Downloads>/<day>/<project>/, which only the page knows.
@@ -12,12 +19,12 @@ contextBridge.exposeInMainWorld("persodubShell", {
   // it goes" line reads this and says where it went.
   onDownloadDone: (cb) => ipcRenderer.on("shell:download-done", (_e, info) => cb(info)),
   // "Saved to Downloads · Show": show a file the app just wrote in Finder or
-  // Explorer. main.js opens only what is inside Downloads or the kit, so this
+  // Explorer. The shell opens only what is inside Downloads or the kit, so this
   // is a request rather than a command.
   revealPath: (path) => ipcRenderer.invoke("shell:reveal", path),
-  // Settings' "Restart now" button. Keys/workspace only apply on the next
-  // start, and asking a non-technical user to quit and reopen by hand was
-  // the step that silently didn't happen.
+  // For a "Restart now" button: asking a non-technical user to quit and reopen
+  // by hand was the step that silently didn't happen. No page calls it today
+  // (keys apply without a restart); src/preloadContract.test.mjs lists it.
   relaunch: () => ipcRenderer.send("shell:relaunch"),
   onInstallProgress: (cb) => ipcRenderer.on("shell:install-progress", (_e, p) => cb(p)),
   // Packs (the engines venv, the Ollama runtime) are the shell's to install,
@@ -27,14 +34,15 @@ contextBridge.exposeInMainWorld("persodubShell", {
   cancelPack: (id) => ipcRenderer.invoke("shell:cancel-pack", id),
   removePack: (id) => ipcRenderer.invoke("shell:remove-pack", id),
   packStatus: () => ipcRenderer.invoke("shell:pack-status"),
-  // Auto-update: main.js announces the update's state -- {version, phase:
-  // "downloading" | "ready", pct} -- as it changes and again whenever the page
-  // loads, so the pill shows "downloading" within seconds of launch and turns
-  // into the restart button when the file is on disk.
+  // Auto-update: the shell announces the update's state -- {version, phase:
+  // "downloading" | "ready", pct, releaseDate?, releaseNotes?} -- as it
+  // changes and again whenever the page loads, so the top bar's update icon
+  // lights within seconds of launch and the update window's button turns
+  // into "Restart to update" when the file is on disk.
   onUpdateState: (cb) => ipcRenderer.on("shell:update-state", (_e, state) => cb(state)),
   restartToUpdate: () => ipcRenderer.send("shell:restart-to-update"),
   // Usage counts for finished dubs. The page hands over the raw log tail
-  // because it cannot classify it -- main.js turns that into one published
+  // because it cannot classify it -- the shell turns that into one published
   // word and drops the text. Nothing here reaches the network.
   countDub: (status, detail, job) => ipcRenderer.send("shell:count-dub", { status, detail, job }),
   // The same for an erase. It goes down its own road -- the erase screen polls
@@ -51,4 +59,9 @@ contextBridge.exposeInMainWorld("persodubShell", {
   // rather than promising a report nobody will receive.
   onReportSent: (cb) => ipcRenderer.on("shell:report-sent", (_e, sent) => cb(sent)),
   getLastReport: () => ipcRenderer.invoke("shell:last-report"),
+  // "owner/repo" for the page's GitHub links (src/edition.js); "" when the
+  // window passed none.
+  repo: process.argv.find((a) => a.startsWith(REPO_ARG))?.slice(REPO_ARG.length) || "",
+  // "ko" or "en" (ui/src/i18n.mjs); "" when the window passed none.
+  locale: process.argv.find((a) => a.startsWith(LOCALE_ARG))?.slice(LOCALE_ARG.length) || "",
 });

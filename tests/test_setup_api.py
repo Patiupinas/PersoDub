@@ -17,6 +17,8 @@ def _kit(tmp_path, monkeypatch, text="PERSODUB_KIT_DIR=/x\n# PERSO_API_KEY=\n"):
     monkeypatch.setenv("PERSODUB_KIT_DIR", str(kit))
     monkeypatch.delenv("TRANSLATE_ENGINE", raising=False)
     monkeypatch.delenv("STT_ENGINE", raising=False)
+    monkeypatch.delenv("DUB_MODE", raising=False)  # conftest sets local for the other tests
+    monkeypatch.delenv("PERSODUB_EDITION", raising=False)  # the open-source edition's defaults
     # The report reads the keys the way the stage defaults do (kit.env first,
     # then the process env), so a key exported on the developer's own machine
     # would otherwise decide these tests.
@@ -32,7 +34,7 @@ def test_get_reports_chatgpt_and_local_as_the_untouched_defaults(tmp_path, monke
     assert r.status_code == 200
     d = r.json()["defaults"]
     assert d == {"dub_mode": "local", "separation": "local", "stt": "local",
-                 "translator": "chatgpt", "voice_quality": "fast"}
+                 "translator": "chatgpt", "voice_quality": "fast", "voice": "qwen3"}
     assert r.json()["keys"] == {"perso": False, "gemini": False}
     assert "translator" in r.json()["choices"]
 
@@ -45,7 +47,50 @@ def test_the_keys_and_the_stt_default_read_the_same_source(tmp_path, monkeypatch
     monkeypatch.setenv("PERSO_API_KEY", "ENVKEY")
     body = client.get("/api/setup").json()
     assert body["defaults"]["stt"] == "perso"
+    assert body["defaults"]["dub_mode"] == "local"  # this computer, key or no key
     assert body["keys"]["perso"] is True
+
+
+def test_only_the_production_edition_dubs_on_perso_by_default(tmp_path, monkeypatch):
+    # One build, two defaults (owner, 2026-10-12): the open-source edition dubs
+    # on this computer, key or no key; the production edition dubs on Perso,
+    # key or no key. The desktop shell passes the edition (orchestrator.js).
+    _kit(tmp_path, monkeypatch)
+    for edition, key, expected in [(None, None, "local"), (None, "ENVKEY", "local"),
+                                   ("opensource", "ENVKEY", "local"),
+                                   ("production", None, "perso"), ("production", "ENVKEY", "perso")]:
+        for name, value in (("PERSODUB_EDITION", edition), ("PERSO_API_KEY", key)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        assert dub_setup.default_for("dub_mode") == expected, (edition, key)
+        assert client.get("/api/setup").json()["defaults"]["dub_mode"] == expected, (edition, key)
+
+
+def test_a_saved_dub_mode_beats_either_editions_default(tmp_path, monkeypatch):
+    _kit(tmp_path, monkeypatch, "PERSODUB_KIT_DIR=/x\nDUB_MODE=perso\n")
+    assert dub_setup.default_for("dub_mode") == "perso"
+    monkeypatch.setenv("PERSODUB_EDITION", "production")
+    client.post("/api/setup", json={"dub_mode": "local"})
+    assert dub_setup.default_for("dub_mode") == "local"
+
+
+def test_without_a_key_start_asks_for_one_only_in_the_production_edition(tmp_path, monkeypatch):
+    # The production edition leads a new user to a key: Start says to save
+    # one first (app/api/dub.py). The open-source edition dubs on this
+    # computer, so a new install is asked for the models it needs, not a key.
+    _kit(tmp_path, monkeypatch)
+    monkeypatch.setenv("PERSODUB_EDITION", "production")
+    r = client.post("/api/dub/start", files={"video": ("v.mp4", b"vid", "video/mp4")},
+                    data={"language": "Korean", "language_code": "ko"})
+    assert r.status_code == 422
+    assert r.json()["detail"].startswith("Perso API dubbing needs an API key")
+
+    monkeypatch.delenv("PERSODUB_EDITION")
+    r = client.post("/api/dub/start", files={"video": ("v.mp4", b"vid", "video/mp4")},
+                    data={"language": "Korean", "language_code": "ko"})
+    assert r.status_code == 409 and "missing" in r.json()["detail"]
 
 
 def test_a_key_cleared_in_kit_env_reads_as_no_key(tmp_path, monkeypatch):
@@ -90,6 +135,16 @@ def test_a_saved_default_drives_the_dub_without_a_restart(tmp_path, monkeypatch)
     client.post("/api/setup", json={"translator": "gemma", "separation": "perso"})
     used = dub_api._engines_used()
     assert used["translator"] == "gemma" and used["separation"] == "perso"
+
+
+# ElevenLabs left the app (fb838b5). A tester who had saved it as the voice
+# default gets Qwen3-TTS on the screen and in the dub that starts, instead of a
+# default no dub could be made with (final review, 2026-10-12).
+def test_a_saved_elevenlabs_voice_default_reads_as_qwen3(tmp_path, monkeypatch):
+    _kit(tmp_path, monkeypatch, "PERSODUB_KIT_DIR=/x\nTTS_ENGINE=elevenlabs\n")
+    monkeypatch.delenv("TTS_ENGINE", raising=False)
+    assert client.get("/api/setup").json()["defaults"]["voice"] == "qwen3"
+    assert dub_api._engines_used()["tts"] == "qwen3"
 
 
 def test_no_kit_means_503(monkeypatch, tmp_path):

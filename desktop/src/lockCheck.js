@@ -12,6 +12,7 @@
 // safety check must never be the thing that blocks an update.
 import { execFile } from "node:child_process";
 import { win32 } from "node:path";
+import { errorText } from "./errorText.js";
 
 // The Restart Manager lives behind a C API (rstrtmgr.dll); Node can't reach it
 // without a native module, so the probe is a PowerShell script using P/Invoke.
@@ -153,7 +154,7 @@ export async function findForeignLockers({ installDir, ownExePath, run, timeoutM
   } catch (err) {
     // Fail open -- never let the check itself block an update -- but say why,
     // or a broken probe is indistinguishable from a clean install dir.
-    console.warn("PERSODUB_UPDATE lock check failed:", String((err && err.message) || err));
+    console.warn("PERSODUB_UPDATE lock check failed:", errorText(err));
     return [];
   }
 }

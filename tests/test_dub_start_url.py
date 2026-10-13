@@ -18,8 +18,8 @@ from app.main import app
 def _models_ready(monkeypatch):
     # Model files live in a kit these tests never build -- the 409
     # preflight is exercised in tests/test_dub_start_preflight.py.
-    from app.api import dub as _dub
-    monkeypatch.setattr(_dub, "_missing_models", lambda *a, **kw: [])
+    from app.api import _launch as launch_api
+    monkeypatch.setattr(launch_api, "missing_models", lambda *a, **kw: [])
 
 client = TestClient(app, base_url="http://127.0.0.1")
 

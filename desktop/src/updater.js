@@ -1,5 +1,6 @@
 // Auto-update decision logic. Pure functions -- the Electron wiring lives in
-// main.js; everything testable without Electron lives here.
+// updateFlow.js; everything testable without Electron lives here.
+import { editionFeed } from "./edition.js";
 
 /**
  * Should this run check for updates at all?
@@ -17,28 +18,50 @@ export function resolveUpdateMode({ isPackaged, env }) {
 }
 
 /**
- * Which feed to read. null = the app's bundled app-update.yml (GitHub
- * Releases, written by electron-builder from build.publish). A
- * PERSODUB_UPDATE_URL override points at a generic HTTP feed -- how the
- * update flow is tested against a local server without publishing anything.
+ * Whether a downloaded update installs when the app is simply quit. Never: the
+ * user picks the moment with "Restart to update" on every platform (owner's
+ * rule, 2026-10-06). Windows had always waited for the button -- its NSIS run
+ * fails, after the window is gone, whenever another program holds a file in
+ * the install folder -- and Mac now waits for it too.
  */
-export function resolveFeed(env) {
+export const INSTALL_ON_QUIT = false;
+
+/**
+ * Which feed to read: the edition's GitHub Releases (edition.js), set at run
+ * time rather than taken from the bundled app-update.yml, so one build.publish
+ * entry serves both editions. A PERSODUB_UPDATE_URL override points at a
+ * generic HTTP feed instead -- how the update flow is tested against a local
+ * server without publishing anything.
+ */
+export function resolveFeed(env, edition) {
   const url = env.PERSODUB_UPDATE_URL;
   if (url) return { provider: "generic", url };
-  return null;
+  return editionFeed(edition);
+}
+
+// What the page's update window shows beside the version: the release's
+// date and notes, as electron-updater's UpdateInfo carries them (the notes
+// may be HTML, plain text or a list; the page reduces them to text lines).
+// Only what is present, so a state without them stays as small as before.
+function about(info) {
+  return {
+    ...(info?.releaseDate ? { releaseDate: info.releaseDate } : {}),
+    ...(info?.releaseNotes ? { releaseNotes: info.releaseNotes } : {}),
+  };
 }
 
 /**
  * The update as the page should see it, folded from electron-updater's
- * events: {version, phase: "downloading" | "ready", pct}. Kept outside
- * main.js so the two-step announcement ("found, downloading" first, "ready"
+ * events: {version, phase: "downloading" | "ready", pct, releaseDate?,
+ * releaseNotes?}. Kept outside
+ * updateFlow.js so the two-step announcement ("found, downloading" first, "ready"
  * once the file is on disk) is testable. Returns `prev` unchanged for events
  * that carry nothing new -- progress before a version is known, or an event
  * this shell does not announce.
  */
 export function nextUpdateState(prev, event, info) {
   if (event === "update-available" && info?.version) {
-    return { version: info.version, phase: "downloading", pct: 0 };
+    return { version: info.version, phase: "downloading", pct: 0, ...about(info) };
   }
   if (event === "download-progress" && prev?.version) {
     // electron-updater reports progress many times a second; only a whole
@@ -47,7 +70,7 @@ export function nextUpdateState(prev, event, info) {
     return pct === prev.pct ? prev : { ...prev, pct };
   }
   if (event === "update-downloaded" && (info?.version || prev?.version)) {
-    return { version: info?.version || prev.version, phase: "ready", pct: 100 };
+    return { ...prev, version: info?.version || prev.version, phase: "ready", pct: 100, ...about(info) };
   }
   return prev;
 }

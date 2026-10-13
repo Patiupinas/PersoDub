@@ -90,7 +90,7 @@ def has_audio(path, ffprobe):
         return True
     r = subprocess.run([ffprobe, "-v", "error", "-select_streams", "a:0",
                         "-show_entries", "stream=index", "-of", "csv=p=0", path],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     return bool((r.stdout or "").strip())
 
 
@@ -580,7 +580,7 @@ def main():
     # the pipe app/eraser.py is reading: thousands of carriage-return updates
     # would arrive between two of our own lines. Sent nowhere instead -- the
     # `progress N%` lines above are what the job's log is for.
-    sys.__stdout__ = open(os.devnull, "w")
+    sys.__stdout__ = open(os.devnull, "w", encoding="utf-8")
 
     from backend.config import config, tr
     from backend.main import SubtitleRemover

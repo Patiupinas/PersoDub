@@ -8,7 +8,7 @@
 // and the shell says so in its log rather than to the page.
 //
 // Free of fs and electron so the node:test unit tests run with nothing else
-// present -- the caller passes the two folders (see desktop/main.js).
+// present -- the caller passes the two folders (see downloadsIpc.js).
 import { resolve, sep } from "node:path";
 
 /** Is `target` that folder, or something inside it? */

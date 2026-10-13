@@ -28,6 +28,11 @@ ANALYTICS_OFF_KEY = "PERSODUB_NO_ANALYTICS"
 # someone who does not want their logs sent still shows up in the count.
 REPORTS_OFF_KEY = "PERSODUB_NO_REPORTS"
 
+# The app's language ("auto", "en" or "ko"), from Settings > About. One line
+# for all three parts: the engine (app/i18n.py), the page (through
+# GET /api/settings) and the desktop shell (desktop/src/i18n.js) all read it.
+LANG_KEY = "PERSODUB_LANG"
+
 KIT_ENV = "kit.env"
 # The file was mac.env before Windows existed. The desktop shell renames it on
 # startup (kitEnv.js migrateKitEnv), but this module also runs where that shell
@@ -162,7 +167,9 @@ def _write_env(to_set: Dict[str, str]) -> None:
     for v in to_set.values():
         # A newline would inject arbitrary KEY=value lines into the engine env.
         if any(ch in v for ch in "\r\n") or not v.isprintable():
-            raise ValueError("API keys must be a single line of printable text")
+            # Imported here: app/i18n.py reads its setting through this module.
+            from app.i18n import t
+            raise ValueError(t("API keys must be a single line of printable text"))
     if to_set:
         shutil.copy2(path, path + ".bak")
         with open(path, encoding="utf-8") as f:
@@ -176,7 +183,8 @@ def _write_env(to_set: Dict[str, str]) -> None:
 
 # The per-stage dub defaults (app/setup.py) live in kit.env too. Not API keys,
 # so not in MANAGED_KEYS; the same writer, the same backup, the same 0600.
-DEFAULT_KEYS = ("DUB_MODE", "SEP_ENGINE", "STT_ENGINE", "TRANSLATE_ENGINE", "VOICE_QUALITY")
+DEFAULT_KEYS = ("DUB_MODE", "SEP_ENGINE", "STT_ENGINE", "TRANSLATE_ENGINE", "VOICE_QUALITY",
+                "TTS_ENGINE")
 
 
 def write_values(values: Dict[str, str]) -> None:
@@ -218,3 +226,10 @@ def write_reports_off(off: bool) -> None:
     """Turn automatic failure reports off, or back on. Like the counts' switch,
     it takes effect on the next failure rather than the next restart."""
     _write_env({REPORTS_OFF_KEY: "1" if off else "0"})
+
+
+def write_language(value: str) -> None:
+    """Save the app's language setting. The caller checks the value; the
+    engine switches through app.i18n.set_language, the shell re-reads this
+    line at its next launch."""
+    _write_env({LANG_KEY: value})

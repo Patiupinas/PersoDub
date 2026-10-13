@@ -2,7 +2,9 @@ from app.text.srt import (
     borrow_time,
     build_srt,
     estimate_seconds,
+    merge_by_pause,
     parse_srt,
+    split_at_sentence_ends,
     split_cues_into_sentences,
 )
 
@@ -37,16 +39,74 @@ def test_build_srt_roundtrip():
     assert abs(rebuilt[1]["start"] - cues[1]["start"]) < 0.001
 
 
-def test_split_cues_into_sentences_splits_multi_sentence():
-    cues = [{"start": 0.0, "end": 6.0, "text": "What is your dream? Do you have a plan? Why fail?"}]
+def test_split_cues_into_sentences_splits_a_block_longer_than_ten_seconds():
+    cues = [{"start": 0.0, "end": 24.0, "text": "What is your dream? Do you have a plan? Why fail?"}]
     out = split_cues_into_sentences(cues)
     assert len(out) == 3
     assert out[0]["text"] == "What is your dream?"
     assert out[2]["text"] == "Why fail?"
     # times stay contiguous and the original end time is preserved
     assert out[0]["start"] == 0.0
-    assert out[-1]["end"] == 6.0
+    assert out[-1]["end"] == 24.0
     assert out[0]["end"] == out[1]["start"]
+
+
+def test_split_cues_keeps_a_block_of_ten_seconds_or_less_whole():
+    cues = [{"start": 0.0, "end": 6.0, "text": "What is your dream? Do you have a plan? Why fail?"}]
+    assert split_cues_into_sentences(cues) == cues
+
+
+def test_split_cues_joins_the_sentences_of_a_long_block_back_up_to_ten_seconds():
+    text = "One two three. Four five six. Seven eight nine. Ten eleven twelve."
+    out = split_cues_into_sentences([{"start": 0.0, "end": 16.0, "text": text}])
+    assert [c["text"] for c in out] == ["One two three. Four five six.", "Seven eight nine. Ten eleven twelve."]
+    assert all(c["end"] - c["start"] <= 10.0 for c in out)
+
+
+def test_merge_by_pause_joins_lines_said_without_a_pause():
+    cues = [{"start": 0.0, "end": 2.0, "text": "A.", "speaker_id": "S"},
+            {"start": 2.2, "end": 4.0, "text": "B.", "speaker_id": "S"},
+            {"start": 5.0, "end": 6.0, "text": "C.", "speaker_id": "S"}]  # 1.0s pause before C
+    out = merge_by_pause(cues)
+    assert [(c["start"], c["end"], c["text"]) for c in out] == [(0.0, 4.0, "A. B."), (5.0, 6.0, "C.")]
+
+
+def test_merge_by_pause_joins_a_sentence_across_a_pause_but_not_two_sentences():
+    # The speaker pauses 1.2s inside "I was a young researcher ... and he said"; the
+    # pause used to end the line mid-sentence (brown, 2026-10-07).
+    cues = [{"start": 0.0, "end": 3.0, "text": "When I was a young researcher,", "speaker_id": "S"},
+            {"start": 4.2, "end": 6.0, "text": "my professor said no.", "speaker_id": "S"},
+            {"start": 7.2, "end": 8.0, "text": "Really?", "speaker_id": "S"}]
+    out = merge_by_pause(cues)
+    assert [c["text"] for c in out] == ["When I was a young researcher, my professor said no.", "Really?"]
+
+
+def test_merge_by_pause_keeps_a_mid_sentence_cut_over_the_limit_and_an_unpunctuated_pause():
+    long = [{"start": 0.0, "end": 6.0, "text": "When I was a young researcher,", "speaker_id": "S"},
+            {"start": 7.2, "end": 10.5, "text": "my professor said no.", "speaker_id": "S"}]
+    assert len(merge_by_pause(long)) == 2
+    # A transcript with no sentence marks at all is still cut at its pauses.
+    plain = [{"start": 0.0, "end": 2.0, "text": "넌 꿈이 뭐니", "speaker_id": "S"},
+             {"start": 3.0, "end": 4.0, "text": "계획이 있긴 하니", "speaker_id": "S"}]
+    assert len(merge_by_pause(plain)) == 2
+
+
+def test_split_at_sentence_ends_cuts_a_block_where_its_words_end_a_sentence():
+    words = [{"start": 0.1, "end": 0.4, "word": " I"}, {"start": 0.4, "end": 0.9, "word": " know."},
+             {"start": 1.6, "end": 1.9, "word": " You"}, {"start": 1.9, "end": 2.4, "word": " too?"},
+             {"start": 2.5, "end": 2.9, "word": " Fine"}]
+    cue = {"start": 0.0, "end": 3.0, "text": "I know. You too? Fine", "speaker_id": "S", "words": words}
+    out = split_at_sentence_ends([cue, {"start": 3.0, "end": 4.0, "text": "No words here."}])
+    assert [(c["start"], c["end"], c["text"]) for c in out] == [
+        (0.0, 0.9, "I know."), (1.6, 2.4, "You too?"), (2.5, 3.0, "Fine"), (3.0, 4.0, "No words here.")]
+    assert all(c["speaker_id"] == "S" for c in out[:3]) and len(out[1]["words"]) == 2
+
+
+def test_merge_by_pause_keeps_speakers_empty_lines_and_the_ten_second_limit_apart():
+    a = {"start": 0.0, "end": 6.0, "text": "A.", "speaker_id": "S"}
+    assert len(merge_by_pause([a, {"start": 6.1, "end": 7.0, "text": "B.", "speaker_id": "T"}])) == 2
+    assert len(merge_by_pause([a, {"start": 6.1, "end": 7.0, "text": "", "speaker_id": "S"}])) == 2
+    assert len(merge_by_pause([a, {"start": 6.1, "end": 10.5, "text": "B.", "speaker_id": "S"}])) == 2
 
 
 def test_split_cues_single_sentence_unchanged():
@@ -91,9 +151,9 @@ def test_estimate_seconds_english_counts_syllables_not_chars():
 
 
 def test_estimate_seconds_korean_rate_reasonable():
-    # a 10-syllable line ~ 2.3s (2026-07-30 measured Qwen3-TTS CPS: median 4.38, using 4.4)
+    # a 10-syllable line ~ 1.6s (2026-10-07 measured Qwen3-TTS rate: 6.2)
     sec = estimate_seconds("안녕하세요 반갑습니다", "ko")
-    assert 2.0 < sec < 2.5
+    assert 1.5 < sec < 1.9
 
 
 def test_borrow_time_merges_overflowing_cue_with_next():
@@ -209,7 +269,7 @@ def test_borrow_time_still_merges_same_speaker_with_labels():
 
 def test_split_cues_preserves_speaker_id():
     # The splitter rebuilt cues as {start,end,text}, dropping every other key.
-    cues = [{"start": 0.0, "end": 4.0,
+    cues = [{"start": 0.0, "end": 24.0,
              "text": "First sentence here. Second sentence here.",
              "speaker_id": "Joker"}]
     out = split_cues_into_sentences(cues)
@@ -239,3 +299,12 @@ def test_split_then_borrow_never_merges_across_speakers():
             "cross-speaker merge produced: %r" % c["text"]
         )
     assert all(c.get("speaker_id") in ("Joker", "Batman") for c in out)
+
+
+def test_every_language_the_local_voice_speaks_has_a_measured_rate():
+    # Without its own rate a language fell to the 5.0 default: Russian, counted
+    # in words, was sized over twice too long (2026-10-02).
+    from app.config import LANGUAGE_NAMES
+    from app.text.srt import _SYL_PER_SEC
+    for code, name in LANGUAGE_NAMES.items():
+        assert _SYL_PER_SEC[code] == _SYL_PER_SEC[name.lower()]

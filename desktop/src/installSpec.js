@@ -2,12 +2,14 @@
 // ctx.kitDir so Phase-1 checkKit/startEngines work unchanged.
 // All external effects (download/extract/run) come from ctx so tests and
 // PERSODUB_FAKE mode can substitute them.
-import { existsSync, mkdirSync, cpSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, cpSync, writeFileSync, rmSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { KIT_ENV } from "./kitEnv.js";
 import { IS_WIN, venvBin, standalonePython, exeName, TTS_DEVICE, TORCH_VARIANT } from "./platform.js";
+import { errorText } from "./errorText.js";
+import { t } from "./i18n.js";
 
 // Standalone CPython, per platform. macOS uses the Apple Silicon build; Windows
 // the x86_64 MSVC build (root layout python\python.exe, no bin/). Same upstream
@@ -76,8 +78,8 @@ export const STEP_IDS = [
 
 // The steps that leave the base install (payload, python, venv-app, ffmpeg,
 // cleanup, kit-env) add up to under a gigabyte; everything else belongs to a
-// pack, installed later on demand (a later task adds the IPC for that). The
-// boot flow (main.js) only refreshes a pack that is already on disk.
+// pack, installed later on demand (src/packIpc.js). The
+// boot flow (bootFlow.js) only refreshes a pack that is already on disk.
 export const PACKS = [
   { id: "engine", steps: ["venv-engines", "models", "nonverbal-weights"] },
   { id: "ollama-runtime", steps: ["ollama-runtime"] },
@@ -115,6 +117,16 @@ export function packInstalled(kitDir, id) {
   if (id === "ollama-runtime") return existsSync(join(kitDir, "ollama", exeName("ollama")));
   if (id === "subtitle-eraser") return existsSync(join(kitDir, ".install", "venv-eraser.ok"));
   return false;
+}
+
+/** What the boot install runs: the base steps, plus the steps of only the
+ *  packs already on this kit's disk. A pack never installed is left alone
+ *  until the page asks for it (packIpc.js, shell:install-pack). */
+export function bootSteps(steps, kitDir) {
+  return [
+    ...baseSteps(steps),
+    ...PACKS.filter((p) => packInstalled(kitDir, p.id)).flatMap((p) => packSteps(steps, p.id)),
+  ];
 }
 
 // The two kit.env keys the subtitle-eraser pack owns. The app reads their
@@ -209,6 +221,22 @@ function whisperCachePath() {
   return join(base, "whisper", "base.pt");
 }
 
+// openai-whisper's own base.pt (its azureedge URL, content-length HEAD-checked
+// 2026-09-29): a finished download is exactly this many bytes. existsSync
+// alone let a partial file from an install that died mid-download count as
+// done -- this step's python call never ran to notice, and every laugh,
+// breath and sigh silently vanished from every dub instead (the same
+// "install died halfway = broken forever" shape as the 2026-08-14 bug).
+export const WHISPER_BASE_PT_BYTES = 145262807;
+
+function whisperCacheDone() {
+  try {
+    return statSync(whisperCachePath()).size === WHISPER_BASE_PT_BYTES;
+  } catch {
+    return false;
+  }
+}
+
 // Knobs added to kit.env after the initial template (writeKitEnv) landed --
 // listed here (with a real "#" comment each, for the file itself) so the
 // upgrade-merge path (the "kit-env" step below) can append them to an
@@ -221,8 +249,8 @@ const LEGACY_TORCH_VARIANT = IS_WIN ? "cu128" : "mps";
 const KIT_ENV_MANAGED_ADDITIONS = [
   {
     key: "PERSODUB_LEAKAGE_GATE",
-    comment: "# Stage-5/6 leakage gate: log-only dark launch until validated on Mac.",
-    line: "PERSODUB_LEAKAGE_GATE=measure",
+    comment: "# Stage-5/6 leakage check: cancels the original voice it finds in the finished dub.",
+    line: "PERSODUB_LEAKAGE_GATE=on",
   },
   {
     key: "PERSODUB_SCORER_ASR_TIMEOUT",
@@ -317,8 +345,10 @@ export function writeKitEnv({ kitDir, torchVariant = torchVariantFor(kitDir) }) 
     `PERSODUB_APP_REPO_DIR=${k("app")}`,
     `PERSODUB_KIT_DIR=${kitDir}`,
     `PERSODUB_BIN_DIR=${k("bin")}`,
-    // Stage-5/6 leakage gate: log-only dark launch until validated on Mac.
-    "PERSODUB_LEAKAGE_GATE=measure",
+    // Stage-5/6 leakage check: cancels the original voice it finds in the
+    // finished dub. Shipped log-only ("measure") until the owner heard the
+    // fix make a difference (2026-10-06).
+    "PERSODUB_LEAKAGE_GATE=on",
     // Mac-CPU-calibrated take-scorer ASR timeout (backend default: 15s).
     "PERSODUB_SCORER_ASR_TIMEOUT=60",
     // Mac-CPU-calibrated diarization timeout (backend default: 600s).
@@ -338,11 +368,17 @@ export function writeKitEnv({ kitDir, torchVariant = torchVariantFor(kitDir) }) 
   ].join("\n"), kitDir);
 }
 
-// Adds any of KIT_ENV_MANAGED_ADDITIONS missing from an existing kit.env,
-// preserving every existing line untouched -- app/settings_env.py writes user
-// API keys into this same file and they must survive an upgrade. A no-op
-// (returns text unchanged) once all managed keys are already present.
+// The log-only value every kit.env carried from 0.7.0 until the leakage check
+// was validated by ear (2026-10-06); an existing kit is moved to "on".
+const LEAKAGE_GATE_DARK_LAUNCH = /^PERSODUB_LEAKAGE_GATE=measure$/m;
+
+// Adds any of KIT_ENV_MANAGED_ADDITIONS missing from an existing kit.env and
+// turns the leakage check's dark-launch value on, preserving every other line
+// untouched -- app/settings_env.py writes user API keys into this same file
+// and they must survive an upgrade. A no-op (returns text unchanged) once all
+// managed keys are already present.
 export function withMissingKitEnvKeys(text) {
+  text = text.replace(LEAKAGE_GATE_DARK_LAUNCH, "PERSODUB_LEAKAGE_GATE=on");
   const missing = KIT_ENV_MANAGED_ADDITIONS.filter((a) => !text.includes(`${a.key}=`));
   if (missing.length === 0) return text;
   const sep = text.endsWith("\n") ? "" : "\n";
@@ -365,6 +401,12 @@ const venvEnginesBytes = (variant) => (IS_WIN ? (variant === "cpu" ? 1.5 * GB : 
 // been measured, so it is budgeted at the Mac figure plus half a gigabyte.
 const venvEraserBytes = (variant) => (IS_WIN ? (variant === "cpu" ? 3.5 * GB : 7.5 * GB) : 3 * GB);
 
+// The translation runtime's archive is 139 MB on macOS but ~1.5 GB on
+// Windows; unpacked, Windows measured 1.5-1.9 GB on disk (audit, 2026-09-29).
+// A flat 0.5 GB budget let a Windows install start this step without enough
+// room left and fail partway through.
+const ollamaRuntimeBytes = IS_WIN ? 2.0 * GB : 0.5 * GB;
+
 /** How much room the steps that have not run yet still need. */
 export async function bytesStillNeeded(steps) {
   let total = 0;
@@ -379,7 +421,7 @@ export async function bytesStillNeeded(steps) {
 // the step stays open until every one is gone -- a locked file on Windows
 // just means it is retried next launch.
 // ctx.abandonedKitDir: the kit at the pre-0.3.0 path (Electron's userData)
-// that main.js redirected away from, carrying its models/ over. It stayed
+// that bootFlow.js redirected away from, carrying its models/ over. It stayed
 // behind holding ~3 GB with nothing telling the user it was safe to delete
 // (issue #6). Removed only once models/ is gone from it, so a failed carry-over
 // never costs the models.
@@ -475,7 +517,7 @@ export function buildSteps(ctx) {
     run: async (report) => {
       const venvDir = k(venvName);
       const budget = existsSync(venvDir) ? Math.min(bytes, 0.5 * GB) : bytes;
-      report(null, `Creating ${venvName}`);
+      report(null, t("Creating {name}", { name: venvName }));
       await ctx.run([py, "-m", "venv", venvDir]);
       // Upgrade pip via `python -m pip`, not `pip.exe`: on Windows pip.exe is
       // locked while running and cannot rewrite itself ("To modify pip, please
@@ -504,7 +546,7 @@ export function buildSteps(ctx) {
           // refuses the flag outright (issue #111). The same install without
           // it only loses the byte count.
           if (!RAW_BAR_REFUSED.test(String(e && e.message))) throw e;
-          report(null, "pip is older than expected; installing without the progress count");
+          report(null, t("pip is older than expected; installing without the progress count"));
           await ctx.run(pipArgs("off"), { onLine: (l) => report(null, l.slice(0, 120)) });
         }
       }
@@ -532,7 +574,7 @@ export function buildSteps(ctx) {
     if (!existsSync(path)) return;   // upstream moved it: the import check below is what judges
     const text = readFileSync(path, "utf8");
     if (!text.includes(PY312_FSTRING)) return;   // already plain 3.11 syntax
-    report(null, "Making the eraser readable to Python 3.11");
+    report(null, t("Making the eraser readable to Python 3.11"));
     writeFileSync(path, text.replaceAll(PY312_FSTRING, '{frame_info["len"]}'));
   };
 
@@ -545,7 +587,7 @@ export function buildSteps(ctx) {
   // passed). PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: paddlex otherwise reaches
   // out to a model registry on import.
   const eraserImports = async (venvPy, report) => {
-    report(null, "Checking the subtitle eraser");
+    report(null, t("Checking the subtitle eraser"));
     const vsr = k("eraser", "vsr");
     const recent = [];
     try {
@@ -558,7 +600,7 @@ export function buildSteps(ctx) {
     } catch (err) {
       // The tool's own last line, not the whole traceback: that is the
       // sentence naming the file and the reason.
-      const why = recent[recent.length - 1] || String((err && err.message) || err);
+      const why = recent[recent.length - 1] || errorText(err);
       throw new Error(`The subtitle eraser installed but could not be loaded: ${why.slice(0, 200)}`);
     }
   };
@@ -571,14 +613,14 @@ export function buildSteps(ctx) {
   // Windows GPU machine) and the first step said 790 MB, which read as a
   // tenfold contradiction until the second step named its share (2026-09-10).
   const eraserVenv = venvStep("venv-eraser",
-                              `Installing its Python parts (2 of 2, about ${(venvEraserBytes(torchVariant) / GB).toFixed(1)} GB)`,
+                              t("Installing its Python parts (2 of 2, about {size} GB)", { size: (venvEraserBytes(torchVariant) / GB).toFixed(1) }),
                               venvEraserBytes(torchVariant), "venv-eraser",
                               [torchEraser, ["-r", k(reqEraser)]], eraserImports);
 
   const steps = [
     {
       id: "payload",
-      title: "Copying bundled files",
+      title: t("Copying bundled files"),
       bytes: 0.3 * GB,
       // Done only when the kit's KIT_VERSION matches the app's own bundled
       // payload -- so an app update always re-copies app code + KIT_VERSION,
@@ -593,7 +635,7 @@ export function buildSteps(ctx) {
         return readFileSync(kitVersionPath, "utf8").trim() === readFileSync(payloadVersionPath, "utf8").trim();
       },
       run: async (report) => {
-        report(null, "Copying app code");
+        report(null, t("Copying app code"));
         cpSync(join(ctx.payloadDir, "app-repo"), k("app"), { recursive: true });
         cpSync(join(ctx.payloadDir, "kit-src", "sidecar"), k("sidecar"), { recursive: true });
         cpSync(join(ctx.payloadDir, "kit-src", reqEngines), k(reqEngines));
@@ -603,7 +645,7 @@ export function buildSteps(ctx) {
         if (existsSync(cam)) {
           cpSync(cam, k("models", "campplus", "campplus.onnx"));
         } else {
-          report(null, "Downloading speaker model (27 MB)");
+          report(null, t("Downloading speaker model (27 MB)"));
           await ctx.download(CAMPPLUS_URL, k("models", "campplus", "campplus.onnx"),
                              { sha256: CAMPPLUS_SHA256 });
         }
@@ -612,7 +654,7 @@ export function buildSteps(ctx) {
     },
     {
       id: "python",
-      title: "Downloading Python runtime (~50 MB)",
+      title: t("Downloading Python runtime (~50 MB)"),
       bytes: 0.2 * GB,
       isDone: () => existsSync(okPath("python")),
       run: async (report) => {
@@ -620,9 +662,9 @@ export function buildSteps(ctx) {
         const tarball = k("downloads", "python.tar.gz");
         await ctx.download(PYTHON_URL, tarball, {
           sha256: PYTHON_SHA256,
-          onProgress: (p) => report(p.total ? Math.round((100 * p.received) / p.total) : null, "Downloading Python"),
+          onProgress: (p) => report(p.total ? Math.round((100 * p.received) / p.total) : null, t("Downloading Python")),
         });
-        report(null, "Extracting Python");
+        report(null, t("Extracting Python"));
         await ctx.extract(tarball, ctx.kitDir);
         // Best-effort: the extract above is the real work, already done. An
         // antivirus/indexer holding the archive open (EBUSY/EPERM) must not
@@ -632,19 +674,19 @@ export function buildSteps(ctx) {
           rmSync(tarball, { force: true }); // 26 MB the kit never reads again
         } catch {
           console.warn(`PERSODUB_INSTALL could not remove ${tarball}; leaving it in downloads/`);
-          report(null, "Could not remove python.tar.gz; leaving it in downloads/");
+          report(null, t("Could not remove {file}; leaving it in downloads/", { file: "python.tar.gz" }));
         }
         markOk("python");
       },
     },
-    venvStep("venv-app", "Installing app environment", 0.2 * GB, "app_venv", [["-r", k("app", "requirements.txt")]]),
+    venvStep("venv-app", t("Installing app environment"), 0.2 * GB, "app_venv", [["-r", k("app", "requirements.txt")]]),
     {
       id: "ffmpeg",
-      title: "Setting up ffmpeg",
+      title: t("Setting up ffmpeg"),
       bytes: 0.2 * GB,
       isDone: () => existsSync(k("bin", exeName("ffmpeg"))) && existsSync(k("bin", exeName("ffprobe"))),
       run: async (report) => {
-        report(null, "Fetching ffmpeg binaries");
+        report(null, t("Fetching ffmpeg binaries"));
         const lines = [];
         // static-ffmpeg lives in app_venv (requirements.txt): the one venv a
         // light install always has, so ffmpeg no longer waits on the engines.
@@ -674,7 +716,7 @@ export function buildSteps(ctx) {
     // qwen) because the original Linux host had Python 3.8 for some of them;
     // on macOS/Windows with one 3.11 that split only bought a second copy of
     // torch (0.4 GB on macOS, 8 GB of CUDA wheels on Windows).
-    venvStep("venv-engines", "Installing AI engines", venvEnginesBytes(torchVariant), "engines_venv", [
+    venvStep("venv-engines", t("Installing AI engines"), venvEnginesBytes(torchVariant), "engines_venv", [
       ...torchCuda,
       ["-r", k(reqEngines)],
     ]),
@@ -684,26 +726,26 @@ export function buildSteps(ctx) {
       // venv-engines succeeded (runInstall stops at the first failure), shows
       // on the install screen, and is skipped forever once everything is gone.
       id: "cleanup",
-      title: "Cleaning up",
+      title: t("Cleaning up"),
       bytes: 0,
       verify: false,   // a locked leftover is dead weight, never a failed install
       isDone: () => LEFTOVERS(k, ctx).every((l) => !existsSync(l.path)),
       run: async (report) => {
         for (const l of LEFTOVERS(k, ctx)) {
           if (!existsSync(l.path)) continue;
-          report(null, `Removing ${basename(l.path)}`);
+          report(null, t("Removing {file}", { file: basename(l.path) }));
           try {
             rmSync(l.path, { recursive: !!l.recursive, force: true, maxRetries: 5, retryDelay: 200 });
           } catch {
             console.warn(`PERSODUB_INSTALL could not remove ${l.path}; will retry next launch`);
-            report(null, `Could not remove ${basename(l.path)} yet; will retry next launch`);
+            report(null, t("Could not remove {file} yet; will retry next launch", { file: basename(l.path) }));
           }
         }
       },
     },
     {
       id: "models",
-      title: "Downloading sound-separation model (~80 MB)",
+      title: t("Downloading sound-separation model (~80 MB)"),
       bytes: 0.1 * GB,
       isDone: () => MODELS.every(modelDone),
       run: async (report) => {
@@ -715,7 +757,7 @@ export function buildSteps(ctx) {
         const venvPy = venvBin(k("app_venv"), "python");
         for (const m of MODELS) {
           if (modelDone(m)) continue;
-          report(null, `Downloading ${m.name}`);
+          report(null, t("Downloading {name}", { name: m.name }));
           mkdirSync(k(...m.dir), { recursive: true });
           await ctx.run([venvPy, "-m", "huggingface_hub.cli.hf", "download", ...m.args, "--revision", m.revision, "--local-dir", k(...m.dir)], {
             onLine: (l) => report(null, l.slice(0, 120)),
@@ -728,27 +770,27 @@ export function buildSteps(ctx) {
       // the in-app model catalog (downloaded by the Python server on first
       // use), which is what makes this a light install.
       id: "ollama-runtime",
-      title: "Downloading the translation runtime",
-      bytes: 0.5 * GB,
+      title: t("Downloading the translation runtime"),
+      bytes: ollamaRuntimeBytes,
       isDone: () => existsSync(k("ollama", exeName("ollama"))),
       run: async (report) => {
         // Resume: an already-extracted binary needs no second download.
         if (existsSync(k("ollama", exeName("ollama")))) return;
-        report(null, "Downloading the translation runtime");
+        report(null, t("Downloading the translation runtime"));
         mkdirSync(k("downloads"), { recursive: true });
         const archive = k("downloads", IS_WIN ? "ollama.zip" : "ollama.tgz");
         await ctx.download(OLLAMA_TGZ_URL, archive, {
           sha256: OLLAMA_TGZ_SHA256,
-          onProgress: (p) => report(p.total ? Math.round((100 * p.received) / p.total) : null, "Downloading the translation runtime"),
+          onProgress: (p) => report(p.total ? Math.round((100 * p.received) / p.total) : null, t("Downloading the translation runtime")),
         });
-        report(null, "Unpacking the translation runtime");
+        report(null, t("Unpacking the translation runtime"));
         await ctx.extract(archive, k("ollama"));
         // Best-effort, same reasoning as the python step above.
         try {
           rmSync(archive, { force: true }); // 139 MB (1.5 GB on Windows) the kit never reads again
         } catch {
           console.warn(`PERSODUB_INSTALL could not remove ${archive}; leaving it in downloads/`);
-          report(null, `Could not remove ${IS_WIN ? "ollama.zip" : "ollama.tgz"}; leaving it in downloads/`);
+          report(null, t("Could not remove {file}; leaving it in downloads/", { file: IS_WIN ? "ollama.zip" : "ollama.tgz" }));
         }
       },
     },
@@ -757,11 +799,15 @@ export function buildSteps(ctx) {
       // deleting every laugh/breath/sigh from every dub -- so this step
       // fails the install loudly instead, same as any other step here.
       id: "nonverbal-weights",
-      title: "Downloading nonverbal-detection model (~140 MB)",
+      title: t("Downloading nonverbal-detection model (~140 MB)"),
       bytes: 0.2 * GB,
-      isDone: () => existsSync(whisperCachePath()),
+      isDone: () => whisperCacheDone(),
       run: async (report) => {
-        report(null, "Downloading nonverbal-detection model");
+        report(null, t("Downloading nonverbal-detection model"));
+        // Wrong size (or nothing there yet): a stale partial from a died
+        // install does not fool whisper.load_model into skipping its own
+        // download, so it never gets the chance to trust it either.
+        rmSync(whisperCachePath(), { force: true });
         await ctx.run([venvBin(k("engines_venv"), "python"), "-c", "import whisper; whisper.load_model('base')"]);
       },
     },
@@ -770,7 +816,7 @@ export function buildSteps(ctx) {
       // pinned commit's zip. Its one top folder is stripped so backend/ sits
       // directly in eraser/vsr -- the path kit.env hands the app.
       id: "eraser-src",
-      title: "Downloading the eraser (1 of 2, 790 MB)",
+      title: t("Downloading the eraser (1 of 2, 790 MB)"),
       // The archive and the unpacked tree are on disk at the same time
       // (0.79 + 1.01 GB); the archive goes at the end of the step.
       bytes: 1.8 * GB,
@@ -782,9 +828,9 @@ export function buildSteps(ctx) {
         const archive = k("downloads", "eraser-src.zip");
         await ctx.download(ERASER_SRC_URL, archive, {
           sha256: ERASER_SRC_SHA256,
-          onProgress: (p) => report(p.total ? Math.round((100 * p.received) / p.total) : null, "Downloading the subtitle eraser"),
+          onProgress: (p) => report(p.total ? Math.round((100 * p.received) / p.total) : null, t("Downloading the subtitle eraser")),
         });
-        report(null, "Unpacking the subtitle eraser");
+        report(null, t("Unpacking the subtitle eraser"));
         // Whatever an interrupted earlier try left half-unpacked: tar over a
         // stale tree would leave the two mixed, and the marker below would
         // then vouch for it.
@@ -796,7 +842,7 @@ export function buildSteps(ctx) {
           rmSync(archive, { force: true }); // 790 MB the kit never reads again
         } catch {
           console.warn(`PERSODUB_INSTALL could not remove ${archive}; leaving it in downloads/`);
-          report(null, "Could not remove eraser-src.zip; leaving it in downloads/");
+          report(null, t("Could not remove {file}; leaving it in downloads/", { file: "eraser-src.zip" }));
         }
         markOk("eraser-src", ERASER_SRC_SHA256);
       },
@@ -808,7 +854,7 @@ export function buildSteps(ctx) {
       } },
     {
       id: "kit-env",
-      title: "Writing configuration",
+      title: t("Writing configuration"),
       bytes: 0,
       // Must also check the managed additions, not just the original sniff
       // key -- otherwise a kit installed before they existed would satisfy
@@ -816,19 +862,20 @@ export function buildSteps(ctx) {
       isDone: () => {
         if (!existsSync(k(KIT_ENV))) return false;
         const text = readFileSync(k(KIT_ENV), "utf8");
-        return text.includes("PERSODUB_KIT_DIR") && KIT_ENV_MANAGED_ADDITIONS.every((a) => text.includes(`${a.key}=`));
+        return text.includes("PERSODUB_KIT_DIR") && !LEAKAGE_GATE_DARK_LAUNCH.test(text)
+          && KIT_ENV_MANAGED_ADDITIONS.every((a) => text.includes(`${a.key}=`));
       },
       run: async (report) => {
         const path = k(KIT_ENV);
         if (!existsSync(path)) {
-          report(null, "Writing kit.env");
+          report(null, t("Writing kit.env"));
           writeFileSync(path, writeKitEnv({ kitDir: ctx.kitDir, torchVariant }));
           return;
         }
         // Existing kit (installed before these keys existed): merge, never
         // clobber -- app/settings_env.py writes user API keys into this same
         // file and they must survive.
-        report(null, "Updating kit.env");
+        report(null, t("Updating kit.env"));
         writeFileSync(path, withMissingKitEnvKeys(readFileSync(path, "utf8")));
       },
     },

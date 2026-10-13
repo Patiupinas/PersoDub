@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import engines_status, eraser, state
+from app.api import _launch as launch_api
 from app.api import downloads as downloads_api
 from app.api import erase as erase_api
 from app.jobs import JobCancelled
@@ -133,6 +134,41 @@ def test_half_a_trim_is_refused(erased):
     assert _start(trim_start="5", trim_end="5.1").status_code == 400
 
 
+def test_several_kept_parts_are_joined_before_the_job_starts(erased, monkeypatch):
+    joined = []
+    monkeypatch.setattr(erase_api, "check_ranges_fit", lambda kept, path: None)
+    monkeypatch.setattr(erase_api, "_cut_ranges", lambda p, kept: joined.append((p, kept)))
+    r = _start(ranges=json.dumps([[0, 3.4], [6.8, 10]]))
+    assert r.status_code == 200
+    job = _wait(r.json()["job_id"])
+    assert joined == [(erased[0]["src"], [[0, 3.4], [6.8, 10]])]
+    assert job["ranges"] == [[0, 3.4], [6.8, 10]] and job["trim"] is None
+
+
+def test_kept_parts_that_are_not_parts_are_refused_before_any_work(erased, monkeypatch):
+    joined = []
+    monkeypatch.setattr(erase_api, "_cut_ranges", lambda p, kept: joined.append(kept))
+    for bad in ["[[5, 2]]", "[[0, 1], [0.5, 2]]", "[[0, 0.2]]", "banana"]:
+        assert _start(ranges=bad).status_code == 400, bad
+    # A trim and kept parts at once would leave the video cut twice.
+    r = _start(trim_start="0", trim_end="3", ranges=json.dumps([[0, 1], [2, 3]]))
+    assert r.status_code == 400
+    assert joined == [] and erased == []
+
+
+def test_kept_parts_past_the_end_leave_no_folder_behind(erased, monkeypatch):
+    monkeypatch.setattr(erase_api.media, "video_duration", lambda path: 5.0)
+    day = os.path.join(state.WORKSPACE, launch_api.today())
+    def listed():
+        return set(os.listdir(day)) if os.path.isdir(day) else set()
+    before = listed()
+    r = _start(ranges=json.dumps([[0, 2], [4, 9]]), project="too long")
+    assert r.status_code == 400
+    assert "past the end" in r.json()["detail"]
+    assert listed() == before
+    assert erased == []
+
+
 def test_without_the_pack_nothing_is_copied_and_the_screen_is_told_which_pack(monkeypatch):
     monkeypatch.setattr(engines_status, "eraser_available", lambda: False)
     r = _start()
@@ -197,6 +233,88 @@ def test_saving_names_the_file_after_the_project_and_never_writes_over_one(erase
     second = client.post("/api/erase/%s/save" % jid, json={"dir": str(tmp_path)}).json()
     assert second["path"] != first["path"]
     assert open(first["path"], "rb").read() == b"clean-video"
+
+
+def test_audio_only_saves_the_cleaned_videos_sound_under_the_plain_name(erased, tmp_path, monkeypatch):
+    from app import media
+    jid = _start(project="my clip").json()["job_id"]
+    _wait(jid)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        open(cmd[-1], "wb").close()
+        class R:
+            returncode = 0
+            stderr = ""
+        return R()
+    monkeypatch.setattr(media, "has_audio", lambda p: True)
+    monkeypatch.setattr(media.subprocess, "run", fake_run)
+    r = client.post("/api/erase/%s/save" % jid, json={"dir": str(tmp_path), "audio": "wav"})
+    assert r.status_code == 200, r.text
+    assert os.path.basename(r.json()["path"]) == "my clip.wav"
+    assert calls[-1][calls[-1].index("-c:a") + 1] == "pcm_s16le" and calls[-1][-1] == r.json()["path"]
+    assert client.post("/api/erase/%s/save" % jid,
+                       json={"dir": str(tmp_path), "audio": "flac"}).status_code == 422
+    monkeypatch.setattr(media, "has_audio", lambda p: False)
+    assert client.post("/api/erase/%s/save" % jid,
+                       json={"dir": str(tmp_path), "audio": "mp3"}).status_code == 422
+
+
+def test_saving_in_a_picked_ratio_pads_the_saved_copy_only(erased, tmp_path, monkeypatch):
+    """The Ratio button's choice rides along (app/ratio.py): the saved file is
+    padded, the job's own cleaned video is not."""
+    from app import ratio
+    seen = []
+
+    def fake_pad(src, out, r):
+        seen.append(r)
+        if r != "9:16":
+            return False
+        open(out, "wb").write(b"padded")
+        return True
+    monkeypatch.setattr(ratio, "pad_to", fake_pad)
+    jid = _start(project="my clip").json()["job_id"]
+    _wait(jid)
+    plain = client.post("/api/erase/%s/save" % jid, json={"dir": str(tmp_path)}).json()
+    assert open(plain["path"], "rb").read() == b"clean-video"
+    padded = client.post("/api/erase/%s/save" % jid,
+                         json={"dir": str(tmp_path), "ratio": "9:16"}).json()
+    assert open(padded["path"], "rb").read() == b"padded"
+    assert seen == [None, "9:16"]
+    assert client.get("/api/erase/%s/video" % jid).content == b"clean-video"
+
+
+def test_the_cleaned_videos_sound_ignores_the_ratio_and_an_unknown_shape_writes_nothing(
+        erased, tmp_path, monkeypatch):
+    from app import media, ratio
+    jid = _start(project="my clip").json()["job_id"]
+    _wait(jid)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        open(cmd[-1], "wb").close()
+        class R:
+            returncode = 0
+            stderr = ""
+        return R()
+
+    def no_pad(*a):
+        raise AssertionError("the sound has no picture to pad")
+    monkeypatch.setattr(media, "has_audio", lambda p: True)
+    monkeypatch.setattr(media.subprocess, "run", fake_run)
+    monkeypatch.setattr(ratio, "pad_to", no_pad)
+    out = tmp_path / "out"
+    r = client.post("/api/erase/%s/save" % jid, json={"dir": str(out), "audio": "mp3", "ratio": "9:16"})
+    assert r.status_code == 200, r.text
+    assert os.path.basename(r.json()["path"]) == "my clip.mp3"
+    assert len(calls) == 1 and not any("pad=" in str(a) for a in calls[0])
+    # A video in a shape the app does not know: refused, and no file left.
+    bad = tmp_path / "bad"
+    r = client.post("/api/erase/%s/save" % jid, json={"dir": str(bad), "ratio": "7:3"})
+    assert r.status_code == 422 and r.json()["detail"] == "ratio must be original, 9:16, 16:9, 1:1 or 4:5"
+    assert not bad.exists() or not any(f.endswith(".mp4") for _, _, fs in os.walk(bad) for f in fs)
 
 
 def test_the_cleaned_video_is_handed_to_the_new_project_screen(erased):

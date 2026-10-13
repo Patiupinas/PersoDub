@@ -2,11 +2,13 @@
 screen needs to draw the "Download N GB of AI models to dub?" dialog."""
 import os
 import sys
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import engines_status, models, perso_client, state
+from app.api import _launch as launch_api
 from app.api import dub as dub_api
 from app.main import app
 
@@ -66,11 +68,11 @@ def _kit(monkeypatch, tmp_path):
     yield kit
 
 
-def _start(data_extra=None):
+def _start(data_extra=None, files_extra=None):
     data = {"language": "Korean", "language_code": "ko", "translate_engine": "gemini"}
     data.update(data_extra or {})
     return client.post("/api/dub/start",
-                       files={"video": ("v.mp4", b"vid", "video/mp4")}, data=data)
+                       files={"video": ("v.mp4", b"vid", "video/mp4"), **(files_extra or {})}, data=data)
 
 
 def test_409_lists_every_missing_model_and_no_job_is_created(monkeypatch, _kit):
@@ -100,7 +102,7 @@ def test_all_models_present_starts_the_job(monkeypatch, _kit):
 
 def test_perso_stt_does_not_need_whisper(monkeypatch, _kit):
     _put_tts(_kit)
-    monkeypatch.setattr(dub_api, "current_value", lambda k: "1" if k == "PERSO_SPACE_SEQ" else "x")
+    monkeypatch.setattr(launch_api, "current_value", lambda k: "1" if k == "PERSO_SPACE_SEQ" else "x")
     monkeypatch.setattr(dub_api, "run_dub", _fake_run_dub)
     r = _start({"stt_engine": "perso"})
     assert r.status_code == 200
@@ -147,7 +149,7 @@ def test_cloud_mode_needs_no_local_models(monkeypatch, _kit):
             return out_path
 
     monkeypatch.setattr(perso_client, "PersoClient", FakeClient)
-    monkeypatch.setattr(dub_api, "current_value", lambda k: "1" if k == "PERSO_SPACE_SEQ" else "x")
+    monkeypatch.setattr(launch_api, "current_value", lambda k: "1" if k == "PERSO_SPACE_SEQ" else "x")
     r = _start({"dub_mode": "perso"})
     assert r.status_code == 200
 
@@ -182,7 +184,9 @@ def test_a_fresh_install_is_asked_for_the_engine_pack_before_the_models(monkeypa
     engine_bytes = models._pack_bytes(next(e for e in models.load_catalog() if e["id"] == "engine"))
     assert missing[0] == {"id": "engine", "kind": "pack", "name": "Python + PyTorch", "bytes": engine_bytes,
                           "hint": "Separates the sound, transcribes and makes the voices on this computer."}
-    assert all(m["hint"] for m in missing), "every item says what it is for"
+    # Whisper and Qwen3-TTS have no hint in the catalog now (Settings' group
+    # titles say what they are for): the field is still there, empty.
+    assert [m["hint"] for m in missing[1:]] == ["", ""]
     assert [m["id"] for m in missing[1:]] == ["qwen3-tts", "whisper"]
     assert all(m["kind"] == "model" for m in missing[1:])
     assert r.json()["detail"]["total_bytes"] == sum(m["bytes"] for m in missing)
@@ -218,6 +222,23 @@ def test_a_cloud_dub_is_not_judged_by_the_local_pipeline_s_disk_need(monkeypatch
         "dubbing_spaces": lambda self: [{"seq": 1}], "space_seq": 1})())
     r = _start({"dub_mode": "perso"})
     assert r.status_code == 200, r.json()
+
+
+def test_try_again_on_a_cloud_dub_needs_no_local_models(monkeypatch, _kit, tmp_path):
+    # A cloud dub's record names no local engines, so Try again took today's
+    # local defaults in their place and asked for their models: a 409 for a
+    # voice model a dub made wholly on Perso never uses (2026-10-10).
+    ran = threading.Event()
+    monkeypatch.setattr(dub_api, "_run_cloud_dub", lambda *a, **kw: ran.set())
+    first = tmp_path / "cloud"
+    first.mkdir()
+    (first / "input.mp4").write_bytes(b"vid")
+    jid = state.job_store.create()
+    state.job_store._update(jid, status="error", work_dir=str(first), project="cloud", language_code="ko",
+                            dub_mode="perso", perso_model="ORIOLE")
+    r = client.post(f"/api/dub/jobs/{jid}/retry")
+    assert r.status_code == 200, r.json()
+    assert ran.wait(5), "the cloud dub never ran"
 
 
 def test_a_local_translator_without_its_runtime_pack_asks_for_the_pack_and_the_model(monkeypatch, _kit):
@@ -265,6 +286,47 @@ def test_an_engine_pack_whose_process_is_not_running_is_told_plainly(monkeypatch
     assert r.status_code == 422 and "voice engine is not running" in r.json()["detail"]
 
 
+def _runtime(kit, **data):
+    import json
+    with open(os.path.join(kit, "runtime.json"), "w") as f:
+        json.dump({"version": 1, **data}, f)
+
+
+def test_a_voice_engine_that_failed_to_start_is_refused_with_the_shells_sentence(monkeypatch, _kit):
+    # The shell opened the window without the voice engine (it could not
+    # start) and said so in runtime.json: the dub is refused up front, in
+    # words that keep "voice engine is not running" -- the phrase the page
+    # answers by asking the shell to start it again.
+    _put_whisper(_kit)
+    _put_tts(_kit)
+    monkeypatch.setattr(dub_api, "run_dub", _fake_run_dub)
+    _runtime(_kit, tts_state="failed")
+    r = _start()
+    assert r.status_code == 422
+    assert r.json()["detail"] == engines_status.local_engine("voice")["message"]
+    assert "voice engine is not running because it could not start" in r.json()["detail"]
+    _runtime(_kit, tts_state="starting")
+    assert "still starting" in _start().json()["detail"]
+    # A Perso dub needs no voice engine on this computer at all.
+    monkeypatch.setattr(dub_api, "_run_cloud_dub", lambda *a, **kw: None)
+    monkeypatch.setattr(perso_client, "PersoClient", lambda: type("C", (), {
+        "dubbing_spaces": lambda self: [{"seq": 1}], "space_seq": 1})())
+    _runtime(_kit, tts_state="failed")
+    r = _start({"dub_mode": "perso"})
+    assert r.status_code == 200, r.json()
+
+
+def test_a_translation_runtime_that_failed_to_start_is_refused_with_the_shells_sentence(monkeypatch, _kit):
+    _put_whisper(_kit)
+    _put_tts(_kit)
+    monkeypatch.setattr(engines_status, "gemma_status", lambda: "unreachable")
+    _runtime(_kit, tts_url="http://127.0.0.1:1", ollama_state="failed")
+    r = _start({"translate_engine": "gemma"})
+    assert r.status_code == 422
+    assert r.json()["detail"] == engines_status.local_engine("translation")["message"]
+    assert "could not start" in r.json()["detail"]
+
+
 def test_a_language_code_the_app_does_not_know_is_refused(monkeypatch, _kit):
     _put_whisper(_kit)
     _put_tts(_kit)
@@ -283,6 +345,73 @@ def test_perso_dubbing_accepts_persos_languages_and_local_does_not(monkeypatch, 
         r = _start({"language_code": code, "dub_mode": "perso"})
         assert r.status_code == 200, (code, r.text)
     assert _start({"language_code": "hi"}).status_code == 422
+
+
+# ── a ready-made script ────────────────────────────────────────────────────
+# A translated script handed in is dubbed as it is (app/pipeline.py
+# _stage_translate), so the translator is never asked anything: it is not
+# checked, and its model is not downloaded. Source subtitles are translated.
+
+SCRIPT = ("sub.srt", b"1\n00:00:00,000 --> 00:00:01,000\nhola\n", "application/x-subrip")
+
+
+def test_a_script_needs_no_translator_key_but_source_subtitles_still_do(monkeypatch, _kit):
+    _ready_for_a_local_dub(monkeypatch, _kit)
+    monkeypatch.setattr(engines_status, "gemini_available", lambda: False)
+    r = _start(files_extra={"srt": SCRIPT})
+    assert r.status_code == 200, r.json()
+    r = _start(files_extra={"source_srt": SCRIPT})
+    assert r.status_code == 422
+    assert r.json()["detail"].startswith("Gemini translation needs an API key")
+
+
+def test_a_script_needs_no_translator_model(monkeypatch, _kit):
+    _ready_for_a_local_dub(monkeypatch, _kit)
+    monkeypatch.setattr(engines_status, "gemma_status", lambda: "model_missing")
+    r = _start({"translate_engine": "gemma"}, files_extra={"srt": SCRIPT})
+    assert r.status_code == 200, r.json()
+
+
+def test_try_again_asks_for_the_translator_model_only_when_it_translates(monkeypatch, _kit, tmp_path):
+    # Try again copies a ready-made script into the new folder too, and the
+    # run then translates nothing again.
+    _ready_for_a_local_dub(monkeypatch, _kit)
+    monkeypatch.setattr(engines_status, "gemma_status", lambda: "model_missing")
+    first = tmp_path / "first"
+    first.mkdir()
+    (first / "input.mp4").write_bytes(b"vid")
+    jid = state.job_store.create()
+    state.job_store._update(jid, status="error", work_dir=str(first), project="first", language_code="ko",
+                            dub_mode="local", stt_engine="whisper", translator="gemma", tts="qwen3",
+                            separation="demucs")
+    r = client.post(f"/api/dub/jobs/{jid}/retry")
+    assert r.status_code == 409
+    assert [m["id"] for m in r.json()["detail"]["missing"]] == ["gemma"]
+    (first / "sub.srt").write_bytes(SCRIPT[1])
+    r = client.post(f"/api/dub/jobs/{jid}/retry")
+    assert r.status_code == 200, r.json()
+
+
+def test_a_refused_try_again_leaves_no_copy_of_the_video(monkeypatch, _kit, tmp_path):
+    # The new folder and its copy of the video were made before the model
+    # check, so every refused Try again left a whole video behind that no job
+    # record pointed at (2026-10-10).
+    _ready_for_a_local_dub(monkeypatch, _kit)
+    monkeypatch.setattr(engines_status, "gemma_status", lambda: "model_missing")
+    first = tmp_path / "first"
+    first.mkdir()
+    (first / "input.mp4").write_bytes(b"vid")
+    jid = state.job_store.create()
+    state.job_store._update(jid, status="error", work_dir=str(first), project="first", language_code="ko",
+                            dub_mode="local", stt_engine="whisper", translator="gemma", tts="qwen3",
+                            separation="demucs")
+
+    def copies():
+        return sum(names.count("input.mp4") for _, _, names in os.walk(state.WORKSPACE))
+
+    before = copies()
+    assert client.post(f"/api/dub/jobs/{jid}/retry").status_code == 409
+    assert copies() == before
 
 
 # ── can this computer finish it (app/room.py) ──────────────────────────────
@@ -320,7 +449,7 @@ def test_a_computer_under_7_gb_of_memory_cannot_dub_locally(monkeypatch, _kit):
     monkeypatch.setattr(room, "total_ram_bytes", lambda: 6 * room.GB)
     r = _start()
     assert r.status_code == 422
-    assert r.json()["detail"] == "This computer needs 8 GB of memory to dub."
+    assert r.json()["detail"] == "Dubbing needs 8 GB of memory on this computer."
 
 
 def test_memory_never_refuses_or_warns_a_cloud_dub(monkeypatch, _kit):
@@ -357,7 +486,7 @@ def test_plenty_of_memory_or_none_read_starts_without_a_warning(monkeypatch, _ki
 def test_the_engine_says_only_what_it_will_do_for_this_dub():
     """Separation and transcription on Perso: the engine is still the voice,
     and says so (Mac tester, 2026-09-28: "what is this for?")."""
-    from app.api.dub import engine_hint
+    from app.api._launch import engine_hint
     assert engine_hint(False, False) == "Makes the voices on this computer."
     assert engine_hint(True, False) == "Separates the sound and makes the voices on this computer."
     assert engine_hint(False, True) == "Transcribes and makes the voices on this computer."

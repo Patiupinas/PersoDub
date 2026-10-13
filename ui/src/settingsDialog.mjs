@@ -4,8 +4,9 @@
 // way to tell whether it had saved). Cancel, the X, Escape and the backdrop
 // leave without saving; the next open reads the saved values again. It also owns the Perso workspace picker
 // (including the preview of a key that has only been pasted), the
-// Show-in-Finder button, the Appearance picker, the usage-counts switch and
-// the Acknowledgements fold.
+// Show-in-Finder button, the usage-counts switch, the language picker and the
+// Acknowledgements fold. The sheet is five tabs (Models, API keys, Storage, Privacy, About),
+// one panel showing at a time; openSettings picks the one to open on.
 //
 // What is NOT here: the Models catalog rows inside the sheet belong to
 // ui/src/modelsDialog.mjs -- this file only asks for a repaint when the sheet
@@ -33,8 +34,54 @@
  * @returns the operations the rest of the page calls.
  */
 import { setupText, watchSetup } from "./chatgptSetup.mjs";
+import { errorText } from "./format.mjs";
+import { t, useLanguage } from "./i18n.mjs";
+import { paintMarkupWords } from "./markupWords.mjs";
 
-export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
+// The tabs, in the order they stand. Each is #settingsTab-<name> and shows
+// #settingsPanel-<name>.
+export const SETTINGS_TABS = ["models", "keys", "storage", "privacy", "about"];
+
+export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = () => window.location.reload() }) {
+  // The tab the user last chose, for this sitting only: a new launch starts
+  // on Models again.
+  let lastTab = "models";
+  let shownTab = "models";
+  // Whether the user has chosen a tab since the sheet opened, so a late
+  // answer about the models does not pull them off the one they chose.
+  let chosenSinceOpen = false;
+  function showTab(name) {
+    shownTab = name;
+    for (const t of SETTINGS_TABS) {
+      const tab = $(`settingsTab-${t}`);
+      tab.setAttribute("aria-selected", String(t === name));
+      tab.tabIndex = t === name ? 0 : -1;
+      $(`settingsPanel-${t}`).hidden = t !== name;
+    }
+  }
+  function chooseTab(name) {
+    lastTab = name;
+    chosenSinceOpen = true;
+    showTab(name);
+  }
+  SETTINGS_TABS.forEach((name, i) => {
+    const tab = $(`settingsTab-${name}`);
+    tab.addEventListener("click", () => chooseTab(name));
+    // The arrows move along the row and wrap; Home and End go to its ends.
+    tab.addEventListener("keydown", (e) => {
+      const last = SETTINGS_TABS.length - 1;
+      const to = { ArrowRight: i === last ? 0 : i + 1, ArrowLeft: i === 0 ? last : i - 1,
+                   Home: 0, End: last }[e.key];
+      if (to == null) return;
+      e.preventDefault();
+      chooseTab(SETTINGS_TABS[to]);
+      $(`settingsTab-${SETTINGS_TABS[to]}`).focus();
+    });
+  });
+  // A model that is downloading or stopped half-way (modelsDialog.mjs marks
+  // the list): what the old fold opened itself for.
+  const modelsNeedAttention = () => $("modelsFold").dataset.attention === "1";
+
   // The saved workspace id at modal-open time, so Save can post only an actual
   // change (posting the unchanged value would rewrite kit.env for nothing).
   let persoSpaceInitial = "";
@@ -75,15 +122,15 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
         : await fetch("/api/perso/spaces");
       if (mine !== spacesLoadSeq) return;   // a newer key is being looked up
       if (r.status === 409 || r.status === 400) {
-        opt("", "Enter a Perso API key to see its workspaces"); return;
+        opt("", t("Add a Perso API key first")); return;
       }
       if (!r.ok) throw new Error();
       const { spaces } = await r.json();
       if (mine !== spacesLoadSeq) return;
-      if (!spaces.length) { opt("", "No workspace available for this key"); return; }
-      if (spaces.length > 1) opt("", "Choose a workspace…");
+      if (!spaces.length) { opt("", t("No workspace available for this key")); return; }
+      if (spaces.length > 1) opt("", t("Choose a workspace…"));
       for (const s of spaces) {
-        const extra = [s.tier, s.credits != null ? `${s.credits} credits left` : null]
+        const extra = [s.tier, s.credits != null ? t("{n} credits left", { n: s.credits }) : null]
           .filter(Boolean).join(", ");
         opt(String(s.seq), s.name + (extra ? ` (${extra})` : ""), s.credits);
       }
@@ -94,7 +141,7 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
       spacesForKey = typedKey || keysInitial.per;
     } catch {
       if (mine !== spacesLoadSeq) return;
-      opt("", "Couldn't load workspaces. Check the key or your connection.");
+      opt("", t("Could not load workspaces. Check the key or your connection."));
     } finally {
       if (mine === spacesLoadSeq) updateSpaceWarning();
     }
@@ -118,7 +165,7 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
     persoPreviewedKey = "";
     sel.innerHTML = "";
     const o = document.createElement("option");
-    o.value = ""; o.textContent = "Enter a Perso API key to see its workspaces";
+    o.value = ""; o.textContent = t("Add a Perso API key first");
     sel.appendChild(o);
     sel.disabled = true;      // disabled is also what keeps the red styling off
     updateSpaceWarning();
@@ -165,11 +212,15 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
   // What was saved when the modal opened, so Save only posts actual edits.
   let keysInitial = { gem: "", per: "" };
   let togglesInitial = { analytics: true, reports: true };
+  // The saved language setting ("auto", "en", "ko"); null until the saved
+  // setup has been read, so a sheet that could not read it has no change to
+  // count in a picker it never filled.
+  let languageInitial = null;
 
   // Everything the sheet shows about the saved setup, in one pass:
   // GET /api/settings fills the key fields, the workspace picker, the
   // version line and the usage-counts switch. Not "loadSettings": the page has
-  // one of those already (static/index.html), and it reads the browser's own
+  // one of those already (ui/src/app.mjs), and it reads the browser's own
   // persodub_settings blob -- the opposite source of truth to this one.
   async function loadSavedSetup() {
     try {
@@ -193,24 +244,11 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
       $("analyticsToggle").checked = !st.analytics_off;
       $("reportsToggle").checked = !st.reports_off;
       togglesInitial = { analytics: !st.analytics_off, reports: !st.reports_off };
+      languageInitial = st.ui_language || "auto";
+      $("uiLanguageSelect").value = languageInitial;
     } catch {
-      $("persoKeyInput").placeholder = $("geminiKeyInput").placeholder = "Unavailable";
+      $("persoKeyInput").placeholder = $("geminiKeyInput").placeholder = t("Unavailable");
     }
-  }
-
-  // Appearance. Dark is the app; "light" is the only other value, and the only
-  // one written down -- an unreadable or missing entry is dark, which is what
-  // the boot script at the top of static/index.html assumes too.
-  const THEME_KEY = "persodub.theme";
-  function savedTheme() {
-    try { return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark"; }
-    catch { return "dark"; }   // private window
-  }
-  function applyTheme(theme) {
-    const root = document.documentElement;
-    if (theme === "light") root.dataset.theme = "light";
-    else delete root.dataset.theme;
-    try { localStorage.setItem(THEME_KEY, theme); } catch { /* private window */ }
   }
 
   // Opening the sheet: the saved values first, then the models catalog
@@ -237,18 +275,18 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
     el.classList.toggle("danger", !!note);
     if (note) { el.textContent = note; btn.disabled = false; return; }
     if (a && !a.installed) {
-      el.textContent = "Not available on this computer";
+      el.textContent = t("Not available on this computer");
       btn.disabled = true;
       return;
     }
     btn.disabled = busy || prep;
     // The first Sign In may fetch OpenAI's sign-in program before any browser.
-    if (prep) { el.textContent = "Opening sign-in…"; return; }
-    if (busy) { el.textContent = "Finish signing in in your browser…"; return; }
-    if (!a || a.logged_in == null) { el.textContent = "Checking…"; return; }
-    if (a.logged_in) { el.textContent = "Signed in"; btn.textContent = "Switch account"; return; }
-    btn.textContent = "Sign in with ChatGPT";
-    el.textContent = "Not signed in";
+    if (prep) { el.textContent = t("Opening sign-in…"); return; }
+    if (busy) { el.textContent = t("Finish signing in in your browser…"); return; }
+    if (!a || a.logged_in == null) { el.textContent = t("Checking…"); return; }
+    if (a.logged_in) { el.textContent = t("Signed in"); btn.textContent = t("Switch account"); return; }
+    btn.textContent = t("Sign in with ChatGPT");
+    el.textContent = t("Not signed in");
   }
   // The server answers "not known yet" until its check finishes, so ask a
   // few times before settling (review 2026-09-23: the row sat blank).
@@ -276,7 +314,7 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
       }).finally(stopWatching);
       if (!r.ok) {
         const detail = (await r.json().catch(() => ({}))).detail;
-        throw new Error(typeof detail === "string" ? detail : "Could not start signing in.");
+        throw new Error(typeof detail === "string" ? detail : t("Could not start signing in."));
       }
       paintChatgpt(null, { busy: true });
       // The sign-in lands in the browser; the program's own status says when.
@@ -286,25 +324,42 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
         const a = await chatgptState();
         if (a && a.logged_in === true) { paintChatgpt(a); return; }
       }
-      paintChatgpt(null, { note: "Sign-in didn't finish. Try again." });
+      paintChatgpt(null, { note: t("Sign-in didn't finish. Try again.") });
     } catch (e) {
-      paintChatgpt(null, { note: e.message });
+      paintChatgpt(null, { note: errorText(e) });
     } finally {
       chatgptWaiting = false;
     }
   });
 
-  async function openSettings() {
+  // `tab` is for a way in that knows what it came for ("keys" from the
+  // out-of-credits popup, "models" from the download chip). The gear passes
+  // its click event, which is no tab: then a model that needs attention
+  // opens Models, and otherwise the tab last chosen.
+  async function openSettings(tab) {
+    const asked = SETTINGS_TABS.includes(tab) ? tab : "";
+    chosenSinceOpen = false;
+    showTab(asked || (modelsNeedAttention() ? "models" : lastTab));
     loadChatgpt(); // async on purpose -- the sheet opens without waiting on a child process
-    $("themeSelect").value = savedTheme();
     await loadSavedSetup();
-    refreshModelCatalog();
+    // Not waited for either; what it learns about the models may still move
+    // the sheet to Models, unless the user has chosen a tab by then.
+    Promise.resolve(refreshModelCatalog()).then(() => {
+      if (!asked && !chosenSinceOpen && modelsNeedAttention()) showTab("models");
+    }).catch(() => {});
     paintChanges();
     $("settingsOverlay").classList.add("open");
   }
   // Leaving without Save keeps nothing: the fields are read again on open.
   function closeSettings() {
+    $("settingsDiscardOverlay").classList.remove("open");
     $("settingsOverlay").classList.remove("open");
+  }
+  // Cancel, Escape and the backdrop: with something changed and not saved,
+  // the way out asks once ("Discard changes?") before it throws it away.
+  function leaveSettings() {
+    if (changeCount()) $("settingsDiscardOverlay").classList.add("open");
+    else closeSettings();
   }
 
   // What Save would write, counted for the line beside it; Save rests at zero.
@@ -316,25 +371,25 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
       keyChanged,
       // A new key brings its own workspace: one change, not two.
       !keyChanged && !spaceSel.disabled && spaceSel.value !== persoSpaceInitial,
-      $("themeSelect").value !== savedTheme(),
       $("analyticsToggle").checked !== togglesInitial.analytics,
       $("reportsToggle").checked !== togglesInitial.reports,
+      languageInitial !== null && $("uiLanguageSelect").value !== languageInitial,
     ].filter(Boolean).length;
   }
   function paintChanges() {
     const n = changeCount();
-    $("settingsChanges").textContent = n ? `${n} change${n === 1 ? "" : "s"}` : "";
+    $("settingsChanges").textContent = !n ? "" : n === 1 ? t("1 change") : t("{n} changes", { n });
     $("settingsSaveBtn").disabled = !n;
+    $("settingsSaveBtn").title = n ? "" : t("No changes to save");
   }
   for (const id of ["geminiKeyInput", "persoKeyInput"]) $(id).addEventListener("input", paintChanges);
-  for (const id of ["persoSpaceSelect", "themeSelect", "analyticsToggle", "reportsToggle"]) {
+  for (const id of ["persoSpaceSelect", "analyticsToggle", "reportsToggle", "uiLanguageSelect"]) {
     $(id).addEventListener("change", paintChanges);
   }
 
   async function saveSettings() {
     $("settingsSaveBtn").disabled = true;
     let ok = await saveSettingsEdits();
-    if ($("themeSelect").value !== savedTheme()) applyTheme($("themeSelect").value);
     if ($("analyticsToggle").checked !== togglesInitial.analytics) {
       if (await setUsageCounts($("analyticsToggle").checked)) togglesInitial.analytics = $("analyticsToggle").checked;
       else ok = false;
@@ -343,25 +398,43 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
       if (await setFailureReports($("reportsToggle").checked)) togglesInitial.reports = $("reportsToggle").checked;
       else ok = false;
     }
+    const language = $("uiLanguageSelect").value;
+    if (languageInitial !== null && language !== languageInitial) {
+      // Saved first, and a save that failed leaves the page in the language
+      // it was in. Then the page starts again from the saved setting, so every
+      // word already drawn is in the new language at once: the screen it was
+      // on comes back and a running dub is followed again (app.mjs
+      // openLastScreen). Not while the Dub Agent is answering, since leaving
+      // the page ends its turn: then the page redraws in place, the markup's
+      // words now (ui/src/markupWords.mjs too) and the rest at its next paint.
+      if (await setUiLanguage(language)) {
+        languageInitial = language;
+        if (ok && !document.body.dataset.agentTurn) { startAgain(); return; }
+        await useLanguage(language);
+        paintMarkupWords();
+      } else ok = false;
+    }
     if (ok) { closeSettings(); return; }
     // Beside the button that was pressed, where the eye already is.
     paintChanges();
-    $("settingsChanges").textContent = "Could not save. Is the engine running?";
+    $("settingsChanges").textContent = t("Could not save. Is PersoDub running?");
   }
   $("settingsSaveBtn").addEventListener("click", saveSettings);
-  $("settingsCancelBtn").addEventListener("click", closeSettings);
+  $("settingsCancelBtn").addEventListener("click", leaveSettings);
+  $("settingsDiscardKeep").addEventListener("click", () => $("settingsDiscardOverlay").classList.remove("open"));
+  $("settingsDiscardYes").addEventListener("click", closeSettings);
 
   // "0.0.0" is what the engine answers when it is not running inside a packaged
   // build (the real number comes from the desktop shell), and a made-up version in
   // the app's own chrome is worse than none: it gets read out and reported.
   function realVersion(v) { return v && v !== "0.0.0" ? v : ""; }
 
-  $("settingsCloseBtn").addEventListener("click", closeSettings);
-  $("settingsOverlay").addEventListener("click", (e) => { if (e.target === $("settingsOverlay")) closeSettings(); });
+  $("settingsCloseBtn").addEventListener("click", leaveSettings);
+  $("settingsOverlay").addEventListener("click", (e) => { if (e.target === $("settingsOverlay")) leaveSettings(); });
   // Escape is the reflex way out of a dialog, so every dialog has to answer it --
   // Settings and New project were the two that did not.
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && $("settingsOverlay").classList.contains("open")) closeSettings();
+    if (e.key === "Escape" && $("settingsOverlay").classList.contains("open")) leaveSettings();
   });
 
   // The keys and the workspace, for Save. True when they are saved (or had
@@ -418,25 +491,25 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
     return true;
   }
 
-  $("showKeysToggle").addEventListener("click", () => {
-    const show = $("persoKeyInput").type === "password";
-    $("persoKeyInput").type = $("geminiKeyInput").type = show ? "text" : "password";
-    $("showKeysToggle").textContent = show ? "Hide keys" : "Show keys";
+  // A switch now (mockup 2026-09-29): on shows every key, off masks them.
+  $("showKeysToggle").addEventListener("change", () => {
+    $("persoKeyInput").type = $("geminiKeyInput").type =
+      $("showKeysToggle").checked ? "text" : "password";
   });
 
   // The folder finished videos land in, opened in the desktop's own file
   // browser. Named for the one this machine has; "Show folder" where it is
   // neither Finder nor Explorer.
   $("revealOutputBtn").textContent =
-    /Mac/.test(navigator.platform) ? "Show in Finder"
-    : /Win/.test(navigator.platform) ? "Show in Explorer" : "Show folder";
+    /Mac/.test(navigator.platform) ? t("Show in Finder")
+    : /Win/.test(navigator.platform) ? t("Show in Explorer") : t("Show folder");
   $("revealOutputBtn").addEventListener("click", async () => {
     try {
       const r = await fetch("/api/settings/reveal-output", { method: "POST" });
       if (!r.ok) throw new Error();
       $("storageHint").textContent = "";
     } catch {
-      $("storageHint").textContent = "Could not open the folder.";
+      $("storageHint").textContent = t("Could not open the folder.");
     }
   });
 
@@ -473,8 +546,20 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog }) {
     } catch { return false; }
   }
 
+  // The language: kit.env's PERSODUB_LANG, which the engine and the desktop
+  // shell read as well, so all three speak the one the user chose.
+  async function setUiLanguage(value) {
+    try {
+      const r = await fetch("/api/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ui_language: value }),
+      });
+      return r.ok;
+    } catch { return false; }
+  }
+
   // used by the page: openSettings. closeSettings and loadSavedSetup are
   // reached from the tests only -- the page's ways out of the sheet are the
   // sheet's own X, its backdrop and Escape, all wired above.
-  return { openSettings, closeSettings, loadSavedSetup, saveSettings };
+  return { openSettings, closeSettings, loadSavedSetup, saveSettings, currentTab: () => shownTab };
 }

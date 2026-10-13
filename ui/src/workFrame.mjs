@@ -1,0 +1,52 @@
+// The work screen wears one frame under four names: a dub that is running
+// ("running"), one that finished ("done"), one that stopped ("failed") and the
+// Erase tab ("erase"). The stylesheet picks each one's panels by that name;
+// this file keeps the left panel's tab row in step with it.
+//
+// What it does: lights the Erase tab while the erase screen is up and the
+// Dubbing tab when a job takes the screen, and tells the page when a tab
+// other than Erase is pressed on the erase screen -- that is the way back to
+// the job. (Captions is dimmed until there is a dub by ui/src/captionsTab.mjs.)
+//
+// The elements this file touches: #leftTabs and its buttons.
+
+/**
+ * @param {object} deps
+ * @param {(id: string) => any} deps.$   the page's getElementById helper
+ * @param {{show: (name: string) => void, current: () => string}} deps.tabs
+ *        the left panel's tabs (ui/src/leftTabs.mjs)
+ * @param {() => string} deps.getScreen  the screen that is up right now
+ * @param {() => void} deps.onLeaveErase  another tab was pressed on the erase
+ *        screen
+ * @returns {{ onScreen: (name: string) => void }}
+ */
+export function initWorkFrame({ $, tabs, getScreen, onLeaveErase }) {
+  const row = $("leftTabs");
+  let last = null;
+
+  // Called whenever the screen's name is written, which a running dub does
+  // on every report: only a change of name moves the tabs, so the tab the
+  // user went to while the dub runs stays up.
+  function onScreen(name) {
+    if (name === last) return;
+    const from = last;
+    last = name;
+    if (name === "erase") { tabs.show("erase"); return; }
+    if (name === "home") return;
+    // A job opened from the first screen starts on its own tab; so does one
+    // that takes the screen from the Erase tab, or from Captions, which a
+    // running dub has nothing for.
+    if (!from || from === "home" || tabs.current() === "erase"
+      || (name === "running" && tabs.current() === "captions")) tabs.show("dubbing");
+  }
+
+  // After the row's own listener, which has already shown the tab's body.
+  row.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-tab]");
+    if (!b || b.dataset.tab === "erase") return;
+    if (getScreen() === "erase") onLeaveErase();
+  });
+
+  onScreen(getScreen());
+  return { onScreen };
+}

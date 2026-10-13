@@ -41,12 +41,19 @@ ROUTES = [
     ('GET', '/api/downloads/{did}/video'),
     ('GET', '/api/dub/jobs'),
     ('GET', '/api/dub/jobs/{jid}'),
+    ('GET', '/api/dub/jobs/{jid}/perso/edit'),
     ('GET', '/api/dub/jobs/{jid}/script'),
+    ('GET', '/api/dub/jobs/{jid}/script/stamp'),
     ('GET', '/api/dub/jobs/{jid}/script/{line}/audio'),
     ('GET', '/api/dub/jobs/{jid}/subtitle_style'),
+    ('GET', '/api/dub/jobs/{jid}/thumb'),
+    ('GET', '/api/dub/jobs/{jid}/view'),   # the ratio the player was left on (app/api/view.py)
     ('GET', '/api/dub/result/{jid}'),
+    ('GET', '/api/dub/result/{jid}/audio'),
     ('GET', '/api/dub/result/{jid}/original'),
     ('GET', '/api/dub/result/{jid}/srt'),
+    ('GET', '/api/dub/result/{jid}/stem/{which}'),
+    ('GET', '/api/dub/result/{jid}/stems'),
     ('GET', '/api/dub/result/{jid}/subtitle_preview'),
     ('GET', '/api/dub/result/{jid}/subtitled'),
     ('GET', '/api/engines'),
@@ -54,17 +61,24 @@ ROUTES = [
     ('GET', '/api/erase/{jid}/original'),
     ('GET', '/api/erase/{jid}/video'),
     ('GET', '/api/languages'),
+    ('GET', '/api/media/{kind}/{ident}/filmstrip'),   # the timeline's film strip (app/api/media.py)
+    ('GET', '/api/media/{kind}/{ident}/waveform'),
     ('GET', '/api/models'),
     ('GET', '/api/perso/spaces'),
     ('GET', '/api/report/bundle'),
+    ('GET', '/api/separate/{jid}'),
+    ('GET', '/api/separate/{jid}/waveform/{which}'),
     ('GET', '/api/settings'),
     ('GET', '/api/setup'),
     ('GET', '/api/subtitles/estimate'),
     ('GET', '/api/tts/engines'),
     ('GET', '/api/whats-new'),
+    ('GET', '/css/{name}'),   # the page's stylesheets, uncacheable (app/main.py)
     ('GET', '/docs'),
     ('GET', '/docs/oauth2-redirect'),
+    ('GET', '/fonts/{name}'),   # the interface's bundled fonts (app/api/misc.py)
     ('GET', '/health'),
+    ('GET', '/i18n/{name}'),   # the page's translation tables, uncacheable (app/main.py)
     ('GET', '/js/{name}'),   # the page's ES modules, token-stamped and uncacheable (app/main.py)
     ('GET', '/logo.png'),
     ('GET', '/openapi.json'),
@@ -80,9 +94,15 @@ ROUTES = [
     ('POST', '/api/clips/cut'),
     ('POST', '/api/downloads'),
     ('POST', '/api/downloads/upload'),
+    ('POST', '/api/downloads/{did}/hold'),
     ('POST', '/api/downloads/{did}/save'),
+    ('POST', '/api/dub/jobs/{jid}/again'),
     ('POST', '/api/dub/jobs/{jid}/cancel'),
     ('POST', '/api/dub/jobs/{jid}/perso/materialize'),
+    ('POST', '/api/dub/jobs/{jid}/perso/proofread'),
+    ('POST', '/api/dub/jobs/{jid}/perso/script/{line}/fit'),
+    ('POST', '/api/dub/jobs/{jid}/perso/script/{line}/reset'),
+    ('POST', '/api/dub/jobs/{jid}/perso/script/{line}/voice'),
     ('POST', '/api/dub/jobs/{jid}/perso/speaker'),
     ('POST', '/api/dub/jobs/{jid}/redub'),
     ('POST', '/api/dub/jobs/{jid}/resume'),
@@ -92,6 +112,7 @@ ROUTES = [
     ('POST', '/api/dub/jobs/{jid}/script/{line}/revert'),
     ('POST', '/api/dub/jobs/{jid}/script/{line}/voice'),
     ('POST', '/api/dub/jobs/{jid}/title'),
+    ('POST', '/api/dub/jobs/{jid}/voices/all'),
     ('POST', '/api/dub/jobs/{jid}/voices/stale'),
     ('POST', '/api/dub/start'),
     ('POST', '/api/erase'),
@@ -102,6 +123,9 @@ ROUTES = [
     ('POST', '/api/models/{mid}/cancel'),
     ('POST', '/api/models/{mid}/download'),
     ('POST', '/api/perso/spaces/preview'),
+    ('POST', '/api/separate'),
+    ('POST', '/api/separate/{jid}/open'),
+    ('POST', '/api/separate/{jid}/retry'),
     ('POST', '/api/settings'),
     ('POST', '/api/settings/reveal-output'),
     ('POST', '/api/setup'),
@@ -111,14 +135,17 @@ ROUTES = [
     ('POST', '/api/translate'),
     ('POST', '/api/tts/say'),
     ('PUT', '/api/dub/jobs/{jid}/subtitle_style'),
+    ('PUT', '/api/dub/jobs/{jid}/view'),
 ]
 
 
 def _method_and_path(routes):
     """(method, path) for every route reachable from `routes`, routers included.
 
-    OPTIONS-only and websocket routes have no `methods`; a Mount (the /js and
-    /static file servers) has no methods either and is not a route table entry.
+    OPTIONS-only and websocket routes have no `methods`; a Mount would have no
+    methods either and is not a route table entry. The app mounts no file
+    servers: the page's modules and stylesheets are the routes /js/{name} and
+    /css/{name} (app/main.py), listed above.
     """
     for route in routes:
         included = getattr(route, "original_router", None)

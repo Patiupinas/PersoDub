@@ -34,27 +34,38 @@ from collections import Counter
 warnings.filterwarnings("ignore")
 
 # Make the repo root importable regardless of cwd, so we can reuse
-# relabel_by_size from app/diar_campplus_client.py instead of duplicating it.
+# relabel_by_size from app/diar_campplus_client.py and the CAM++ embedding
+# from campplus_embed_files.py instead of duplicating them.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 from app.diar_campplus_client import relabel_by_size  # noqa: E402
+from app.scripts.campplus_embed_files import SR, embed, lazy_imports, load_mono16k  # noqa: E402
 
-SR = 16000
 K_MIN = 2
 K_MAX = 4
 
 # Auto-diarization can over-split a single narrator once the transcript has
-# several cues (k=2..4 is always searched). Collapse back to one speaker when
-# every pairwise cluster-centroid cosine similarity is >= this. First
+# several cues (k=2..4 is always searched). Two clusters whose centroids are
+# at least this alike are merged, pair by pair (_merge_alike). First
 # calibrated on clean hand-cut 1.5-3s windows (same-speaker sim 0.88,
-# cross-speaker sim 0.22), but real short/noisy Whisper cues (job 4ec68328,
-# moon.mp4, 0.44-2.46s cues) still split one narrator into 3 spurious
-# clusters whose pairwise sims (0.63/0.50/0.49) fell under that 0.65 --
-# lowered to keep this real case collapsing with margin (<= 0.49 - 0.05)
-# while staying well above the measured cross-speaker floor (>= 0.22 + 0.10)
-# -- see task-2 report, "job 4ec68328 fix" section.
-DIAR_MERGE_SIM_DEFAULT = 0.38
+# cross-speaker sim 0.22), then lowered for real short/noisy Whisper cues
+# (job 4ec68328, moon.mp4: one narrator in 3 clusters, sims 0.63/0.50/0.49).
+# Measured 2026-10-04 on the Whisper cues of six clips (four with one
+# speaker, two with two) and 40 mixes of two different men: the same voice's
+# clusters were 0.54-0.84 alike once its sub-second cues were folded in,
+# different men's at most 0.18 (whole clips) or 0.35 (one line). 0.30-0.35
+# got all 40 mixes and the four one-speaker clips right (Shuka had been 4
+# speakers and 2). The two-speaker clips stay one speaker, as they were:
+# their two people came out 0.56-0.57 alike (Batman and the Joker, two
+# Korean drama voices), as alike as one man's clusters -- no threshold
+# tells those apart; Perso's transcript names them right.
+DIAR_MERGE_SIM_DEFAULT = 0.35
+
+# A cluster with less speech than this (seconds, all its cues together) is too
+# little for its voice to be told apart: CAM++ on one 0.4 s cue put a Shuka
+# line 0.31 away from the rest of him. It joins the voice it is closest to.
+MIN_SPEECH_SEC = 1.0
 
 
 def _parse_diar_merge_sim():
@@ -69,41 +80,6 @@ def _parse_diar_merge_sim():
 
 
 DIAR_MERGE_SIM = _parse_diar_merge_sim()
-
-
-def _lazy_imports():
-    """Heavy deps imported lazily so --help / arg errors don't require them."""
-    import numpy as np
-    import onnxruntime as ort
-    import soundfile as sf
-    import torch
-    import torchaudio.compliance.kaldi as kaldi
-    return np, ort, sf, torch, kaldi
-
-
-def _load_mono16k(path, np, sf):
-    """Read a wav as float32 mono at 16 kHz (resample if needed)."""
-    x, sr = sf.read(path, always_2d=False)
-    if x.ndim > 1:
-        x = x.mean(axis=1)
-    x = x.astype(np.float32)
-    if sr != SR:
-        import scipy.signal as ss
-        x = ss.resample(x, int(len(x) * SR / sr)).astype(np.float32)
-    return x
-
-
-def _embed(seg, sess, np, torch, kaldi):
-    """CAM++ embedding for one audio segment (fbank80 + CMN, L2-normalized)."""
-    if len(seg) < int(0.2 * SR):  # pad segments shorter than 0.2s
-        seg = np.pad(seg, (0, int(0.2 * SR) - len(seg)))
-    fb = kaldi.fbank(torch.tensor(seg).unsqueeze(0), num_mel_bins=80,
-                     dither=0, sample_frequency=SR)
-    fb = fb - fb.mean(dim=0, keepdim=True)
-    # Exports name this tensor differently ("input" on the server's bundled
-    # model, "feats"/"x" on the public ones), so ask the session for it.
-    e = sess.run(None, {sess.get_inputs()[0].name: fb.unsqueeze(0).numpy()})[0].flatten()
-    return e / (np.linalg.norm(e) + 1e-9)
 
 
 def _estimate_k(embs):
@@ -134,42 +110,58 @@ def _cluster(embs, k):
     ).fit_predict(embs))
 
 
-def _should_collapse(embs, labels, np, threshold):
-    """True iff every pairwise cosine similarity between cluster centroids is
-    >= threshold, i.e. the clusters AUTO-estimation found are indistinguishable
-    enough to actually be one speaker. Centroid = mean of that label's
-    embeddings, L2-normalized before the dot product (embeddings from _embed
-    are already unit-norm, but the mean of several unit vectors is not, so
-    normalize the centroid too).
-    """
+def _centroid(vecs, np):
+    """Mean of a cluster's embeddings, L2-normalized (embeddings from embed
+    are unit-norm, but the mean of several unit vectors is not)."""
+    dim = len(vecs[0])
+    mean = [sum(v[d] for v in vecs) / len(vecs) for d in range(dim)]
+    norm = np.linalg.norm(mean) + 1e-9
+    return [m / norm for m in mean]
+
+
+def _merge_alike(embs, durs, labels, np, threshold):
+    """Merge the clusters AUTO-estimation found back into the speakers they
+    really are: a cluster with under MIN_SPEECH_SEC of speech joins the one
+    its voice is closest to, then the two most alike clusters merge while
+    their centroids are at least `threshold` alike. Pair by pair, not "every
+    pair at once": one Shuka lecture came out as 4 speakers because a single
+    pair of its clusters fell under the bar (2026-10-04)."""
     groups = {}
-    for e, lab in zip(embs, labels):
-        groups.setdefault(lab, []).append(e)
-    if len(groups) < 2:
-        return True
-    centroids = []
-    for vecs in groups.values():
-        dim = len(vecs[0])
-        mean = [sum(v[d] for v in vecs) / len(vecs) for d in range(dim)]
-        norm = np.linalg.norm(mean) + 1e-9
-        centroids.append([m / norm for m in mean])
-    for i in range(len(centroids)):
-        for j in range(i + 1, len(centroids)):
-            if np.dot(centroids[i], centroids[j]) < threshold:
-                return False
-    return True
+    for i, (e, d, lab) in enumerate(zip(embs, durs, labels)):
+        g = groups.setdefault(lab, {"embs": [], "secs": 0.0, "members": []})
+        g["embs"].append(e)
+        g["secs"] += d
+        g["members"].append(i)
+    while len(groups) > 1:
+        cents = {lab: _centroid(g["embs"], np) for lab, g in groups.items()}
+        small = [lab for lab, g in groups.items() if g["secs"] < MIN_SPEECH_SEC]
+        if small:
+            a = min(small, key=lambda lab: groups[lab]["secs"])
+            b = max((lab for lab in groups if lab != a), key=lambda lab: np.dot(cents[a], cents[lab]))
+        else:
+            pairs = [(x, y) for i, x in enumerate(groups) for y in list(groups)[i + 1:]]
+            a, b = max(pairs, key=lambda p: np.dot(cents[p[0]], cents[p[1]]))
+            if np.dot(cents[a], cents[b]) < threshold:
+                break
+        for key in ("embs", "members"):
+            groups[b][key] += groups[a][key]
+        groups[b]["secs"] += groups[a]["secs"]
+        del groups[a]
+    out = list(labels)
+    for lab, g in groups.items():
+        for i in g["members"]:
+            out[i] = lab
+    return relabel_by_size(out)
 
 
-def _maybe_collapse(embs, labels, num_speakers, k, np, threshold):
-    """Collapse an AUTO-estimated result to one speaker when every cluster
-    turns out indistinguishable (see _should_collapse). A caller-supplied
-    num_speakers always bypasses this -- the user's override wins.
+def _maybe_collapse(embs, durs, labels, num_speakers, k, np, threshold):
+    """Merge an AUTO-estimated result back to its real speakers (see
+    _merge_alike). A caller-supplied num_speakers always bypasses this --
+    the user's override wins.
     """
     if num_speakers or k < 2:
         return labels
-    if _should_collapse(embs, labels, np, threshold):
-        return ["SPK0"] * len(labels)
-    return labels
+    return _merge_alike(embs, durs, labels, np, threshold)
 
 
 def diarize(vocals_wav_path, cues, num_speakers, campplus_model):
@@ -179,21 +171,22 @@ def diarize(vocals_wav_path, cues, num_speakers, campplus_model):
     Ported from the pre-refactor in-process app/diar_campplus_client.py --
     logic unchanged, just parameterized to run standalone in this process.
     """
-    np, ort, sf, torch, kaldi = _lazy_imports()
+    np, ort, sf, torch, kaldi = lazy_imports()
     if not cues:
         return []
 
     sess = ort.InferenceSession(campplus_model, providers=["CPUExecutionProvider"])
-    x = _load_mono16k(vocals_wav_path, np, sf)
+    x = load_mono16k(vocals_wav_path, np, sf)
 
-    valid_idx, embs = [], []
+    valid_idx, embs, durs = [], [], []
     for i, c in enumerate(cues):
         a, b = int(float(c["start"]) * SR), int(float(c["end"]) * SR)
         seg = x[a:b]
         if len(seg) <= 0:
             continue
         valid_idx.append(i)
-        embs.append(_embed(seg, sess, np, torch, kaldi))
+        embs.append(embed(seg, sess, np, torch, kaldi))
+        durs.append(len(seg) / SR)
 
     if len(valid_idx) < 2:
         return ["SPK0"] * len(cues)
@@ -203,7 +196,7 @@ def diarize(vocals_wav_path, cues, num_speakers, campplus_model):
     k = max(1, min(k, len(valid_idx)))
     raw = _cluster(embs, k) if k > 1 else [0] * len(valid_idx)
     labels = relabel_by_size(raw)
-    labels = _maybe_collapse(embs, labels, num_speakers, k, np, DIAR_MERGE_SIM)
+    labels = _maybe_collapse(embs, durs, labels, num_speakers, k, np, DIAR_MERGE_SIM)
 
     out = [None] * len(cues)
     for pos, i in enumerate(valid_idx):

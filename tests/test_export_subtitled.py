@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import engines_status
+from app.api import _launch as launch_api
 from app.api import dub as dub_api
 from app.api import results as results_api
 from app.main import app
@@ -34,7 +35,7 @@ def _all_engines_available(monkeypatch):
     monkeypatch.setattr(engines_status, "qwen_status", lambda: "available")
     monkeypatch.setattr(engines_status, "gemini_available", lambda: True)
     monkeypatch.setattr(engines_status, "perso_available", lambda: True)
-    monkeypatch.setattr(dub_api, "_missing_models", lambda *a, **kw: [])
+    monkeypatch.setattr(launch_api, "missing_models", lambda *a, **kw: [])
 
 
 class _Ran:
@@ -243,6 +244,8 @@ def test_subtitle_settings_refuse_nonsense(monkeypatch, tmp_path):
     assert put({"layout": {"1": {"text": "a", "lines": "a", "w": 1, "h": 1}}}) == 422
     assert put({"layout": {"1": {"text": "a", "lines": ["a"], "w": "wide", "h": 1}}}) == 422
     assert put({"layout": {"1": {"text": "a", "lines": ["a"], "w": 0, "h": 1}}}) == 422
+    # A line with no words ("Not translated") is 0 wide and still saved (Windows D12, 2026-10-07).
+    assert put({"layout": {"1": {"text": "", "lines": [""], "w": 0, "h": 1}}}) == 200
     assert put({"layout": {"1": {"text": "a", "lines": ["a"], "w": 4, "h": 1.6}}}) == 200
     assert put({"layout": {"1": {"text": "a", "lines": ["a"], "w": 4, "h": 1.6, "weight": 600}}}) == 200
     assert put({"layout": {"1": {"text": "a", "lines": ["a"], "w": 4, "h": 1.6, "weight": "bold"}}}) == 422

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { MIN_H, MIN_W, RATE, SETUP_SECONDS, clampArea, toScreen, toVideo,
          videoPerScreen, dragArea, defaultArea, isWhole, estimateSeconds,
          estimateLabel, progressLine, erasePercent, isPackMissing,
-         packNeededLine, eraseView, workLength, trimNote, NO_GPU_SLOWER, noGpuNote, bigBoxNote, CHECK_SHARE_EXTRA } from "./eraseArea.mjs";
+         packNeededLine, eraseView, workLength, trimNote, partRange, NO_GPU_SLOWER, noGpuNote, bigBoxNote, CHECK_SHARE_EXTRA } from "./eraseArea.mjs";
 
 // A portrait clip in a stage wider and shorter than it is: the picture is
 // letterboxed down both sides, which is what the conversions have to allow for.
@@ -123,16 +123,37 @@ test("the estimate is said in whole minutes, rounded up, or not at all", () => {
   assert.equal(estimateLabel(0), "");
 });
 
+// -- the part, as the Erase tab's card and the timeline's bar say it ----------
+
+test("the part is the one kept part's two ends, or the whole video", () => {
+  const cut = { duration: 10, ranges: [[2, 8]] };
+  assert.equal(partRange(cut), "00:00:02.0 – 00:00:08.0");
+  const whole = { duration: 22.08, ranges: null };
+  assert.equal(partRange(whole), "00:00:00.0 – 00:00:22.1");
+});
+
+test("several kept parts are counted, and measured all together", () => {
+  const cut = { duration: 10, ranges: [[0, 3.4], [6.8, 10]] };
+  assert.equal(partRange(cut), "2 parts");
+  assert.equal(trimNote(cut), "00:06 of 00:10");
+});
+
+test("a video whose length is not known has no part to name", () => {
+  for (const source of [null, { duration: 0, ranges: null }, { duration: 0, ranges: [[1, 2]] }]) {
+    assert.equal(partRange(source), "");
+  }
+});
+
 test("the running line counts down, and stops promising near the end", () => {
   assert.equal(progressLine(43, 510), "Erasing · 43% · 5 min left");
   assert.equal(progressLine(0, 510), "Erasing · 0% · 9 min left");
   // Under half a minute left, and at the end, it says only how far along it is.
   assert.equal(progressLine(97, 510), "Erasing · 97%");
-  assert.equal(progressLine(100, 510), "Erasing · 100%");
+  assert.equal(progressLine(100, 510), "Finishing up");
   // A length nobody knows leaves the percentage on its own.
   assert.equal(progressLine(50, 0), "Erasing · 50%");
   // Nonsense from the server is still a percentage.
-  assert.equal(progressLine(140, 0), "Erasing · 100%");
+  assert.equal(progressLine(140, 0), "Finishing up");
   assert.equal(progressLine(null, 0), "Erasing · 0%");
 });
 
@@ -183,26 +204,27 @@ test("a job that stopped without a video is a failure, whatever it says", () => 
 
 // -- the part of the video the erase is actually about ------------------------
 
-test("a trimmed video is measured by what the handles kept, not by the file", () => {
-  assert.equal(workLength({ duration: 60, trim: { start: 5, end: 15 } }), 10);
-  // No trim, no trim worth the name, and no source at all: the whole file.
-  assert.equal(workLength({ duration: 60, trim: null }), 60);
+test("a cut video is measured by what the cuts kept, not by the file", () => {
+  assert.equal(workLength({ duration: 60, ranges: [[5, 15]] }), 10);
+  assert.equal(workLength({ duration: 60, ranges: [[5, 15], [20, 25]] }), 15);
+  // Nothing cut, no parts worth the name, and no source at all: the whole file.
+  assert.equal(workLength({ duration: 60, ranges: null }), 60);
   assert.equal(workLength({ duration: 60 }), 60);
-  assert.equal(workLength({ duration: 60, trim: { start: 5 } }), 60);
+  assert.equal(workLength({ duration: 60, ranges: [] }), 60);
   assert.equal(workLength(null), 0);
   // Which is what the minutes are promised from: a sixth of the video, near
   // enough a sixth of the wait.
-  const whole = estimateSeconds(workLength({ duration: 60, trim: null }));
-  const part = estimateSeconds(workLength({ duration: 60, trim: { start: 5, end: 15 } }));
+  const whole = estimateSeconds(workLength({ duration: 60, ranges: null }));
+  const part = estimateSeconds(workLength({ duration: 60, ranges: [[5, 15]] }));
   assert.ok(part < whole / 4, `${part} should be far under ${whole}`);
 });
 
 test("the screen says how much of the video is going, and only when some is not", () => {
-  assert.equal(trimNote({ duration: 60, trim: { start: 5, end: 15 } }), "10s of 60s");
-  assert.equal(trimNote({ duration: 60, trim: null }), "");
+  assert.equal(trimNote({ duration: 60, ranges: [[5, 15]] }), "00:10 of 01:00");
+  assert.equal(trimNote({ duration: 60, ranges: null }), "");
   assert.equal(trimNote(null), "");
   // Nothing to compare against is nothing to say.
-  assert.equal(trimNote({ duration: 0, trim: { start: 0, end: 5 } }), "");
+  assert.equal(trimNote({ duration: 0, ranges: [[0, 5]] }), "");
 });
 
 test("a machine with no GPU is told how much longer it will take", () => {
@@ -252,4 +274,12 @@ test("the estimate counts the check the eraser runs at the end", () => {
   // Still in proportion for the other two.
   assert.equal(estimateSeconds(10, { windows: true, noGpu: true }),
                Math.round(base * CHECK_SHARE_EXTRA * NO_GPU_SLOWER));
+});
+
+test("the Area card's two tips are short and say what to do", async () => {
+  const { AREA_TIPS } = await import("./eraseArea.mjs");
+  assert.deepEqual(AREA_TIPS, [
+    "Fit the box to the subtitles. A bigger box takes longer.",
+    "Go to a frame with subtitles, then place the box.",
+  ]);
 });

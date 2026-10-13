@@ -1,390 +1,994 @@
 {
- "fetched": "2026-09-08",
+ "fetched": "2026-10-02",
  "languages": [
   {
    "code": "en",
    "name": "English (US)",
-   "tag": null
-  },
-  {
-   "code": "pt",
-   "name": "Portuguese (Brazil)",
-   "tag": null
-  },
-  {
-   "code": "es",
-   "name": "Spanish (Mexico)",
-   "tag": null
-  },
-  {
-   "code": "hi",
-   "name": "Hindi",
-   "tag": null
-  },
-  {
-   "code": "fr",
-   "name": "French",
-   "tag": null
-  },
-  {
-   "code": "it",
-   "name": "Italian",
-   "tag": null
-  },
-  {
-   "code": "es",
-   "name": "Spanish (Spain)",
-   "tag": "es-ES"
-  },
-  {
-   "code": "th",
-   "name": "Thai",
-   "tag": null
-  },
-  {
-   "code": "de",
-   "name": "German",
-   "tag": null
-  },
-  {
-   "code": "ja",
-   "name": "Japanese",
-   "tag": null
-  },
-  {
-   "code": "ru",
-   "name": "Russian",
-   "tag": null
-  },
-  {
-   "code": "ar",
-   "name": "Arabic",
-   "tag": null
-  },
-  {
-   "code": "hy",
-   "name": "Armenian",
-   "tag": null
-  },
-  {
-   "code": "af",
-   "name": "Afrikaans",
-   "tag": null
-  },
-  {
-   "code": "as",
-   "name": "Assamese",
-   "tag": null
-  },
-  {
-   "code": "az",
-   "name": "Azerbaijani",
-   "tag": null
-  },
-  {
-   "code": "be",
-   "name": "Belarusian",
-   "tag": null
-  },
-  {
-   "code": "bn",
-   "name": "Bengali",
-   "tag": null
-  },
-  {
-   "code": "bs",
-   "name": "Bosnian",
-   "tag": null
-  },
-  {
-   "code": "bg",
-   "name": "Bulgarian",
-   "tag": null
-  },
-  {
-   "code": "ca",
-   "name": "Catalan",
-   "tag": null
-  },
-  {
-   "code": "ceb",
-   "name": "Cebuano",
-   "tag": null
-  },
-  {
-   "code": "ny",
-   "name": "Chichewa",
-   "tag": null
-  },
-  {
-   "code": "zh",
-   "name": "Chinese",
-   "tag": null
-  },
-  {
-   "code": "hr",
-   "name": "Croatian",
-   "tag": null
-  },
-  {
-   "code": "cs",
-   "name": "Czech",
-   "tag": null
-  },
-  {
-   "code": "da",
-   "name": "Danish",
-   "tag": null
-  },
-  {
-   "code": "nl",
-   "name": "Dutch",
-   "tag": null
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
   },
   {
    "code": "en",
    "name": "English (UK)",
-   "tag": "en-GB"
-  },
-  {
-   "code": "et",
-   "name": "Estonian",
-   "tag": null
-  },
-  {
-   "code": "fil",
-   "name": "Filipino",
-   "tag": null
-  },
-  {
-   "code": "fi",
-   "name": "Finnish",
-   "tag": null
-  },
-  {
-   "code": "gl",
-   "name": "Galician",
-   "tag": null
-  },
-  {
-   "code": "ka",
-   "name": "Georgian",
-   "tag": null
-  },
-  {
-   "code": "el",
-   "name": "Greek",
-   "tag": null
-  },
-  {
-   "code": "gu",
-   "name": "Gujarati",
-   "tag": null
-  },
-  {
-   "code": "ha",
-   "name": "Hausa",
-   "tag": null
-  },
-  {
-   "code": "he",
-   "name": "Hebrew",
-   "tag": null
-  },
-  {
-   "code": "hu",
-   "name": "Hungarian",
-   "tag": null
-  },
-  {
-   "code": "is",
-   "name": "Icelandic",
-   "tag": null
-  },
-  {
-   "code": "id",
-   "name": "Indonesian",
-   "tag": null
-  },
-  {
-   "code": "ga",
-   "name": "Irish",
-   "tag": null
-  },
-  {
-   "code": "jv",
-   "name": "Javanese",
-   "tag": null
-  },
-  {
-   "code": "kn",
-   "name": "Kannada",
-   "tag": null
-  },
-  {
-   "code": "kk",
-   "name": "Kazakh",
-   "tag": null
+   "tag": "en-GB",
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
   },
   {
    "code": "ko",
    "name": "Korean",
-   "tag": null
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
   },
   {
-   "code": "ky",
-   "name": "Kyrgyz",
-   "tag": null
+   "code": "hi",
+   "name": "Hindi",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
   },
   {
-   "code": "lv",
-   "name": "Latvian",
-   "tag": null
+   "code": "zh",
+   "name": "Chinese",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
   },
   {
-   "code": "ln",
-   "name": "Lingala",
-   "tag": null
+   "code": "id",
+   "name": "Indonesian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
   },
   {
-   "code": "lt",
-   "name": "Lithuanian",
-   "tag": null
-  },
-  {
-   "code": "lb",
-   "name": "Luxembourgish",
-   "tag": null
-  },
-  {
-   "code": "mk",
-   "name": "Macedonian",
-   "tag": null
-  },
-  {
-   "code": "ms",
-   "name": "Malay",
-   "tag": null
-  },
-  {
-   "code": "ml",
-   "name": "Malayalam",
-   "tag": null
-  },
-  {
-   "code": "mr",
-   "name": "Marathi",
-   "tag": null
-  },
-  {
-   "code": "ne",
-   "name": "Nepali",
-   "tag": null
-  },
-  {
-   "code": "no",
-   "name": "Norwegian",
-   "tag": null
-  },
-  {
-   "code": "ps",
-   "name": "Pashto",
-   "tag": null
-  },
-  {
-   "code": "fa",
-   "name": "Persian",
-   "tag": null
-  },
-  {
-   "code": "pl",
-   "name": "Polish",
-   "tag": null
+   "code": "pt",
+   "name": "Portuguese (Brazil)",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
   },
   {
    "code": "pt",
    "name": "Portuguese (Portugal)",
-   "tag": "pt-PT"
+   "tag": "pt-PT",
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
   },
   {
-   "code": "pa",
-   "name": "Punjabi",
-   "tag": null
+   "code": "es",
+   "name": "Spanish (Spain)",
+   "tag": "es-ES",
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
   },
   {
-   "code": "ro",
-   "name": "Romanian",
-   "tag": null
+   "code": "es",
+   "name": "Spanish (Mexico)",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
   },
   {
-   "code": "sr",
-   "name": "Serbian",
-   "tag": null
-  },
-  {
-   "code": "sd",
-   "name": "Sindhi",
-   "tag": null
-  },
-  {
-   "code": "sk",
-   "name": "Slovak",
-   "tag": null
-  },
-  {
-   "code": "sl",
-   "name": "Slovenian",
-   "tag": null
-  },
-  {
-   "code": "so",
-   "name": "Somali",
-   "tag": null
-  },
-  {
-   "code": "sw",
-   "name": "Swahili",
-   "tag": null
-  },
-  {
-   "code": "sv",
-   "name": "Swedish",
-   "tag": null
-  },
-  {
-   "code": "ta",
-   "name": "Tamil",
-   "tag": null
-  },
-  {
-   "code": "te",
-   "name": "Telugu",
-   "tag": null
-  },
-  {
-   "code": "tr",
-   "name": "Turkish",
-   "tag": null
-  },
-  {
-   "code": "uk",
-   "name": "Ukrainian",
-   "tag": null
-  },
-  {
-   "code": "ur",
-   "name": "Urdu",
-   "tag": null
+   "code": "ja",
+   "name": "Japanese",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
   },
   {
    "code": "vi",
    "name": "Vietnamese",
-   "tag": null
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "af",
+   "name": "Afrikaans",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ak",
+   "name": "Akan",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "sq",
+   "name": "Albanian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "am",
+   "name": "Amharic",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "ar",
+   "name": "Arabic",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "ar",
+   "name": "Arabic (Egypt)",
+   "tag": "ar-EG",
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "hy",
+   "name": "Armenian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "as",
+   "name": "Assamese",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "az",
+   "name": "Azerbaijani",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "eu",
+   "name": "Basque",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "be",
+   "name": "Belarusian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "bn",
+   "name": "Bengali",
+   "tag": null,
+   "models": [
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "bs",
+   "name": "Bosnian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "bg",
+   "name": "Bulgarian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "my",
+   "name": "Burmese",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "yue",
+   "name": "Cantonese",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "ca",
+   "name": "Catalan",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ceb",
+   "name": "Cebuano",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ny",
+   "name": "Chichewa",
+   "tag": null,
+   "models": [
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "zh",
+   "name": "Chinese (Taiwan)",
+   "tag": "zh-TW",
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "hr",
+   "name": "Croatian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "cs",
+   "name": "Czech",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "da",
+   "name": "Danish",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "dgo",
+   "name": "Dogri",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "nl",
+   "name": "Dutch",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "en",
+   "name": "English (Australia)",
+   "tag": "en-AU",
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "en",
+   "name": "English (Canada)",
+   "tag": "en-CA",
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "et",
+   "name": "Estonian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "fil",
+   "name": "Filipino",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "fi",
+   "name": "Finnish",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "fr",
+   "name": "French",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "fr",
+   "name": "French (Canada)",
+   "tag": "fr-CA",
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "gl",
+   "name": "Galician",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ka",
+   "name": "Georgian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "de",
+   "name": "German",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "el",
+   "name": "Greek",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "gu",
+   "name": "Gujarati",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ha",
+   "name": "Hausa",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "he",
+   "name": "Hebrew",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "hu",
+   "name": "Hungarian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "is",
+   "name": "Icelandic",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ga",
+   "name": "Irish",
+   "tag": null,
+   "models": [
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "it",
+   "name": "Italian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "jv",
+   "name": "Javanese",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "kn",
+   "name": "Kannada",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "kk",
+   "name": "Kazakh",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ki",
+   "name": "Kikuyu",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "rw",
+   "name": "Kinyarwanda",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "rn",
+   "name": "Kirundi",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "ky",
+   "name": "Kyrgyz",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "lv",
+   "name": "Latvian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ln",
+   "name": "Lingala",
+   "tag": null,
+   "models": [
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "lt",
+   "name": "Lithuanian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "lg",
+   "name": "Luganda",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "lb",
+   "name": "Luxembourgish",
+   "tag": null,
+   "models": [
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "mk",
+   "name": "Macedonian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ms",
+   "name": "Malay",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "ml",
+   "name": "Malayalam",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "mr",
+   "name": "Marathi",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "mn",
+   "name": "Mongolian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "ne",
+   "name": "Nepali",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "no",
+   "name": "Norwegian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "ps",
+   "name": "Pashto",
+   "tag": null,
+   "models": [
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "fa",
+   "name": "Persian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "pl",
+   "name": "Polish",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "pa",
+   "name": "Punjabi",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ro",
+   "name": "Romanian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "ru",
+   "name": "Russian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "nso",
+   "name": "Sepedi",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "sr",
+   "name": "Serbian",
+   "tag": null,
+   "models": [
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "st",
+   "name": "Sesotho",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "sd",
+   "name": "Sindhi",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "sk",
+   "name": "Slovak",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "sl",
+   "name": "Slovenian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "so",
+   "name": "Somali",
+   "tag": null,
+   "models": [
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "es",
+   "name": "Spanish (Argentina)",
+   "tag": "es-AR",
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "es",
+   "name": "Spanish (Chile)",
+   "tag": "es-CL",
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "su",
+   "name": "Sundanese",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "sw",
+   "name": "Swahili",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ss",
+   "name": "Swati",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "sv",
+   "name": "Swedish",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "tg",
+   "name": "Tajik",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "ta",
+   "name": "Tamil",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "te",
+   "name": "Telugu",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "th",
+   "name": "Thai",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "bo",
+   "name": "Tibetan",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "ts",
+   "name": "Tsonga",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "tn",
+   "name": "Tswana",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "tr",
+   "name": "Turkish",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "uk",
+   "name": "Ukrainian",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE",
+    "WREN"
+   ]
+  },
+  {
+   "code": "ur",
+   "name": "Urdu",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "ug",
+   "name": "Uyghur",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "uz",
+   "name": "Uzbek",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "ve",
+   "name": "Venda",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "war",
+   "name": "Waray",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
   },
   {
    "code": "cy",
    "name": "Welsh",
-   "tag": null
+   "tag": null,
+   "models": [
+    "NIGHTINGALE",
+    "ORIOLE"
+   ]
+  },
+  {
+   "code": "wo",
+   "name": "Wolof",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "yo",
+   "name": "Yoruba",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
+  },
+  {
+   "code": "zu",
+   "name": "Zulu",
+   "tag": null,
+   "models": [
+    "NIGHTINGALE"
+   ]
   }
  ]
 }

@@ -742,7 +742,8 @@ def test_perso_client_dub_video_happy_path(monkeypatch, tmp_path):
     assert body["mediaSeq"] == 555
     assert body["isVideoProject"] is True
     assert body["sourceLanguageCode"] == "ko"
-    assert body["targetLanguages"] == [{"languageCode": "en", "ttsModel": "AUDIO_ENGINE_V3"}]
+    # ORIOLE unless a model is named: Perso's list no longer has AUDIO_ENGINE_V3.
+    assert body["targetLanguages"] == [{"languageCode": "en", "ttsModel": "ORIOLE"}]
     assert body["numberOfSpeakers"] == 2
     assert body["preferredSpeedType"] == "GREEN"
     # download-info gate ran before the download link was asked for
@@ -901,9 +902,11 @@ def test_dub_video_sends_the_region_tag_when_the_language_has_one(monkeypatch, t
     src = tmp_path / "in.mp4"
     src.write_bytes(b"v")
     pc = PersoClient(api_key="dummy-key", space_seq=999, poll_interval=0)
-    pc.dub_video(str(src), str(tmp_path / "out.mp4"), "ko", "en", num_speakers=1, target_tag="en-GB")
+    pc.dub_video(str(src), str(tmp_path / "out.mp4"), "ko", "en", num_speakers=1, target_tag="en-GB",
+                 tts_model="NIGHTINGALE")
     url, body = next(c for c in calls["post"] if c[0].endswith("/translate"))
-    assert body["targetLanguages"] == [{"languageCode": "en", "ttsModel": "AUDIO_ENGINE_V3", "languageTag": "en-GB"}]
+    # ...and the voice model the user chose goes in beside it.
+    assert body["targetLanguages"] == [{"languageCode": "en", "ttsModel": "NIGHTINGALE", "languageTag": "en-GB"}]
 
 
 # Perso says a project failed in more than one way and only one of them was
@@ -1078,3 +1081,33 @@ def test_note_credits_survives_a_client_that_cannot_say():
     note_credits({"credits": 5}, Odd(), logs.append, "Perso STT")
     assert logs == []
     assert not hasattr(pc, "credits_used")
+
+
+def test_credits_of_two_perso_calls_that_overlap_are_not_counted(monkeypatch):
+    # A separation read 15 for its own 5 while a Wren dub spent 10 beside it
+    # (Windows C8, 2026-10-07): the balance difference holds both, so an
+    # overlapped watch leaves the total unknown instead of wrong.
+    balance = {"credits": 100}
+
+    class _PC:
+        credits_used = 0
+        def describe_workspace(self):
+            return {"seq": 1, "name": "w", "credits": balance["credits"]}
+
+    logs = []
+    a, b = _PC(), _PC()
+    ws_a = perso_client_module.begin_credit_watch(a)
+    ws_b = perso_client_module.begin_credit_watch(b)        # opened while a's is open
+    balance["credits"] = 85                                  # a spent 5, b spent 10
+    perso_client_module.note_credits(ws_a, a, logs.append, "separation")
+    perso_client_module.note_credits(ws_b, b, logs.append, "dub")
+    assert a.credits_used is None and b.credits_used is None
+    assert all("not counted" in m for m in logs)
+
+    # One after the other: counted as before.
+    c = _PC()
+    ws_c = perso_client_module.begin_credit_watch(c)
+    balance["credits"] = 80
+    perso_client_module.note_credits(ws_c, c, logs.append, "stt")
+    assert c.credits_used == 5
+    assert logs[-1] == "   Perso credits used: 5"

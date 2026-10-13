@@ -9,9 +9,12 @@ import threading
 import time
 
 import pytest
+import requests
 from fastapi.testclient import TestClient
 
 from app import models as models_module
+from app import state
+from app.jobs import JobStore
 from app.main import app
 
 client = TestClient(app, base_url="http://127.0.0.1")
@@ -37,7 +40,7 @@ def _install_fake_downloader(monkeypatch, gate=None, fail=None):
         if gate is not None:
             gate.wait(5)
         if fail is not None:
-            raise RuntimeError(fail)
+            raise fail if isinstance(fail, BaseException) else RuntimeError(fail)
         if cancelled():
             return
         for m in entry["markers"]:
@@ -112,7 +115,38 @@ def test_failed_download_reports_error_then_paused_state(monkeypatch):
     client.post("/api/models/whisper/download")
     row = _wait_state("whisper", ("paused",))
     assert row["state"] == "paused"
-    assert "network died" in (row.get("error") or "")
+    assert row.get("error") == "Connection lost."
+
+
+# What the screen says when a download stops: the reason in plain words, never
+# the exception (Windows H9/H10, 2026-10-06: "ChunkedEncodingError" was shown).
+@pytest.mark.parametrize("fail, said", [
+    (requests.exceptions.ChunkedEncodingError(
+        "('Connection broken: IncompleteRead(1052 bytes read, 2048 more expected)')"), "Connection lost."),
+    ("hf download exited 1: requests.exceptions.ChunkedEncodingError: ('Connection broken: "
+     "IncompleteRead(0 bytes read)')", "Connection lost."),
+    ("hf download exited 1: httpx.ReadTimeout: The read operation timed out", "Connection lost."),
+    (OSError(28, "No space left on device"), "Not enough space on this computer."),
+    ("hf download exited 1: Traceback (most recent call last): KeyError: 'sha'", "The download stopped."),
+])
+def test_a_stopped_download_says_why_in_plain_words(monkeypatch, fail, said):
+    gate = threading.Event(); gate.set()
+    _install_fake_downloader(monkeypatch, gate=gate, fail=fail)
+    client.post("/api/models/whisper/download")
+    assert _wait_state("whisper", ("paused",)).get("error") == said
+
+
+def test_a_cancel_that_breaks_the_connection_is_still_a_cancel(monkeypatch):
+    gate = threading.Event()
+    _install_fake_downloader(monkeypatch, gate=gate,
+                             fail=requests.exceptions.ChunkedEncodingError("Connection broken"))
+    client.post("/api/models/whisper/download")
+    _wait_state("whisper", ("downloading",))
+    client.post("/api/models/whisper/cancel")
+    gate.set()
+    _wait_state("whisper", ("paused",))
+    time.sleep(0.2)
+    assert "error" not in next(m for m in client.get("/api/models").json()["models"] if m["id"] == "whisper")
 
 
 def test_remove_deletes_and_refuses_while_dubbing(monkeypatch, tmp_path):
@@ -126,6 +160,23 @@ def test_remove_deletes_and_refuses_while_dubbing(monkeypatch, tmp_path):
     monkeypatch.setattr(models_module, "dub_in_progress", lambda: False)
     assert client.delete("/api/models/whisper").status_code == 200
     assert _wait_state("whisper", ("not_downloaded",))["state"] == "not_downloaded"
+
+
+@pytest.mark.parametrize("status, refused", [
+    ("queued", True), ("running", True), ("cancelling", True),
+    ("done", False), ("error", False), ("cancelled", False),
+])
+def test_a_job_still_using_the_models_blocks_removal(monkeypatch, status, refused):
+    # A stopped job runs on until its next checkpoint, and a queued one loads
+    # the models the moment its turn comes.
+    store = JobStore()
+    store.update(store.create(), status=status)
+    monkeypatch.setattr(state, "job_store", store)
+    p = os.path.join(os.environ["PERSODUB_KIT_DIR"], "models", "whisper", "faster-whisper-large-v3", "model.bin")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    open(p, "wb").write(b"w")
+    assert client.delete("/api/models/whisper").status_code == (409 if refused else 200)
+    assert os.path.exists(p) == refused
 
 
 def test_download_refuses_when_disk_is_short(monkeypatch):

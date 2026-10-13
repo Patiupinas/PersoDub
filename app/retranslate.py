@@ -13,15 +13,20 @@ over the lines by time -- the way the dub first divided them.
 from typing import Callable, List, Optional
 
 from app.dub_script import edit_line, load_lines
+from app.i18n import t
 from app.text.length_fit import fit_translate
 from app.text.srt import _SENT_SPLIT
 
 
 def _groups(lines: List[dict]) -> List[List[dict]]:
-    """Runs of neighbouring lines that read the same source sentence."""
+    """Runs of neighbouring lines that read the same source line. The same
+    line, not the same words: three source lines saying the same sentence were
+    taken for one sentence split over three lines, translated once and cut into
+    pieces over them (Windows test H14, 2026-10-10)."""
     out: List[List[dict]] = []
     for line in lines:
-        if out and line["source"] and out[-1][-1]["source"] == line["source"]:
+        if (out and line["source"] and line["source_line"] is not None
+                and out[-1][-1]["source_line"] == line["source_line"]):
             out[-1].append(line)
         else:
             out.append([line])
@@ -78,14 +83,14 @@ def retranslate_lines(work_dir: str, numbers: Optional[List[int]], lang_code: st
     wanted = set(numbers) if numbers is not None else {l["line"] for l in lines}
     unknown = sorted(n for n in wanted if not 1 <= n <= len(lines))
     if unknown:
-        raise ValueError(f"There is no line {unknown[0]}.")
+        raise ValueError(t("There is no line {line}.", line=unknown[0]))
     groups = [g for g in _groups(lines)
               if g[0]["source"] and any(l["line"] in wanted for l in g)]
     if not groups:
         return []
     sources = [g[0]["source"] for g in groups]
     slots = [round(g[-1]["end"] - g[0]["start"], 2) for g in groups]
-    if not getattr(translator, "length_rules", True):
+    if not translator.length_rules:
         slots = None
     new = fit_translate(translator, sources, language, None, slots, log=log)
     changed = []

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from app import media
 from app.api._shared import free_path
+from app.i18n import t
 
 router = APIRouter()
 
@@ -68,35 +69,32 @@ def clips_cut(body: ClipCutRequest):
     """
     path = os.path.expanduser(body.video_path)
     if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail=f"No such video: {body.video_path}")
+        raise HTTPException(status_code=404, detail=t("No such video: {path}", path=body.video_path))
     try:
         start = _parse_timecode(body.start)
         end = _parse_timecode(body.end)
     except ValueError:
         raise HTTPException(status_code=422,
-                            detail='Times must be seconds ("85") or timecodes ("1:25").')
+                            detail=t('Times must be seconds ("85") or timecodes ("1:25").'))
     if start < 0 or end <= start:
-        raise HTTPException(status_code=422, detail="The clip must start before it ends.")
+        raise HTTPException(status_code=422, detail=t("The clip must start before it ends."))
     try:
         duration = media.video_duration(path)
     except Exception:
         raise HTTPException(status_code=422,
-                            detail="That file does not look like a video.")
+                            detail=t("That file does not look like a video."))
     if start >= duration:
         raise HTTPException(status_code=422,
-                            detail=f"This video is only {duration:.0f}s long.")
+                            detail=t("This video is only {seconds}s long.", seconds=f"{duration:.0f}"))
     end = min(end, duration)
     base, ext = os.path.splitext(path)
     out = free_path("%s-clip-%s-%s" % (base, _clip_stamp(start), _clip_stamp(end)),
                      ext or ".mp4")
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
            "-ss", "%.3f" % start, "-t", "%.3f" % (end - start), "-i", path,
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
-           "-movflags", "+faststart", out]
+           *media.x264_args("20", ["-c:a", "aac", "-b:a", "160k"]), out]
     run = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if run.returncode != 0:
         raise HTTPException(status_code=503,
-                            detail="ffmpeg could not cut this video (%s)."
-                                   % (run.stderr or "no detail")[-120:].strip())
+                            detail=media._failure(t("ffmpeg could not cut this video"), run.stderr, (path, out)))
     return {"clip_path": out, "seconds": round(end - start, 3)}

@@ -152,6 +152,7 @@ function harness({ agents = [], stored = {}, screen = "done", jobId = "job-1",
     globalThis.console = real.console;
   };
 
+  let refuseLogin = false;
   const fetch = async (url, init = {}) => {
     log.calls.push({ url, method: init.method || "GET", body: init.body,
                      headers: init.headers, signal: init.signal });
@@ -162,6 +163,7 @@ function harness({ agents = [], stored = {}, screen = "done", jobId = "job-1",
       if (!chat) throw new Error("no chat scripted");
       return chat;
     }
+    if (url === "/api/agent/login" && refuseLogin) return { ok: false, json: async () => ({}) };
     if (url === "/api/models") return { ok: true, json: async () => ({ models }) };
     return { ok: true, json: async () => ({}) };
   };
@@ -169,10 +171,11 @@ function harness({ agents = [], stored = {}, screen = "done", jobId = "job-1",
   initAgentStripUi({
     $, fetch,
     getScreen: () => document.body.dataset.screen,
-    getJobId: () => jobId,
+    // A test opens another project by naming it here.
+    getJobId: () => ("jobId" in log ? log.jobId : jobId),
     emit: (name) => log.emitted.push(name),
   });
-  return { $, log, body };
+  return { $, log, body, refuseLogin: () => { refuseLogin = true; } };
 }
 
 /** Let every promise the strip started settle. */
@@ -374,7 +377,8 @@ test("the four parts come up: the state line, the picker, the input and the butt
     assert.equal(h.$("assistantInput").placeholder, "Ask anything");
     assert.equal(h.$("assistantInput").focused, true);
     // The strip follows the app's screens through document.body alone.
-    assert.deepEqual(h.log.observed, ["body", { attributeFilter: ["data-screen"] }]);
+    // ...and the project that is open, the same way.
+    assert.deepEqual(h.log.observed, ["body", { attributeFilter: ["data-screen", "data-job-id"] }]);
     assert.deepEqual(h.log.errors, []);
   } finally { h.log.restore(); }
 
@@ -485,11 +489,11 @@ test("the sign-in sentence goes away once Codex is signed in", async () => {
   try {
     await flush();
     const said = () => h.$("assistantLog").children.map((d) => d.textContent || d.dataset.raw || "");
-    assert.ok(said().some((t) => /Press Sign in above/.test(t)));
+    assert.ok(said().some((t) => /press Sign in above/.test(t)));
     codex.logged_in = true;                         // signed in through the window
     await h.$("assistantModelBtn").fire("click");   // any fresh look at who is signed in
     await flush();
-    assert.ok(!said().some((t) => /Press Sign in above/.test(t)));
+    assert.ok(!said().some((t) => /press Sign in above/.test(t)));
   } finally { h.log.restore(); }
 });
 
@@ -588,7 +592,7 @@ test("a message carries the open job, and a rewritten line tells the page twice"
     assert.equal(post.method, "POST");
     assert.deepEqual(post.headers, { "Content-Type": "application/json" });
     assert.deepEqual(JSON.parse(post.body),
-      { message: "Shorten line 4", agent: "claude", model: "opus", job_id: "job-1" });
+      { message: "Shorten line 4", agent: "claude", model: "opus", resume: false, job_id: "job-1" });
     // The box is emptied and the strip opened the moment it is sent.
     assert.equal(input.value, "");
     assert.equal(h.log.stored.get("persodub.layout.agentOpen"), "1");
@@ -762,6 +766,8 @@ test("Stop cuts the stream, asks the server to end the turn, and frees the row",
     // A turn is on air: the button is Stop, and it can be pressed.
     assert.equal(h.$("assistantGo").title, "Stop");
     assert.equal(h.$("assistantGo").disabled, false);
+    // And the page knows it, for Settings (ui/src/settingsDialog.mjs).
+    assert.equal(document.body.dataset.agentTurn, "on");
 
     await h.$("assistantGo").fire("click");
     await flush();
@@ -769,6 +775,7 @@ test("Stop cuts the stream, asks the server to end the turn, and frees the row",
     assert.equal(stop.method, "POST");
     // The row is free again straight away -- the point of Stop is typing next.
     assert.equal(h.$("assistantGo").title, "Send");
+    assert.equal(document.body.dataset.agentTurn, "");
     // And the stream it was reading was cut rather than left pouring in.
     const post = h.log.calls.find((c) => c.url === "/api/agent/chat");
     assert.equal(post.signal.aborted, true);
@@ -858,7 +865,7 @@ test("one of two signed out: the line names it, the box says the state, the log 
     // Asked twice (see below), said once -- and only the commands that apply.
     assert.equal(h.log.calls.filter((c) => c.url.startsWith("/api/agent/status")).length, 2);
     assert.deepEqual(h.$("assistantLog").children.map((d) => d.innerHTML),
-      ["Codex is not signed in. Pick another assistant, or sign in. Run codex login in Terminal."]);
+      ["Codex is not signed in. Pick another assistant, or press Sign in above."]);
   } finally { h.log.restore(); }
 });
 
@@ -879,7 +886,7 @@ test("with no assistant ready the strip says so once and sends nothing", async (
 
 test("a turn that cancelled or queued a job tells the page to re-read its jobs", async () => {
   const chat = stream([
-    { kind: "progress", label: "Cancelling a dub", tool: "cancel_dub" },
+    { kind: "progress", label: "Cancelling dubbing", tool: "cancel_dub" },
     { kind: "progress", done: true },
     { kind: "done", text: "Cancelled." },
   ]);
@@ -938,6 +945,40 @@ test("a download offer puts a Download button up, and only pressing it downloads
   } finally { h.log.restore(); }
 });
 
+test("a download offer that stopped follows the model when Settings finishes it", async () => {
+  // The card said "Download stopped" for good after the download was
+  // resumed in Settings and finished (Windows H9/H10, 2026-10-06).
+  const chat = stream([
+    { kind: "progress", label: "Offering a download", tool: "download_model", model: "whisper" },
+    { kind: "progress", done: true },
+    { kind: "done", text: "Button shown." },
+  ]);
+  const models_ = [{ id: "whisper", name: "Whisper", bytes: 2.9e9, state: "not_downloaded" }];
+  const h = harness({ agents: [CLAUDE], chat, models: models_ });
+  try {
+    await flush();
+    const input = h.$("assistantInput");
+    input.value = "Whisper 받아줘";
+    await input.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13, preventDefault() {} });
+    await flush(80);
+    const card = h.$("assistantLog").children.find((c) => c.className === "offer-card");
+    await card.children[2].children[0].fire("click");
+    await flush(20);
+    models_[0].state = "paused";
+    await h.log.timers.pop()();
+    await flush(20);
+    assert.equal(card.children[1].textContent, "Download stopped. Resume it in Settings.");
+    models_[0].state = "downloading";
+    await h.log.timers.pop()();
+    await flush(20);
+    assert.equal(card.children[1].textContent, "Downloading · 2.9 GB");
+    models_[0].state = "ready";
+    await h.log.timers.pop()();
+    await flush(20);
+    assert.equal(card.children[1].textContent, "Downloaded · 2.9 GB");
+  } finally { h.log.restore(); }
+});
+
 test("Not now on a download offer downloads nothing", async () => {
   const chat = stream([
     { kind: "progress", label: "Offering a download", tool: "download_model", model: "hunyuan" },
@@ -958,5 +999,118 @@ test("Not now on a download offer downloads nothing", async () => {
     await flush(10);
     assert.equal(h.log.calls.filter((c) => c.method === "POST" && c.url.startsWith("/api/models/")).length, 0);
     assert.equal(card.children[1].textContent, "Not downloaded.");
+  } finally { h.log.restore(); }
+});
+
+// -- words typed and not sent belong to the project they were typed on --------
+
+test("words typed and not sent stay with their project, and are there again on the way back", async () => {
+  const h = harness({ agents: [{ id: "claude", name: "Claude", available: true, logged_in: true, models: [] }] });
+  try {
+    await new Promise((r) => setImmediate(r));
+    const input = h.$("assistantInput");
+    input.value = "make line 3 shorter";
+    await input.fire("input");
+    assert.equal(h.$("assistantGo").disabled, false);
+
+    // The same project reporting in again changes nothing.
+    h.log.observer();
+    assert.equal(input.value, "make line 3 shorter");
+
+    h.log.jobId = "job-2";
+    h.log.observer();
+    assert.equal(input.value, "", "the next project's box starts empty");
+    assert.equal(h.$("assistantGo").disabled, true);
+
+    h.log.jobId = null;          // Home
+    h.log.observer();
+    h.log.jobId = "job-1";
+    h.log.observer();
+    assert.equal(input.value, "make line 3 shorter");
+  } finally { h.log.restore(); }
+});
+
+// Signed out is a button, not a terminal command (owner, 2026-09-30): Codex
+// through the ChatGPT sign-in window, Claude through its own sign-in, started
+// by the app the same way.
+test("signed out, the heading row has a Sign in button for each assistant, and Claude's starts its own sign-in", async () => {
+  const claude = { ...CLAUDE, logged_in: false, account: "", login_command: "claude" };
+  const codex = { ...CODEX, login_command: "" };
+  const h = harness({ agents: [claude, codex] });
+  try {
+    await flush();
+    const state = h.$("assistantState");
+    // The fake page keeps every child ever appended; the last two are the row as painted.
+    const buttons = () => state.children.filter((k) => k.tag === "button").slice(-2);
+    assert.equal(state.textContent, "Sign in with");
+    assert.deepEqual(buttons().map((b) => b.textContent), ["Claude", "Codex"]);
+    assert.ok(h.$("assistantLog").children.some((d) => /Press a button above/.test(d.innerHTML)));
+
+    // Codex: the app's own ChatGPT sign-in window.
+    await buttons()[1].fire("click");
+    assert.deepEqual(h.log.emitted.filter((n) => n === "persodub:chatgpt-signin"), ["persodub:chatgpt-signin"]);
+
+    // Claude: the app starts its sign-in, and the row says where to finish it.
+    await buttons()[0].fire("click");
+    await flush();
+    const posted = h.log.calls.find((c) => c.url === "/api/agent/login");
+    assert.equal(posted.method, "POST");
+    assert.equal(posted.body, '{"agent":"claude"}');
+    assert.equal(state.textContent, "Finish in your browser.");
+
+    // It lands: the next look finds Claude signed in, and the row says so.
+    claude.logged_in = true;
+    claude.account = "claude.ai";
+    for (const t of h.log.timers.splice(0)) await t();
+    await flush();
+    assert.notEqual(state.textContent, "Finish in your browser.");
+    assert.match(state.textContent, /^Claude · /);
+    assert.equal(state.classList.contains("warn"), false);
+  } finally { h.log.restore(); }
+});
+
+test("a sign-in the app could not start says so, with the terminal command as the way left", async () => {
+  const claude = { ...CLAUDE, logged_in: false, account: "", login_command: "claude" };
+  const h = harness({ agents: [claude, { ...CODEX, logged_in: true, login_command: "" }] });
+  try {
+    await flush();
+    const state = h.$("assistantState");
+    assert.equal(state.textContent, "Claude is not signed in.");
+    const button = state.children.filter((k) => k.tag === "button").at(-1);
+    assert.equal(button.textContent, "Sign in");
+    // The harness answers every other request with ok:true; refuse this one.
+    const calls = h.log.calls;
+    const before = calls.length;
+    h.refuseLogin();
+    await button.fire("click");
+    await flush();
+    assert.equal(calls.slice(before).filter((c) => c.url === "/api/agent/login").length, 1);
+    assert.equal(state.textContent, "Claude is not signed in.");
+    const last = h.$("assistantLog").children.at(-1);
+    assert.equal(last.textContent, "Could not start the sign-in. Run claude in Terminal.");
+  } finally { h.log.restore(); }
+});
+
+
+test("the first turn after the page opens starts a new conversation, the next continues it, and New chat starts over", async () => {
+  // The panel used to carry an invisible old conversation across launches, and
+  // a long one kept following its old habits over new instructions (Windows F36, 2026-10-08).
+  const h = harness({ agents: [CLAUDE], chat: stream([{ kind: "done", text: "ok" }]) });
+  try {
+    await flush();
+    const input = h.$("assistantInput");
+    const send = async (text) => {
+      input.value = text;
+      await input.fire("keydown", { key: "Enter", isComposing: false, keyCode: 13, preventDefault() {} });
+      await flush(60);
+    };
+    const resumes = () => h.log.calls.filter((c) => c.url === "/api/agent/chat").map((c) => JSON.parse(c.body).resume);
+    await send("first");
+    await send("second");
+    assert.deepEqual(resumes(), [false, true]);
+    await h.$("assistantNewChat").fire("click");
+    assert.deepEqual(h.$("assistantLog").children.map((d) => d.innerHTML), ["New conversation."]);
+    await send("third");
+    assert.deepEqual(resumes(), [false, true, false]);
   } finally { h.log.restore(); }
 });

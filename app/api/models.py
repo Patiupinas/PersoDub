@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from app import models
 from app import models as model_store
 from app import setup as dub_setup
+from app.i18n import t
 from app.settings_env import current_value
 
 router = APIRouter()
@@ -49,6 +50,7 @@ class SetupRequest(BaseModel):
     stt: Optional[str] = None
     translator: Optional[str] = None
     voice_quality: Optional[str] = None
+    voice: Optional[str] = None
 
 
 @router.post("/api/setup")
@@ -58,7 +60,7 @@ def setup_post(body: SetupRequest):
     try:
         new = dub_setup.set_defaults(body.model_dump())
     except FileNotFoundError:
-        raise HTTPException(503, "Settings need a desktop install (no kit.env found)")
+        raise HTTPException(503, t("Settings need a desktop install (no kit.env found)"))
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"defaults": new}
@@ -80,7 +82,7 @@ def models_list():
 def _model_or_404(mid: str):
     entry = model_store.find(mid)
     if entry is None or entry["role"] == "always":
-        raise HTTPException(404, f"Unknown model: {mid}")
+        raise HTTPException(404, t("Unknown model: {model}", model=mid))
     return entry
 
 
@@ -93,8 +95,8 @@ def model_download(mid: str):
         raise HTTPException(409, model_store.PACKS_ARE_THE_SHELLS)
     free = model_store.free_bytes_at(model_store.kit_dir())
     if free is not None and free < entry["bytes"] * 1.1:
-        raise HTTPException(409, "Not enough space: needs %.1f GB, %.1f GB free"
-                                 % (entry["bytes"] / 1e9, free / 1e9))   # decimal, like the list
+        raise HTTPException(409, t("Not enough space: needs {need} GB, {free} GB free",   # decimal, like the list
+                                   need="%.1f" % (entry["bytes"] / 1e9), free="%.1f" % (free / 1e9)))
     try:
         started = model_store.request_download(entry)
     except ValueError as e:
@@ -119,7 +121,7 @@ def model_remove(mid: str):
     # hands a pack's removal to the desktop app, so a pack cannot be pulled
     # out from under a running dub any more than a model can.
     if model_store.dub_in_progress():
-        raise HTTPException(409, "A dub is running right now. Wait for it to finish, then remove the model.")
+        raise HTTPException(409, t("Dubbing is running right now. Wait for it to finish, then remove the model."))
     if entry["role"] == "pack":
         raise HTTPException(409, model_store.PACKS_ARE_THE_SHELLS)
     model_store.cancel_download(mid)

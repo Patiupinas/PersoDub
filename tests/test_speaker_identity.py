@@ -164,3 +164,16 @@ def test_main_exit_2_on_setup_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(csi, "embed_files", fake_embedder({}))
     assert csi.main([wd]) == 2
     assert "ERROR" in capsys.readouterr().err
+
+
+def test_fast_mode_job_reads_speakers_from_lines_json(tmp_path):
+    # A Fast mode job has no qwen_scorer_input.json; lines.json names each
+    # line's speaker, so the check runs on it as made.
+    d = tmp_path / "work"
+    d.mkdir()
+    for name in ("qwen_ref_SPK0.wav", "qwen_ref_SPK1.wav", "qwen_line_0.wav", "qwen_line_1.wav"):
+        (d / name).write_bytes(b"")
+    (d / "lines.json").write_text(json.dumps({"lines": [
+        {"i": 0, "speaker": "SPK1"}, {"i": 1, "speaker": "SPK0"}]}), encoding="utf-8")
+    assignments, _ = csi.load_assignments(str(d))
+    assert assignments == [(0, "SPK1"), (1, "SPK0")]

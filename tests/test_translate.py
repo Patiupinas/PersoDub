@@ -3,6 +3,8 @@ import json
 import pytest
 
 from app import translate
+from app.text import dub_prompt
+from app.text.dub_prompt import build_dub_prompt, parse_json_array
 from app.translate import (
     GEMINI_UPGRADE_URL,
     GeminiQuotaExhaustedError,
@@ -12,9 +14,7 @@ from app.translate import (
     TranslationEngine,
     VertexTranslator,
     build_draft_prompt,
-    build_dub_prompt,
     get_translator,
-    parse_json_array,
     translate_scene,
 )
 
@@ -110,14 +110,14 @@ def test_ollama_translate_retries_on_count_mismatch(monkeypatch):
 
 
 def test_script_ok_korean_target():
-    from app.translate import script_ok
+    from app.text.dub_prompt import script_ok
     assert script_ok("덴트는 어딨어?", "Korean")
     assert not script_ok("dent đâu?", "Korean")   # real-world bad case
     assert not script_ok("?p", "Korean")
 
 
 def test_script_ok_english_target_rejects_hangul():
-    from app.translate import script_ok
+    from app.text.dub_prompt import script_ok
     assert script_ok("Where is Dent?", "English")
     assert not script_ok("덴트 where?", "English")
 
@@ -147,7 +147,7 @@ def test_translate_falls_back_to_per_line(monkeypatch):
 
 
 def test_script_ok_korean_rejects_mixed_latin():
-    from app.translate import script_ok
+    from app.text.dub_prompt import script_ok
     assert not script_ok("덴 đâu?", "Korean")        # Hangul + Vietnamese (real case)
     assert not script_ok("dent 자리에 들어가", "Korean")  # Hangul + English (real case)
     assert script_ok("덴트는 어딨어?", "Korean")
@@ -383,7 +383,7 @@ def test_translate_scene_two_pass():
     long_ko = "가" * 1005  # exceeds any real syllable budget -> forces the shorten pass
     calls = []
 
-    class FakeEngine:
+    class FakeEngine(TranslationEngine):
         def _ask(self, prompt):
             calls.append(prompt)
             if "too long" in prompt:  # keyword present only in build_shorten_prompt output
@@ -447,8 +447,8 @@ def test_a_line_that_keeps_failing_is_left_untranslated_and_the_rest_are_transla
     monkeypatch.setattr(t, "_ask", fake_ask)
     out = t.translate(["a", "bad", "c"], "Korean", durations=[1.0, 1.0, 1.0])
 
-    assert out == ["번역 a", translate.UNTRANSLATED, "번역 c"]
-    assert translate.UNTRANSLATED == ""
+    assert out == ["번역 a", dub_prompt.UNTRANSLATED, "번역 c"]
+    assert dub_prompt.UNTRANSLATED == ""
     # 3 batch tries, then 1 + 3 + 1 single-line asks: the bad line had its retries.
     assert len(asked) == 3 + 5
 
@@ -594,19 +594,19 @@ def test_a_malformed_answer_is_described_by_its_length_never_quoted():
     the job log and, on a failure, into a public issue (issues #86, #88, #102)."""
     secret = "Pero esos elementos sintéticos que estamos añadiendo"
     with pytest.raises(ValueError) as no_array:
-        translate.parse_json_array(secret, 1)
+        dub_prompt.parse_json_array(secret, 1)
     assert secret[:10] not in str(no_array.value)
     assert "response length %d" % len(secret) in str(no_array.value)
 
     with pytest.raises(ValueError) as not_text:
-        translate.parse_json_array(json.dumps([{"a": secret, "b": secret}]), 1)
+        dub_prompt.parse_json_array(json.dumps([{"a": secret, "b": secret}]), 1)
     assert secret[:10] not in str(not_text.value)
     assert "dict" in str(not_text.value)
 
 
 def test_script_ok_korean_lets_capital_acronyms_through():
     # ChatGPT keeps the Latin letters Korean itself uses (5-minute runs, 2026-09-24).
-    from app.translate import script_ok
+    from app.text.dub_prompt import script_ok
     for line in ("지난주 AI로 코딩하거나 앱을 만든 분 계세요?", "그 아이디어를 UI UX 디자이너와 나눠요.",
                  "GPT-4.0부터 시작해요.", "오픈AI 모델도 있어요.", "PM인 분도 계시고요."):
         assert script_ok(line, "Korean"), line
@@ -618,7 +618,8 @@ def test_script_ok_korean_lets_capital_acronyms_through():
 
 def test_every_korean_prompt_asks_for_one_speech_level():
     from app.text import length_fit as lf
-    from app.translate import build_draft_prompt, build_dub_prompt
+    from app.text.dub_prompt import build_dub_prompt
+    from app.translate import build_draft_prompt
     ko = [
         build_dub_prompt(["hi"], "Korean", "English", [2.0]),
         build_draft_prompt(["hi"], "Korean", "English"),

@@ -85,9 +85,36 @@ def test_classify_keeps_only_laughter_like_transcripts():
     reject = ["Thank you", "그래서 뭐 할 건데", "MBC 뉴스", "시청해주셔서 감사합니다",
               "I think so", "you you you you", "그만해", "stop it", "(speaking korean)"]
     for t in keep:
-        assert nv.classify_transcript(t) is True, t
+        assert nv.classify_transcript(t, 0.1) is True, t
     for t in reject:
-        assert nv.classify_transcript(t) is False, t
+        assert nv.classify_transcript(t, 0.1) is False, t
+
+
+def test_classify_empty_transcript_needs_no_speech_heard():
+    # An empty transcript alone is not proof: 5 of 72 1.2s pieces of real
+    # speech came back empty (2026-10-01). The voice-activity model must also
+    # hear no speech; a laugh Whisper wrote down needs no such rating.
+    assert nv.classify_transcript("", 0.73) is False
+    assert nv.classify_transcript("...", 0.5) is False
+    assert nv.classify_transcript("", 0.29) is True
+    assert nv.classify_transcript("") is False      # no rating: fails closed
+    assert nv.classify_transcript("하하하", 0.95) is True
+
+
+def test_extract_drops_short_pieces_and_speech_tails(tmp_path):
+    # 37.84-38.06s of a Michael Jackson dub (2026-09-30): the STT ended a cue
+    # early, the sung word went on past its padded span, and the 0.22s left
+    # over was pasted back at full volume. Both rules alone would stop it.
+    vocals = _write_tone_wav(tmp_path / "vocals.wav", [
+        (1.0, 1.3),    # too short to be a laugh worth keeping
+        (3.0, 4.5),    # speech whose cue ends at 3.5s: the rest is its tail
+        (6.0, 7.2),    # a laugh well away from any cue -- kept
+        (9.0, 11.0),   # a breath running into the sentence that starts at 10.5s -- kept
+    ], dur=12.0)
+    cands = nv.extract_nonverbal_segments(vocals, [(3.0, 3.5), (10.5, 11.0)], [])
+    assert len(cands) == 2
+    assert 5.7 <= cands[0][0] <= 6.05 and cands[0][1] >= 7.15
+    assert 8.7 <= cands[1][0] <= 9.05 and abs(cands[1][1] - 10.2) < 1e-6
 
 
 def test_classify_fails_closed_on_foreign_scripts_and_digits():
@@ -133,21 +160,21 @@ def test_overlay_preserves_amplitude_and_fades_edges(tmp_path):
 # --- (4) veto rejection drops a segment; manifest reports both ---
 
 def test_apply_whitelist_injectable_veto_drops_rejected_segment(tmp_path):
-    vocals = _write_tone_wav(tmp_path / "vocals.wav", [(1.0, 1.5), (2.0, 2.5)], dur=4.0)
-    mix = _write_silent_48k_stereo(tmp_path / "mix.wav", 4.0)
+    vocals = _write_tone_wav(tmp_path / "vocals.wav", [(1.0, 2.0), (3.0, 4.0)], dur=5.0)
+    mix = _write_silent_48k_stereo(tmp_path / "mix.wav", 5.0)
 
     def veto(vocals_path, cands):
         return [{"start": a, "end": b,
-                 "text": "하하" if a < 1.8 else "hello there",
-                 "keep": a < 1.8} for a, b in cands]
+                 "text": "하하" if a < 2.5 else "hello there",
+                 "keep": a < 2.5} for a, b in cands]
 
     manifest = nv.apply_nonverbal_whitelist(mix, vocals, [], [], veto=veto)
 
     assert len(manifest["kept"]) == 1
     assert len(manifest["rejected"]) == 1
     assert manifest["rejected"][0]["text"] == "hello there"
-    assert _rms_span_48k(mix, 1.15, 1.35) > 100     # kept laughter is audible
-    assert _rms_span_48k(mix, 2.15, 2.35) == 0      # rejected segment stayed out
+    assert _rms_span_48k(mix, 1.4, 1.6) > 100       # kept laughter is audible
+    assert _rms_span_48k(mix, 3.4, 3.6) == 0        # rejected segment stayed out
 
 
 def test_manifest_is_utf8_whatever_the_platform_encoding_is(tmp_path):
@@ -156,7 +183,7 @@ def test_manifest_is_utf8_whatever_the_platform_encoding_is(tmp_path):
     platform's locale encoding (cp949 on a Korean Windows) made the 5/6
     leakage gate skip itself with a UnicodeDecodeError on that machine.
     """
-    vocals = _write_tone_wav(tmp_path / "vocals.wav", [(1.0, 1.5)], dur=4.0)
+    vocals = _write_tone_wav(tmp_path / "vocals.wav", [(1.0, 2.0)], dur=4.0)
     mix = _write_silent_48k_stereo(tmp_path / "mix.wav", 4.0)
     manifest_path = str(tmp_path / "nonverbal.json")
 
@@ -244,7 +271,7 @@ def test_whisper_veto_fails_closed_when_interpreter_missing(tmp_path):
 
 
 def test_apply_whitelist_logs_error_when_whisper_unavailable(tmp_path):
-    vocals = _write_tone_wav(tmp_path / "vocals.wav", [(1.0, 1.5)], dur=3.0)
+    vocals = _write_tone_wav(tmp_path / "vocals.wav", [(1.0, 2.0)], dur=3.0)
     mix = _write_silent_48k_stereo(tmp_path / "mix.wav", 3.0)
     logs = []
 
@@ -323,7 +350,7 @@ def test_whisper_veto_passes_computed_timeout_to_subprocess_run(tmp_path, monkey
         captured["timeout"] = timeout
         out_path = cmd[cmd.index(nv._WHISPER_RUNNER) + 3]
         with open(out_path, "w") as f:
-            json.dump([""], f)
+            json.dump([["", 0.1]], f)
 
         class _R:
             returncode = 0
@@ -339,13 +366,13 @@ def test_whisper_veto_passes_computed_timeout_to_subprocess_run(tmp_path, monkey
 def test_whitelist_log_says_how_much_was_heard_never_what(tmp_path):
     """The job log is sent with a failure report. A REJECT is a span Whisper
     read as speech, so its text is the video's dialogue."""
-    vocals = _write_tone_wav(tmp_path / "vocals.wav", [(1.0, 1.5), (2.0, 2.5)], dur=4.0)
-    mix = _write_silent_48k_stereo(tmp_path / "mix.wav", 4.0)
+    vocals = _write_tone_wav(tmp_path / "vocals.wav", [(1.0, 2.0), (3.0, 4.0)], dur=5.0)
+    mix = _write_silent_48k_stereo(tmp_path / "mix.wav", 5.0)
 
     def veto(vocals_path, cands):
         return [{"start": a, "end": b,
-                 "text": "하하" if a < 1.8 else "my password is hunter2",
-                 "keep": a < 1.8} for a, b in cands]
+                 "text": "하하" if a < 2.5 else "my password is hunter2",
+                 "keep": a < 2.5} for a, b in cands]
 
     logs = []
     manifest = nv.apply_nonverbal_whitelist(mix, vocals, [], [], veto=veto, log=logs.append)

@@ -143,6 +143,13 @@ def _transport_error(message) -> dict:
     """
     if isinstance(message, str) and base.is_signed_out("codex", message):
         return {"kind": "progress", "tool": "transport", "label": SIGNED_OUT}
+    # A usage limit is not a connection to retry: the CLI still tries five
+    # times over minutes, and the panel sat on "Reconnecting…" for 90 s after
+    # the limit was already known (Windows H18, 2026-10-07). Said at once, and
+    # the turn is ended (app/api/agent.py reads `stop`).
+    if isinstance(message, str) and base._says(base._RATE_LIMITED, message):
+        return {"kind": "error", "detail": message, "stop": True,
+                "message": "Usage limit reached. Wait a while or pick another assistant."}
     # One wording for every retry, so they fold into a single step instead of
     # ten lines of status codes and URLs (Mac tester, 2026-09-28).
     return {"kind": "progress", "tool": "transport", "label": "Reconnecting…"}
@@ -384,10 +391,11 @@ def command(mcp_config: str, resume: bool, model: str = "") -> List[str]:
 
     What --ignore-user-config does NOT cover: it skips ~/.codex/config.toml and
     nothing else. $CODEX_HOME/AGENTS.md -- whatever standing instructions the
-    user keeps for their own Codex work -- still rides into every turn, and
-    neither project_doc_max_bytes nor project_doc_fallback_filenames suppresses
-    it. Pointing CODEX_HOME somewhere private would, but the user's login lives
-    there too, so that trade is not ours to make quietly.
+    user keeps for their own Codex work -- rides into every turn, and neither
+    project_doc_max_bytes nor project_doc_fallback_filenames suppresses it. So
+    the Dub Agent runs with CODEX_HOME in PersoDub's own folder (app/api/agent.py
+    "private_home", app/agents/base.py chatgpt_env), signed in with the app's
+    ChatGPT sign-in: the user's own ~/.codex is not read.
 
     `model` is empty for the Codex assistant (the picker offers only the one
     its config names, and Codex answers with that anyway) and set for the

@@ -8,7 +8,7 @@
 // Run with: node --test ui/src/newProject.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { initNewProjectUi } from "./newProject.mjs";
+import { initNewProjectUi, lengthLine } from "./newProject.mjs";
 import { LANGUAGES } from "./dubApi.mjs";
 
 function makeEl(id) {
@@ -40,6 +40,10 @@ function makeEl(id) {
     load: function () { this.loaded = (this.loaded || 0) + 1; },
     appendChild: function (kid) { this.children.push(kid); },
     append: function (...kids) { this.children.push(...kids); },
+    // restoreOptionsHome/moveOptionsInto (newProject.mjs) move a fixed few
+    // elements around a page that, in these tests, never actually nests them --
+    // only that the move does not throw matters here.
+    insertBefore: function (kid) { this.children.push(kid); return kid; },
     addEventListener: function (ev, fn) { (this.listeners[ev] ||= []).push(fn); },
     removeEventListener: function (ev, fn) {
       this.listeners[ev] = (this.listeners[ev] || []).filter((f) => f !== fn);
@@ -48,8 +52,15 @@ function makeEl(id) {
   };
 }
 
+/** The browser's own storage, a Map underneath. One shared by two harnesses
+    is the app being closed and opened again. */
+function memoryStorage() {
+  const m = new Map();
+  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), m };
+}
+
 /** A page, a fetch log and the callbacks the dialog reaches out through. */
-function harness({ responses = {} } = {}) {
+function harness({ responses = {}, storage = memoryStorage() } = {}) {
   const els = new Map();
   const $ = (id) => {
     if (!els.has(id)) els.set(id, makeEl(id));
@@ -107,6 +118,7 @@ function harness({ responses = {} } = {}) {
     onClosed: () => { log.closed += 1; },
     onPickFile: () => { log.picked += 1; },
     onErase: (source) => { log.erased.push(source); },
+    storage,
   });
   return { $, api, state, log };
 }
@@ -135,6 +147,7 @@ function fillAdvanced($) {
     sttSelect: ["local", "perso"],
     translateSelect: ["hunyuan", "gemma", "gemini"],
     qualitySelect: ["fast", "high"],
+    voiceSelect: ["qwen3"],
   };
   for (const [id, values] of Object.entries(opts)) {
     const sel = $(id);
@@ -175,7 +188,7 @@ test("openNewProject on a link sets state.newProject and opens the overlay", asy
   // A link has no video to scrub -- a still, a length, and no trim bar.
   assert.equal(h.$("projectVideo").hidden, true);
   assert.equal(h.$("projectThumb").style.backgroundImage, "url(https://x/t.jpg)");
-  assert.equal(h.$("projectDur").textContent, "00:01:30");
+  assert.equal(h.$("projectDur").textContent, "01:30");
   assert.equal(h.$("trimBox").innerHTML, "");
 });
 
@@ -183,7 +196,7 @@ test("a link over 30 minutes shows the long-video note; a short one hides it", (
   const h = harness();
   t.after(h.log.restore);
   h.api.openNewProject({ probe: { url: "https://x/y", title: "Long", duration_sec: 1900 } });
-  assert.equal(h.$("projectDur").textContent, "00:31:40");
+  assert.equal(h.$("projectDur").textContent, "31:40");
   assert.equal(h.$("projectLongHint").hidden, false);
   h.api.openNewProject({ probe: { url: "https://x/z", title: "Short", duration_sec: 90 } });
   assert.equal(h.$("projectLongHint").hidden, true);
@@ -212,10 +225,11 @@ test("several files are one dialog: the batch title, no Replace, no trim bar", a
   h.$("projectVideo").duration = 30;
   await h.$("projectVideo").fire("loadedmetadata");
 
-  assert.equal(h.$("projectTitle").textContent, "New projects (3)");
+  assert.equal(h.$("projectTitle").textContent, "New project · 3 videos");
   // Replace picks ONE file, which would silently drop the rest of the batch.
   assert.equal(h.$("projectReplace").hidden, true);
-  assert.equal(h.$("projectDur").textContent, "3 videos");
+  // Said once, in the title: not on the picture and not in the foot.
+  assert.equal(h.$("projectDur").textContent, "");
   // A cut made on the first video would mean nothing to the others.
   assert.equal(h.$("trimBox").innerHTML, "");
 });
@@ -282,13 +296,13 @@ test("a file's length draws the trim bar and its readout", async (t) => {
   h.$("projectVideo").duration = 30;
   await h.$("projectVideo").fire("loadedmetadata");
 
-  assert.equal(h.$("projectDur").textContent, "00:00:30");
+  assert.equal(h.$("projectDur").textContent, "00:30");
   assert.match(h.$("trimBox").innerHTML, /id="trimStart"/);
   assert.equal(h.$("trimStart").value, "0");
   assert.equal(h.$("trimEnd").value, "30");
   assert.equal(h.$("trimEnd").max, "30");
   assert.equal(h.$("trimRead").textContent,
-    "00:00:00.0 – 00:00:30.0 · 30.0s of 30.0s");
+    "00:00:00.0 – 00:00:30.0 · 00:30 of 00:30");
   // Both handles at the ends is not a trim: nothing goes on the wire.
   assert.equal(h.state.newProject.trim, null);
 });
@@ -305,7 +319,7 @@ test("dragging the end handle in writes the range onto state.newProject", async 
 
   assert.deepEqual(h.state.newProject.trim, { start: 0, end: 20 });
   assert.equal(h.$("trimRead").textContent,
-    "00:00:00.0 – 00:00:20.0 · 20.0s of 30.0s");
+    "00:00:00.0 – 00:00:20.0 · 00:20 of 00:30");
 });
 
 test("a length too short to scrub draws no bar at all", async (t) => {
@@ -363,7 +377,7 @@ test("when the file has landed it plays from the app and gets a trim bar", async
   h.$("projectVideo").duration = 30;
   await h.$("projectVideo").fire("loadedmetadata");
 
-  assert.equal(h.$("projectDur").textContent, "00:00:30");
+  assert.equal(h.$("projectDur").textContent, "00:30");
   assert.match(h.$("trimBox").innerHTML, /id="trimStart"/);
 });
 
@@ -635,6 +649,7 @@ test("readOptions hands back the whole form, field for field", async (t) => {
   h.$("qualitySelect").value = "high";
   h.$("numSpeakers").value = "2";
   h.$("translateSelect").value = "gemini";
+  h.$("voiceSelect").value = "qwen3";
 
   assert.deepEqual(h.api.readOptions(), {
     video: file,
@@ -645,9 +660,12 @@ test("readOptions hands back the whole form, field for field", async (t) => {
     sttEngine: "local",
     sepEngine: "perso",
     dubMode: "local",
+    // What the Dubbing model row would select; only a Perso dubbing sends it.
+    persoModel: "ORIOLE",
     qualityMode: "high",
     numSpeakers: 2,
     translateEngine: "gemini",
+    ttsEngine: "qwen3",
     // The list the target was picked from (the model's ten until the app
     // answers /api/languages; this harness answers nothing useful).
     languages: LANGUAGES.map((l) => ({ id: l.code, code: l.code, name: l.name, tag: null })),
@@ -767,6 +785,246 @@ test("Start hands the job back to the page", (t) => {
 });
 
 
+// -- the Dubbing model row ---------------------------------------------------
+
+const PERSO_LANGS = [
+  { id: "en", code: "en", name: "English (US)", tag: null, models: ["NIGHTINGALE", "ORIOLE", "WREN"] },
+  { id: "en-GB", code: "en", name: "English (UK)", tag: "en-GB", models: ["NIGHTINGALE", "ORIOLE"] },
+  { id: "en-AU", code: "en", name: "English (Australia)", tag: "en-AU", models: ["NIGHTINGALE"] },
+];
+async function persoHarness(extra = {}, storage = memoryStorage()) {
+  const h = harness({ responses: { "/api/languages": ok({ local: [], perso: PERSO_LANGS }), ...extra }, storage });
+  fillAdvanced(h.$);
+  await new Promise((r) => setTimeout(r, 0));
+  return h;
+}
+async function persoDialog(extra = {}, storage = memoryStorage()) {
+  const h = await persoHarness(extra, storage);
+  h.$("dubModeSelect").value = "perso";
+  await h.$("dubModeSelect").fire("change");
+  return h;
+}
+const segments = (h) => h.$("persoModelSeg").children.map((b) => (b.className === "on" ? `[${b.textContent}]` : b.textContent));
+const targets = (h) => h.$("targetLangSelect").children.map((o) => o.value);
+
+test("the Dubbing model row shows only under Perso API, with Oriole selected", async (t) => {
+  const h = await persoDialog();
+  t.after(h.log.restore);
+  assert.equal(h.$("persoModelRow").hidden, false);
+  assert.deepEqual(segments(h), ["Nightingale", "[Oriole]", "Wren"]);
+  assert.equal(h.api.readOptions().persoModel, "ORIOLE");
+
+  h.$("dubModeSelect").value = "local";
+  await h.$("dubModeSelect").fire("change");
+  assert.equal(h.$("persoModelRow").hidden, true);
+});
+
+test("pressing a segment chooses that model, and it is what the dubbing starts with", async (t) => {
+  const h = await persoDialog();
+  t.after(h.log.restore);
+  await h.$("persoModelSeg").children[2].fire("click");
+  assert.deepEqual(segments(h), ["Nightingale", "Oriole", "[Wren]"]);
+  assert.equal(h.$("persoModelSeg").children[2].attrs["aria-pressed"], "true");
+  assert.equal(h.api.readOptions().persoModel, "WREN");
+  assert.equal(h.api.persoModel(), "WREN");
+});
+
+test("the target languages are the ones the chosen model has", async (t) => {
+  const h = await persoDialog();
+  t.after(h.log.restore);
+  assert.deepEqual(targets(h), ["en", "en-GB"]);                    // Oriole
+  await h.$("persoModelSeg").children[0].fire("click");            // Nightingale
+  assert.deepEqual(targets(h), ["en", "en-GB", "en-AU"]);
+  assert.equal(h.$("persoModelHint").textContent, "3 languages");
+  assert.deepEqual(segments(h), ["[Nightingale]", "Oriole", "Wren"]);
+  await h.$("persoModelSeg").children[2].fire("click");            // Wren
+  assert.deepEqual(targets(h), ["en"]);
+});
+
+test("a model that lacks the chosen language cannot be pressed, so the language never changes under the user", async (t) => {
+  // Pressing it used to swap the language for English without a word, and a
+  // Start then dubbed into the wrong language for credits (Windows C11, 2026-10-07).
+  const h = await persoDialog();
+  t.after(h.log.restore);
+  await h.$("persoModelSeg").children[0].fire("click");            // Nightingale
+  h.$("targetLangSelect").value = "en-GB";
+  await h.$("targetLangSelect").fire("change");
+  const seg = () => h.$("persoModelSeg").children;
+  assert.equal(seg()[1].disabled, false);                          // Oriole has en-GB
+  assert.equal(seg()[2].disabled, true);                           // Wren does not
+  assert.equal(seg()[2].title, "Wren has no English (UK)");
+  await seg()[2].fire("click");
+  assert.equal(h.$("targetLangSelect").value, "en-GB");
+  assert.equal(h.api.readOptions().persoModel, "NIGHTINGALE");
+  await seg()[1].fire("click");                                    // Oriole has en-GB
+  assert.equal(h.$("targetLangSelect").value, "en-GB");
+  assert.equal(h.api.readOptions().persoModel, "ORIOLE");
+});
+
+test("the chosen model survives the trip to Erase subtitles, and a new video starts on it too", async (t) => {
+  const h = await persoDialog({
+    "/api/setup": () => ok({ defaults: { dub_mode: "perso" } }),
+    "/api/downloads/d1": () => ok({ id: "d1", status: "ready" }),
+  });
+  t.after(h.log.restore);
+  h.api.openNewProject({ downloadId: "d1", title: "A talk" });
+  await new Promise((r) => setTimeout(r, 0));
+  await h.$("persoModelSeg").children[2].fire("click");            // Wren
+
+  await h.$("eraseBtn").fire("click");
+  h.api.openNewProject({ downloadId: "d1", title: "A talk", fromErase: true });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(segments(h), ["Nightingale", "Oriole", "[Wren]"]);
+
+  // The next project is the person's next one: Wren was their choice, so it
+  // is remembered (owner, 2026-10-06; Oriole came back in Windows test B7).
+  h.api.openNewProject({ downloadId: "d2", title: "Another" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(segments(h), ["Nightingale", "Oriole", "[Wren]"]);
+});
+
+// -- the choices remembered for the next project ----------------------------
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const SETUP = { defaults: { dub_mode: "local", separation: "local", stt: "local",
+                            translator: "hunyuan", voice_quality: "fast", voice: "qwen3" },
+                keys: { perso: true, gemini: true }, models: [] };
+const setupWith = (over = {}) => ({ "/api/setup": () => ok({ ...SETUP, ...over }) });
+async function choose(h, id, value) {
+  h.$(id).value = value;
+  await h.$(id).fire("change");
+}
+
+test("Perso API with Wren is what the next project starts on, after a restart too (B7)", async (t) => {
+  const store = memoryStorage();
+  const h = await persoHarness(setupWith(), store);
+  h.api.openNewProject({ downloadId: "d1", title: "First" });
+  await tick();
+  await choose(h, "dubModeSelect", "perso");
+  await h.$("persoModelSeg").children[2].fire("click");            // Wren
+  await choose(h, "numSpeakers", "2");
+  h.log.restore();
+
+  // The app is closed and opened again: a new page on the same storage.
+  const h2 = await persoHarness(setupWith(), store);
+  t.after(h2.log.restore);
+  h2.api.openNewProject({ downloadId: "d2", title: "Next" });
+  await tick();
+  assert.equal(h2.$("dubModeSelect").value, "perso");
+  assert.deepEqual(segments(h2), ["Nightingale", "Oriole", "[Wren]"]);
+  assert.equal(h2.$("persoModelRow").hidden, false);
+  assert.equal(h2.$("numSpeakers").value, "2");
+  assert.equal(h2.api.readOptions().persoModel, "WREN");
+});
+
+test("every Advanced option and the target language are remembered", async (t) => {
+  const store = memoryStorage();
+  const h = await persoHarness(setupWith(), store);
+  h.api.openNewProject({ downloadId: "d1", title: "First" });
+  await tick();
+  await choose(h, "sepSelect", "perso");
+  await choose(h, "sttSelect", "perso");
+  await choose(h, "translateSelect", "gemini");
+  await choose(h, "qualitySelect", "high");
+  await choose(h, "dubModeSelect", "perso");
+  await choose(h, "targetLangSelect", "en-GB");
+  await choose(h, "dubModeSelect", "local");
+  h.log.restore();
+
+  const h2 = await persoHarness(setupWith(), store);
+  t.after(h2.log.restore);
+  h2.api.openNewProject({ downloadId: "d2", title: "Next" });
+  await tick();
+  const o = h2.api.readOptions();
+  assert.deepEqual([o.dubMode, o.sepEngine, o.sttEngine, o.translateEngine, o.ttsEngine, o.qualityMode],
+                   ["local", "perso", "perso", "gemini", "qwen3", "high"]);
+  // en-GB is a Perso language: it comes back once Perso dubs again.
+  await choose(h2, "dubModeSelect", "perso");
+  assert.equal(h2.$("targetLangSelect").value, "en-GB");
+});
+
+test("a remembered Perso language waits for the language list that has it", async (t) => {
+  const store = memoryStorage();
+  const h = await persoHarness(setupWith(), store);
+  h.api.openNewProject({ downloadId: "d1", title: "First" });
+  await tick();
+  await choose(h, "dubModeSelect", "perso");
+  await choose(h, "targetLangSelect", "en-GB");
+  h.log.restore();
+
+  // After a restart the list comes in only after the project has opened.
+  let answer;
+  const late = new Promise((r) => { answer = r; });
+  const h2 = harness({ storage: store, responses: { ...setupWith(),
+    "/api/languages": () => late.then(() => ok({ local: [], perso: PERSO_LANGS })) } });
+  t.after(h2.log.restore);
+  fillAdvanced(h2.$);
+  h2.api.openNewProject({ downloadId: "d2", title: "Next" });
+  await tick();
+  assert.equal(h2.$("dubModeSelect").value, "perso");
+  assert.equal(h2.$("targetLangSelect").value, "en");             // not in the list yet
+  answer();
+  await tick();
+  assert.equal(h2.$("targetLangSelect").value, "en-GB");
+});
+
+test("Perso without its key starts on this computer, and Perso comes back with the key", async (t) => {
+  const store = memoryStorage();
+  const h = await persoHarness(setupWith(), store);
+  h.api.openNewProject({ downloadId: "d1", title: "First" });
+  await tick();
+  await choose(h, "dubModeSelect", "perso");
+  h.log.restore();
+
+  const noKey = setupWith({ keys: { perso: false, gemini: true } });
+  const h2 = await persoHarness(noKey, store);
+  h2.api.openNewProject({ downloadId: "d2", title: "Next" });
+  await tick();
+  h2.log.restore();
+  assert.equal(h2.$("dubModeSelect").value, "local");
+
+  // Falling back wrote nothing: once the key is saved again, so is the choice.
+  const h3 = await persoHarness(setupWith(), store);
+  t.after(h3.log.restore);
+  h3.api.openNewProject({ downloadId: "d3", title: "Later" });
+  await tick();
+  assert.equal(h3.$("dubModeSelect").value, "perso");
+});
+
+test("a dubbing's own choices (Add language) win over the remembered ones", async (t) => {
+  const store = memoryStorage();
+  const h = await persoHarness(setupWith(), store);
+  t.after(h.log.restore);
+  h.api.openNewProject({ downloadId: "d1", title: "First" });
+  await tick();
+  await choose(h, "dubModeSelect", "perso");
+  await h.$("persoModelSeg").children[2].fire("click");            // Wren
+  await choose(h, "numSpeakers", "3");
+
+  await h.api.startOnDefaults({ dubMode: "local", source: "", speakers: "1", translator: "gemini" });
+  assert.equal(h.$("dubModeSelect").value, "local");
+  assert.equal(h.$("translateSelect").value, "gemini");
+  assert.equal(h.$("numSpeakers").value, "1");
+  assert.equal(h.api.persoModel(), "ORIOLE");
+});
+
+test("a storage the browser blocks leaves the dialog working on its defaults", async (t) => {
+  const blocked = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } };
+  const h = await persoHarness(setupWith(), blocked);
+  t.after(h.log.restore);
+  h.api.openNewProject({ downloadId: "d1", title: "First" });
+  await tick();
+  await choose(h, "dubModeSelect", "perso");
+  await h.$("persoModelSeg").children[2].fire("click");
+  assert.equal(h.api.readOptions().persoModel, "WREN");
+  h.api.openNewProject({ downloadId: "d2", title: "Next" });
+  await tick();
+  assert.equal(h.$("dubModeSelect").value, "local");
+});
+
+// The four languages that are shown by name alone, no country's flag.
+const NO_FLAG = ["bo", "ug", "yue", "zh-TW"];
+
 test("every Perso language gets a flag, regional variants their own country", async (t) => {
   // The bundled list is the one the app ships (app/perso_languages.json).
   const { readFileSync } = await import("node:fs");
@@ -780,7 +1038,7 @@ test("every Perso language gets a flag, regional variants their own country", as
   const opts = h.$("targetLangSelect").options;
   assert.equal(opts.length, perso.length);
   const bare = opts.filter((o) => !/^\p{Extended_Pictographic}|^\p{Regional_Indicator}/u.test(o.textContent));
-  assert.deepEqual(bare.map((o) => o.value), [], "every option starts with a flag");
+  assert.deepEqual(bare.map((o) => o.value).sort(), [...NO_FLAG].sort(), "every option but the four starts with a flag");
   const byId = Object.fromEntries(opts.map((o) => [o.value, o.textContent]));
   assert.ok(byId["en-GB"].startsWith("🇬🇧") && byId["en"].startsWith("🇺🇸"), "UK and US English differ");
   assert.ok(byId["pt"].startsWith("🇧🇷") && byId["pt-PT"].startsWith("🇵🇹"));
@@ -791,4 +1049,50 @@ test("every Perso language gets a flag, regional variants their own country", as
   const localById = Object.fromEntries(h.$("targetLangSelect").options.map((o) => [o.value, o.textContent]));
   assert.equal(localById["pt"], "🇵🇹 Portuguese");
   assert.equal(localById["es"], "🇪🇸 Spanish");
+});
+
+// The dialog's bottom line (mockup 2026-09-29): "Duration: 00:10", and what
+// is kept once the handles have cut into it.
+test("lengthLine says the length, and the kept part only when there is a cut", () => {
+  assert.equal(lengthLine(10, null), "Duration: 00:10");
+  assert.equal(lengthLine(728, null), "Duration: 12:08");
+  assert.equal(lengthLine(3723, null), "Duration: 1:02:03");
+  assert.equal(lengthLine(10, { start: 0, end: 6.5 }), "Duration: 00:10 \u00b7 00:06 kept");
+  assert.equal(lengthLine(NaN, null), "");
+  assert.equal(lengthLine(0, null), "");
+});
+
+test("the bottom line follows the video: its length, the cut, the batch, a link", async (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+
+  h.api.openNewProject({ file: { name: "a.mp4" } });
+  assert.equal(h.$("projectLength").textContent, "", "nothing until the length is known");
+  h.$("projectVideo").duration = 30;
+  await h.$("projectVideo").fire("loadedmetadata");
+  assert.equal(h.$("projectLength").textContent, "Duration: 00:30");
+
+  h.$("trimEnd").value = "12";
+  await h.$("trimEnd").fire("input");
+  assert.equal(h.$("projectLength").textContent, "Duration: 00:30 \u00b7 00:12 kept");
+
+  h.api.openNewProject({ files: [{ name: "a.mp4" }, { name: "b.mp4" }] });
+  h.$("projectVideo").duration = 30;
+  await h.$("projectVideo").fire("loadedmetadata");
+  assert.equal(h.$("projectLength").textContent, "");
+
+  h.api.openNewProject({ probe: PROBE });
+  assert.equal(h.$("projectLength").textContent, "Duration: 01:30");
+});
+
+test("the options block goes home to the box that scrolls, in order, and out to a borrower", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+
+  h.api.openNewProject({ probe: PROBE });
+  assert.deepEqual(h.$("projectOptions").children.map((e) => e.id), ["langGrid", "advancedBtn", "advancedBody"]);
+
+  const slot = h.$("draftOptionsSlot");
+  h.api.moveOptionsInto(slot);
+  assert.deepEqual(slot.children.map((e) => e.id), ["langGrid", "advancedBtn", "advancedBody"]);
 });

@@ -28,13 +28,14 @@ TOOL_LABELS = {
     "get_job_status": "Checking progress",
     "remake_voices": "Remaking the changed voices",
     "remake_line_voice": "Remaking this line",
-    "retranslate_lines": "Translating again with ChatGPT",
+    "retranslate_lines": "Translating again",
+    "proofread_dub": "Redoing every line with Perso",
     "change_speaker": "Changing the speaker",
     "extract_subtitles": "Extracting subtitles",
     "cut_clip": "Cutting a clip",
     "list_videos": "Looking through a folder",
-    "queue_dub": "Queueing a dub",
-    "cancel_dub": "Cancelling a dub",
+    "queue_dub": "Queueing dubbing",
+    "cancel_dub": "Cancelling dubbing",
     "burn_subtitles": "Subtitling a video",
     "list_jobs": "Checking what is running",
     "get_setup": "Reading the setup",
@@ -168,6 +169,14 @@ DENIED_TOOLS = [
     "ReadMcpResourceDirTool",
 ]
 
+# Two switches the CLI reads from its environment: no CLAUDE.md or AGENTS.md
+# found up the folder tree, and no auto-memory of the repository the folder
+# sits in. --setting-sources "" (command) keeps the settings files out; these
+# keep out the memory files, which that flag does not reach. Measured from the
+# agent's folder, 2026-10-11: without them the assistant was handed
+# ~/.claude/projects/<repo>/memory/MEMORY.md and the user's own AGENTS.md.
+ENV = {"CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+
 SYSTEM_PROMPT = (
     "You are PersoDub's script assistant. You help the user fix the dubbing "
     "script -- the lines a synthetic voice will read -- and nothing else. "
@@ -175,23 +184,54 @@ SYSTEM_PROMPT = (
     "it has fits=false. Use only the persodub tools. Never change timings. "
     "When the user asks for the voices to be remade, call remake_voices "
     "yourself -- it respeaks only the lines whose words changed and rebuilds "
-    "the video in place -- and do not tell them to press a button. "
-    "When the user asks for lines to be translated again with ChatGPT, call "
-    "retranslate_lines -- ChatGPT translates them and their voices are remade. "
+    "the video in place -- and do not tell them to press a button. Asked to "
+    "read the lines again (\"read it all again\", \"다시 읽어줘\"), that is the "
+    "voices too, not a new translation: remake_voices, with every_line=true "
+    "when they mean all of the lines and not only the changed ones. "
+    "When the user asks for lines to be translated again, call "
+    "retranslate_lines -- it changes the words only, so call remake_voices "
+    "after it when they want to hear them. "
     "A Perso-dubbed job reads its script from Perso and starts read-only; "
     "the screen's Make-it-editable button fetches it, and from then on its "
-    "lines edit and remake normally. change_speaker can give a line a new "
+    "lines edit normally and Perso itself remakes their voices, in the "
+    "voice it dubbed with (remake_line_voice, remake_voices: both ask first, "
+    "they spend credits). proofread_dub has Perso redo the whole dub. "
+    "change_speaker can give a line a new "
     "voice on Perso's side. extract_subtitles pulls the spoken lines out of "
     "any video file on this computer into an .srt beside it -- the user "
-    "names the file (list_videos shows a folder's videos when they name a folder instead). queue_dub starts a whole new dub of a video file -- for several videos, gather the estimates and ask the user once with the total. cancel_dub cancels a dub the moment the user asks -- never ask them to confirm a cancel. burn_subtitles lays an .srt onto a video as a new file, in one of twelve looks (clean, bold-punch, sticker, neon-yellow, soft-card, rainbow, broadcast, streaming, lower-bar, neon, black-box, white-box). cut_clip cuts a stretch of a video file into a new clip "
-    "beside it, free and on this machine. Any tool answer with needs_confirmation=true may spend Perso "
-    "credits: relay its message to the user as a question, keeping every "
+    "names the file (list_videos shows a folder's videos when they name a folder instead). queue_dub starts a whole new dub of a video file -- for several videos, gather the estimates and ask the user once with the total. cancel_dub cancels a dub the moment the user asks -- never ask them to confirm a cancel. A short \"stop\", \"cancel\" or \"그만해\" while work is running means that work, whatever the talk was about before: call list_jobs and cancel the running job straight away; ask which only when more than one is running. burn_subtitles lays an .srt onto a video as a new file, in one of twelve looks (clean, bold-punch, sticker, neon-yellow, soft-card, rainbow, broadcast, streaming, lower-bar, neon, black-box, white-box). cut_clip cuts a stretch of a video file into a new clip "
+    "beside it, free and on this machine. "
+    "ASK BEFORE STARTING WORK. Before anything that takes a while or spends "
+    "credits -- a dubbing, erasing subtitles, remaking voices on Perso, All at "
+    "once, a model download -- say the plan in one or two short lines (which "
+    "file, what, which languages, the mode or engine, the credits if Perso) "
+    "and end your reply; start only after the user says yes. This holds when "
+    "it is free. For a dubbing, call queue_dub without confirm first and ask "
+    "with the plan it returns: it carries the video's length, and on Perso the "
+    "credits. When they say \"you decide\", do not choose where it runs: "
+    "that is their money, so put both ways in the question -- this machine "
+    "(free, slower) and Perso (credits, the estimate) -- and let them pick. "
+    "With several files, one question covers which file gets "
+    "what, with each video's length and the total. Only when the user's own message already gave that exact plan and "
+    "said to go, start without asking. Saying go means words like go, start "
+    "or do it now (\"시작해\", \"바로 해\") in that message: a request that "
+    "names the work, or an answer that fills in what you asked, is not a go, "
+    "so ask once more with the whole plan. Reading, checking and listing never "
+    "need asking. "
+    "Any tool answer with needs_confirmation=true is that question: relay "
+    "its message to the user, keeping every "
     "figure in it -- the credits it will spend AND the balance it names -- "
     "and call the tool "
-    "again with confirm=true only after they clearly agree. download_model "
+    "again with confirm=true only in a later reply, after they clearly agree. download_model "
     "never downloads: it shows the user a Download button, and only their press "
-    "starts it -- say so, with the size. Answer in "
-    "the user's language, briefly. "
+    "starts it -- say so, with the size. Answer in the language the user's own "
+    "message is written in, not the language of the video, its script or the "
+    "dub, and briefly. "
+    "Never say the user's email address, name or account ID, not even when "
+    "asked who is signed in or what their email is. Your context may state "
+    "the email: it is there for you, not for the reply, and this panel can be "
+    "on a shared screen. Say only which assistant is signed in, and its plan "
+    "when you know it. "
     "You exist only while one message is being answered: you cannot wait for "
     "a job to finish, watch it, tell the user later, or start the next step "
     "by yourself when one completes. Never promise any of that. Say instead "
@@ -234,6 +274,15 @@ def command(mcp_config: str, resume: bool, model: str = "") -> List[str]:
     --strict-mcp-config matters as much as the deny list: without it the user's
     own MCP servers come along, so the assistant would reach tools this app
     never offered it.
+
+    --setting-sources "" is the same fence for settings files: none of the
+    user's, project's or local settings load, so neither do their hooks or
+    plugins (CLAUDE.md, AGENTS.md and auto-memory are kept out by ENV). Without it the user's private standing instructions
+    rode into every turn, and a plugin's start-up hook told the assistant it
+    had "superpowers" -- it then refused to stop a running dub as an injected
+    instruction (Windows test F22, 2026-10-10). The sign-in is not a settings
+    file and still works; only an API key kept in the user's settings
+    (apiKeyHelper) would not be read.
     """
     tools = ",".join(MCP_PREFIX + name for name in TOOL_LABELS)
     args = [
@@ -243,6 +292,7 @@ def command(mcp_config: str, resume: bool, model: str = "") -> List[str]:
         "--include-partial-messages",
         "--mcp-config", mcp_config,
         "--strict-mcp-config",
+        "--setting-sources", "",
         "--allowedTools", tools,
         "--disallowedTools", ",".join(DENIED_TOOLS),
         "--system-prompt", SYSTEM_PROMPT,

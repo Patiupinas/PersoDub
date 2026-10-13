@@ -58,41 +58,41 @@ def test_next_free_gives_up_after_three_digits():
 
 def test_job_dir_uses_date_project_and_language(tmp_path, monkeypatch):
     from app import state
-    from app.api import dub as dub_api
+    from app.api import _launch as launch_api
 
     monkeypatch.setattr(state, "WORKSPACE", str(tmp_path))
-    monkeypatch.setattr(dub_api, "_today", lambda: "2026-08-21")
+    monkeypatch.setattr(launch_api, "today", lambda: "2026-08-21")
 
     # Compared with os.path.join, not a literal "/": Windows builds the same
     # folder with a backslash, and a hardcoded slash failed there while the
     # code was correct.
     def ends(path, *parts):
-        return path.endswith(dub_api.os.path.join(*parts))
+        return path.endswith(launch_api.os.path.join(*parts))
 
-    first = dub_api._job_dir("참교육1화", "en")
+    first = launch_api.job_dir("참교육1화", "en")
     assert ends(first, "2026-08-21", "참교육1화_en")
-    assert dub_api.os.path.isdir(first)
+    assert launch_api.os.path.isdir(first)
 
     # a second English run of the same title on the same day counts up
-    assert ends(dub_api._job_dir("참교육1화", "en"), "2026-08-21", "참교육1화_en_001")
+    assert ends(launch_api.job_dir("참교육1화", "en"), "2026-08-21", "참교육1화_en_001")
 
     # a different language is a different folder, not a collision
-    assert ends(dub_api._job_dir("참교육1화", "ja"), "2026-08-21", "참교육1화_ja")
+    assert ends(launch_api.job_dir("참교육1화", "ja"), "2026-08-21", "참교육1화_ja")
 
 
 def test_job_dir_falls_back_to_a_random_name(tmp_path, monkeypatch):
     # A title that survives sanitizing as "" must not fail the job -- the old
     # random-name behaviour (app/main.py:374) is the safety net.
     from app import state
-    from app.api import dub as dub_api
+    from app.api import _launch as launch_api
 
     monkeypatch.setattr(state, "WORKSPACE", str(tmp_path))
-    monkeypatch.setattr(dub_api, "_today", lambda: "2026-08-21")
+    monkeypatch.setattr(launch_api, "today", lambda: "2026-08-21")
 
-    made = dub_api._job_dir("///", "en")
-    assert dub_api.os.path.isdir(made)
+    made = launch_api.job_dir("///", "en")
+    assert launch_api.os.path.isdir(made)
     assert "2026-08-21" in made
-    assert dub_api.os.path.basename(made) not in ("_en", "")
+    assert launch_api.os.path.basename(made) not in ("_en", "")
 
 
 def _finished_job(tmp_path, **extra):
@@ -143,16 +143,16 @@ def test_job_dir_cannot_be_walked_out_of_the_workspace(tmp_path, monkeypatch):
     already run through safe_name; this is the half that was not.
     """
     from app import state
-    from app.api import dub as dub_api
+    from app.api import _launch as launch_api
 
     monkeypatch.setattr(state, "WORKSPACE", str(tmp_path))
-    monkeypatch.setattr(dub_api, "_today", lambda: "2026-08-21")
+    monkeypatch.setattr(launch_api, "today", lambda: "2026-08-21")
 
     for hostile in ["../../../../tmp/PWNED", "..", "a/b", "a\\b", "ko\x00"]:
-        work = dub_api._job_dir("myvideo", hostile)
-        real = dub_api.os.path.realpath(work)
-        root = dub_api.os.path.realpath(str(tmp_path))
-        assert real.startswith(root + dub_api.os.sep), f"{hostile!r} escaped to {real}"
+        work = launch_api.job_dir("myvideo", hostile)
+        real = launch_api.os.path.realpath(work)
+        root = launch_api.os.path.realpath(str(tmp_path))
+        assert real.startswith(root + launch_api.os.sep), f"{hostile!r} escaped to {real}"
 
 
 def test_project_name_drops_a_video_extension_and_nothing_else():

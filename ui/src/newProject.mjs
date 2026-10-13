@@ -17,9 +17,12 @@
 // Everything this file touches is #projectOverlay and its children.
 import { LANGUAGES, fetchLanguages, startDownload, fetchDownload,
          downloadVideoUrl, uploadDownload, saveDownloadClip } from "./dubApi.mjs";
-import { fmtClock } from "./format.mjs";
+import { fmtLength } from "./format.mjs";
 import { initTrimBar } from "./trimBar.mjs";
-import { downloadsLabel } from "./format.mjs";
+import { downloadsLabel, errorText } from "./format.mjs";
+import { PERSO_MODELS, DEFAULT_MODEL, languagesFor } from "./persoModels.mjs";
+import { readRemembered, rememberChoice, choicesToPutBack } from "./rememberedChoices.mjs";
+import { languageName, t } from "./i18n.mjs";
 
 // The flags are the app's one deliberate use of emoji: where the dub is headed
 // is the single most-glanced-at line in the dialog, and a flag says it faster
@@ -48,12 +51,28 @@ const LANG_FLAGS = {
   "pl": "🇵🇱", "ps": "🇦🇫", "pt": "🇧🇷", "pt-PT": "🇵🇹", "ro": "🇷🇴", "ru": "🇷🇺", "sd": "🇵🇰", "sk": "🇸🇰",
   "sl": "🇸🇮", "so": "🇸🇴", "sr": "🇷🇸", "sv": "🇸🇪", "sw": "🇰🇪", "ta": "🇮🇳", "te": "🇮🇳", "th": "🇹🇭",
   "tr": "🇹🇷", "uk": "🇺🇦", "ur": "🇵🇰", "vi": "🇻🇳", "zh": "🇨🇳",
+  // The languages only Perso's Nightingale model has (its list, 2026-10-02).
+  // Tibetan, Uyghur, Cantonese and Chinese (Taiwan) carry no flag on purpose:
+  // any one country's flag on them is a statement to someone (user, 2026-10-03).
+  "ak": "🇬🇭", "am": "🇪🇹", "ar-EG": "🇪🇬", "dgo": "🇮🇳", "en-AU": "🇦🇺", "en-CA": "🇨🇦", "es-AR": "🇦🇷",
+  "es-CL": "🇨🇱", "eu": "🇪🇸", "fr-CA": "🇨🇦", "ki": "🇰🇪", "lg": "🇺🇬", "mn": "🇲🇳", "my": "🇲🇲", "nso": "🇿🇦",
+  "rn": "🇧🇮", "rw": "🇷🇼", "sq": "🇦🇱", "ss": "🇸🇿", "st": "🇱🇸", "su": "🇮🇩", "tg": "🇹🇯", "tn": "🇧🇼",
+  "ts": "🇿🇦", "uz": "🇺🇿", "ve": "🇿🇦", "war": "🇵🇭", "wo": "🇸🇳", "yo": "🇳🇬", "zu": "🇿🇦",
 };
 
 // How often the dialog asks how far along a link's download is. A second is
 // what the progress row is worth: the percent moves in visible steps and the
 // question costs one small answer.
 const DOWNLOAD_POLL_MS = 1000;
+
+/** The dialog's bottom line: how long the video is and, once the handles
+    have cut into it, how much of it is kept. Nothing for an unknown length. */
+export function lengthLine(seconds, trim) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  const length = fmtLength(seconds);
+  if (!trim || trim.start == null || trim.end == null) return t("Duration: {length}", { length });
+  return t("Duration: {length} · {kept} kept", { length, kept: fmtLength(trim.end - trim.start) });
+}
 
 /**
  * Wire the New project dialog to a page.
@@ -78,19 +97,21 @@ const DOWNLOAD_POLL_MS = 1000;
  *        computer's own file window, or null outside the desktop app
  * @param {(source: {downloadId, title, duration_sec, trim}) => void} deps.onErase
  *        hand the held video to the subtitle-erasing screen
+ * @param {Storage} [deps.storage]  the browser's localStorage, where the last
+ *        project's choices are kept for the next (ui/src/rememberedChoices.mjs)
  * @returns the operations the rest of the page calls.
  */
 export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
                                    updateEngineHints, paintDubMode,
                                    playRange, cancelRange, labelPx,
-                                   onClosed, onPickFile, onErase, reveal = null }) {
+                                   onClosed, onPickFile, onErase, reveal = null, storage = null }) {
   // Populated from dubApi.LANGUAGES (the model's own supported-language table).
   // sourceLangSelect's default is the literal "Auto-detect" <option> written into
   // its markup -- defCode null never matches a real LANGUAGES code, so no
   // appended option overwrites that selection with a specific language.
   // targetLangSelect defaults to English: the app's own use is Korean source
-  // material dubbed outward. Neither default is remembered between launches --
-  // every launch starts here.
+  // material dubbed outward, until a target is chosen: that one is remembered
+  // (startOnDefaults).
   function fillLanguageSelects() {
     for (const [selId, defCode, withFlag] of [["sourceLangSelect", null, false], ["targetLangSelect", "en", true]]) {
       const sel = $(selId);
@@ -99,7 +120,8 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
         const o = document.createElement("option");
         o.value = l.code;
         const flag = LOCAL_FLAGS[l.code] || LANG_FLAGS[l.code];
-        o.textContent = withFlag && flag ? `${flag} ${l.name}` : l.name;
+        const name = languageName(l.code, l.name);
+        o.textContent = withFlag && flag ? `${flag} ${name}` : name;
         if (l.code === defCode) o.selected = true;
         sel.appendChild(o);
       }
@@ -107,51 +129,104 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
   }
   fillLanguageSelects();
 
-  // The target list follows the dubbing path: Perso's own languages (77 on
-  // 2026-09-08, with regional variants such as English (UK)) when the cloud
-  // dubs, the model's ten when this computer does. Until GET /api/languages
+  // The target list follows the dubbing path: when the cloud dubs, the
+  // languages the chosen Perso voice model has (of Perso's 111 on 2026-10-02,
+  // with regional variants such as English (UK)); the model's ten when this
+  // computer does. Until GET /api/languages
   // answers, both paths show the ten. The source dropdown stays as it is:
   // "Auto-detect" covers the cloud, and the ten are what Whisper is asked for.
-  const asEntries = (xs) => xs.map((l) => ({ id: l.id || l.code, code: l.code, name: l.name, tag: l.tag || null }));
+  const asEntries = (xs) => xs.map((l) => ({ id: l.id || l.code, code: l.code, name: l.name, tag: l.tag || null,
+                                             // Perso's entries: the voice models the language has.
+                                             ...(l.models ? { models: l.models } : {}) }));
   let languageLists = { local: asEntries(LANGUAGES), perso: asEntries(LANGUAGES) };
+  let persoModel = DEFAULT_MODEL;
+  // A remembered target the list on screen does not have yet: a Perso one
+  // while GET /api/languages has not answered, or while this computer dubs.
+  // Picked as soon as a list has it; forgotten once the person picks another.
+  let wantedTarget = null;
   function currentLanguages() {
     const mode = $("dubModeSelect") ? $("dubModeSelect").value : "local";
-    return languageLists[mode === "perso" ? "perso" : "local"];
+    return mode === "perso" ? languagesFor(languageLists.perso, persoModel) : languageLists.local;
   }
   function refillTargetLanguages() {
     const sel = $("targetLangSelect");
     if (!sel) return;
-    const keep = sel.value || "en";
     const list = currentLanguages();
+    const want = wantedTarget && list.some((l) => l.id === wantedTarget) ? wantedTarget : null;
+    if (want) wantedTarget = null;
+    const keep = want || sel.value || "en";
     const local = list === languageLists.local;
     sel.innerHTML = "";
     for (const l of list) {
       const o = document.createElement("option");
       o.value = l.id;
       const flag = (local && LOCAL_FLAGS[l.code]) || LANG_FLAGS[l.id] || (!l.tag && LANG_FLAGS[l.code]);
-      o.textContent = flag ? `${flag} ${l.name}` : l.name;
+      const name = languageName(l.id, l.name);
+      o.textContent = flag ? `${flag} ${name}` : name;
       sel.appendChild(o);
     }
     sel.value = list.some((l) => l.id === keep) ? keep : "en";
+    paintPersoModel();
+  }
+
+  // The Dubbing model row: Perso's voice models as one row of segments
+  // (ui/src/persoModels.mjs), shown when Perso does the dubbing. Choosing one
+  // refills the target languages with the ones that model has.
+  function paintPersoModel() {
+    $("persoModelRow").hidden = $("dubModeSelect").value !== "perso";
+    const seg = $("persoModelSeg");
+    seg.innerHTML = "";
+    // A model without the chosen target language cannot be pressed: pressing
+    // it used to swap the language for English without a word, and a Start
+    // then dubbed into the wrong language for credits (Windows C11, 2026-10-07).
+    const target = $("targetLangSelect") ? $("targetLangSelect").value : "";
+    const targetName = (languageLists.perso.find((l) => l.id === target) || {}).name || target;
+    for (const m of PERSO_MODELS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = m.label;
+      b.className = m.id === persoModel ? "on" : "";
+      b.setAttribute("aria-pressed", String(m.id === persoModel));
+      const lacks = !!target && m.id !== persoModel
+        && !languagesFor(languageLists.perso, m.id).some((l) => l.id === target);
+      b.disabled = lacks;
+      b.title = lacks ? t("{model} has no {language}", { model: m.label, language: targetName }) : "";
+      b.addEventListener("click", () => {
+        if (lacks) return;
+        persoModel = m.id;
+        rememberChoice(storage, "persoModel", m.id, savedDefaults);
+        refillTargetLanguages();
+      });
+      seg.appendChild(b);
+    }
+    // How many target languages the chosen model has.
+    $("persoModelHint").textContent = t("{n} languages", { n: languagesFor(languageLists.perso, persoModel).length });
   }
   fetchLanguages().then((lists) => {
     languageLists = { local: asEntries(lists.local), perso: asEntries(lists.perso) };
     refillTargetLanguages();
   });
   if ($("dubModeSelect")) $("dubModeSelect").addEventListener("change", refillTargetLanguages);
+  // A new target language changes which models can be pressed.
+  if ($("targetLangSelect")) $("targetLangSelect").addEventListener("change", paintPersoModel);
 
   // The dropdowns start on the app's saved defaults (GET /api/setup: kit.env,
   // written by Settings or the Dub Agent's set_default), so what the agent
   // changed is what the dialog shows, and a choice survives a relaunch.
+  // Resolves to the whole answer (keys and models too), or null without one.
+  let savedDefaults = null;
   async function loadSavedDefaults() {
-    let d;
+    let setup;
     try {
       const r = await fetch("/api/setup");
-      if (!r.ok) return;
-      d = (await r.json()).defaults || {};
-    } catch { return; }
+      if (!r.ok) return null;
+      setup = await r.json();
+    } catch { return null; }
+    const d = setup.defaults || {};
+    savedDefaults = d;
     putChoices({ dubMode: d.dub_mode, sep: d.separation, stt: d.stt,
-                 translator: d.translator, quality: d.voice_quality });
+                 translator: d.translator, quality: d.voice_quality, voice: d.voice });
+    return setup;
   }
 
   // The five choices under Advanced options, read and put back as one. A value
@@ -162,16 +237,42 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
       if (sel && value && sel.querySelector(`option[value="${value}"]`)) sel.value = value;
     };
     pick("dubModeSelect", c.dubMode);
+    // The Perso voice model has no saved default: without one handed in, the
+    // row starts on Oriole again.
+    persoModel = c.persoModel || DEFAULT_MODEL;
     refillTargetLanguages();
     pick("sepSelect", c.sep);
     pick("sttSelect", c.stt);
     pick("translateSelect", c.translator);
     pick("qualitySelect", c.quality);
+    pick("voiceSelect", c.voice);
+    // Add language also starts on the dubbing's own source language ("" is
+    // Auto-detect) and speaker count (ui/src/languageRow.mjs choicesOf).
+    const src = $("sourceLangSelect");
+    if (c.source !== undefined && src) src.value = src.querySelector(`option[value="${c.source}"]`) ? c.source : "";
+    if (c.speakers !== undefined && $("numSpeakers")) $("numSpeakers").value = c.speakers;
+    // The remembered target, once the list has it (refillTargetLanguages).
+    if (c.target !== undefined) { wantedTarget = c.target; refillTargetLanguages(); }
+  }
+  // What the person picks is remembered for the next project, control by
+  // control (ui/src/rememberedChoices.mjs). Only a change event counts: the
+  // values this file puts back by itself fire none, so a default or a
+  // fallback never overwrites a choice.
+  for (const [id, name] of [["dubModeSelect", "dubMode"], ["sepSelect", "sep"], ["sttSelect", "stt"],
+                            ["translateSelect", "translator"], ["qualitySelect", "quality"],
+                            ["voiceSelect", "voice"], ["numSpeakers", "speakers"],
+                            ["targetLangSelect", "target"]]) {
+    const el = $(id);
+    if (!el) continue;
+    el.addEventListener("change", () => {
+      if (name === "target") wantedTarget = null;
+      rememberChoice(storage, name, el.value, savedDefaults);
+    });
   }
   function takeChoices() {
     return { dubMode: $("dubModeSelect").value, sep: $("sepSelect").value,
              stt: $("sttSelect").value, translator: $("translateSelect").value,
-             quality: $("qualitySelect").value };
+             quality: $("qualitySelect").value, voice: $("voiceSelect").value, persoModel };
   }
   // What the dialog was set to when it sent its video to the erase screen. The
   // way back reopens the dialog, and reopening starts the dropdowns on the
@@ -192,11 +293,13 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
   // (trim into parts). The length itself takes hours on a slow machine.
   const LONG_VIDEO_SECONDS = 30 * 60;
   function paintLength(seconds) {
-    $("projectDur").textContent = fmtClock(seconds);
+    $("projectDur").textContent = fmtLength(seconds);
+    $("projectLength").textContent = lengthLine(seconds, state.newProject && state.newProject.trim);
     $("projectLongHint").hidden = !(Number.isFinite(seconds) && seconds > LONG_VIDEO_SECONDS);
   }
   function clearLength(text = "") {
     $("projectDur").textContent = text;
+    $("projectLength").textContent = text;
     $("projectLongHint").hidden = true;
   }
 
@@ -211,6 +314,7 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
       const full = Number.isFinite(v.duration) ? v.duration : 0;
       const kept = trim && trim.end != null && trim.start != null ? trim.end - trim.start : full;
       $("projectLongHint").hidden = !(kept > LONG_VIDEO_SECONDS);
+      if (full) $("projectLength").textContent = lengthLine(full, trim);
     },
   });
 
@@ -260,6 +364,11 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
     $("saveClipBtn").disabled = !np.downloadId;
     $("eraseBtn").disabled = !np.downloadId;
     $("startBtn").disabled = !np.downloadId && !np.file;
+    // Why the two are dim: with several videos they never light up, and
+    // nothing said so (2026-09-30).
+    const why = np.downloadId ? "" : np.files ? t("One video at a time") : t("The video is still coming in");
+    $("saveClipBtn").title = why;
+    $("eraseBtn").title = why;
   }
 
   // The file is here. The progress row goes, the still gives way to the video
@@ -300,7 +409,7 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
       if (d.status === "failed") {
         stopWatching();
         $("dlRow").hidden = true;
-        $("projectError").textContent = d.error || "Couldn't fetch the video.";
+        $("projectError").textContent = d.error || t("Could not fetch the video.");
         return;
       }
       if (d.status === "ready") { stopWatching(); playHeldVideo(d); return; }
@@ -339,14 +448,49 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
       id = await startDownload(url);
     } catch (e) {
       $("dlRow").hidden = true;
-      $("projectError").textContent = e.message;
+      $("projectError").textContent = errorText(e);
       return;
     }
     if (!state.newProject) return;   // closed while the fetch was being started
     watchDownload(id);
   }
 
+  // The language dropdowns and Advanced options are one shared block (a
+  // draft's Dubbing tab borrows it too -- ui/src/draftSetup.mjs); moveInto
+  // puts it back home, into the one box of the dialog that scrolls
+  // (#projectOptions), whenever this dialog opens. The ids inside never
+  // change, so every listener wired to them above keeps working no matter
+  // which panel currently holds the block.
+  function restoreOptionsHome() {
+    moveOptionsInto($("projectOptions"));
+  }
+
+  /** Lets a draft's Dubbing tab borrow the block while there is no dialog to
+      show it in (ui/src/draftSetup.mjs). Order: languages, then Advanced. */
+  function moveOptionsInto(container) {
+    container.appendChild($("langGrid"));
+    container.appendChild($("advancedBtn"));
+    container.appendChild($("advancedBody"));
+  }
+
+  /** The choices under Advanced options back on the saved ones, then on the
+      ones the person last picked (ui/src/rememberedChoices.mjs) -- or on
+      `kept` instead, when the dialog is being put back as it was or a
+      dubbing's own are handed in (Add language). Also what a new draft
+      starts on (ui/src/draftSetup.mjs). */
+  function startOnDefaults(kept = null) {
+    return loadSavedDefaults().then((setup) => {
+      putChoices(kept || choicesToPutBack(readRemembered(storage), setup));
+      // Setting a select's value fires no change event, so the hints under the
+      // dropdowns and the cloud-mode greying must be repainted by hand.
+      updateEngineHints();
+      paintDubMode();
+      applyEngineAvailability();
+    });
+  }
+
   function openNewProject(source) {
+    restoreOptionsHome();
     // Several files come in as `files`; the dialog is then asked once and the
     // same choices start them all, one after another (the queue's job).
     const files = source.files && source.files.length > 1 ? source.files : null;
@@ -367,7 +511,8 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
     const v = $("projectVideo");
     // A local file can be played and scrubbed; a link only ever has a still.
     v.hidden = !file;
-    $("projectTitle").textContent = files ? `New projects (${files.length})` : "New project";
+    // How many, said once: here and nowhere else in the window.
+    $("projectTitle").textContent = files ? t("New project · {n} videos", { n: files.length }) : t("New project");
     // Replace picks ONE file, which would silently drop the rest of the batch.
     $("projectReplace").hidden = !!files;
     $("projectThumb").style.backgroundImage = "";
@@ -386,8 +531,8 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
       v.addEventListener("loadedmetadata", () => {
         if (files) {
           // The first video stands for the batch. No trim: a cut made on this
-          // one would mean nothing to the others.
-          clearLength(`${files.length} videos`);
+          // one would mean nothing to the others. The title says how many.
+          clearLength();
         } else {
           paintLength(v.duration);
           trimBar.render(v.duration);
@@ -419,14 +564,7 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
     // opened later carries a held video too, and must start on the defaults.
     const kept = source.fromErase ? choicesBeforeErase : null;
     choicesBeforeErase = null;
-    loadSavedDefaults().then(() => {
-      if (kept) putChoices(kept);
-      // Setting a select's value fires no change event, so the hints under the
-      // dropdowns and the cloud-mode greying must be repainted by hand.
-      updateEngineHints();
-      paintDubMode();
-      applyEngineAvailability();
-    });
+    startOnDefaults(kept);
     $("projectOverlay").classList.add("open");
   }
 
@@ -473,22 +611,22 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
     const np = state.newProject || {};
     if (!np.downloadId) return;
     const btn = $("saveClipBtn");
-    btn.textContent = "Saving…";
+    btn.textContent = t("Saving…");
     btn.disabled = true;
     $("projectError").textContent = "";
     $("projectSaved").textContent = "";
     $("projectShowWrap").hidden = true;
     try {
       const saved = await saveDownloadClip(np.downloadId, np.trim);
-      $("projectSaved").textContent = `Saved to ${downloadsLabel(saved.path) || "Downloads"}`;
+      $("projectSaved").textContent = t("Saved to {folder}", { folder: downloadsLabel(saved.path) || t("Downloads") });
       // Where it went, for the Show beside that line. Only the desktop app can
       // open a folder; in a browser the line says where and stops there.
       savedClipPath = saved.path || "";
       $("projectShowWrap").hidden = !reveal || !savedClipPath;
     } catch (e) {
-      $("projectError").textContent = e.message;
+      $("projectError").textContent = errorText(e);
     } finally {
-      btn.textContent = "Save clip";
+      btn.textContent = t("Save clip");
       paintActions();
     }
   });
@@ -529,9 +667,11 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
       sttEngine: $("sttSelect").value,
       sepEngine: $("sepSelect").value,
       dubMode: $("dubModeSelect").value,
+      persoModel,
       qualityMode: $("qualitySelect").value,
       numSpeakers: $("numSpeakers").value ? Number($("numSpeakers").value) : undefined,
       translateEngine: $("translateSelect").value,
+      ttsEngine: $("voiceSelect").value,
       // A link's title is only known here -- the probe already fetched it, while
       // the server learns nothing from downloading the video. Names the job's
       // folder, so send it along with the job. A held video brings its own name
@@ -545,5 +685,10 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
   }
 
   return { openNewProject, closeNewProject, readOptions, loadSavedDefaults,
-           releaseProjectVideo };
+           releaseProjectVideo,
+           // Borrowed by a draft's Dubbing tab (ui/src/draftSetup.mjs): the
+           // language list its own Start button must resolve targetLangSelect's
+           // value against, and the block of controls itself.
+           // ...and the Perso voice model its row has selected.
+           currentLanguages, persoModel: () => persoModel, moveOptionsInto, startOnDefaults };
 }

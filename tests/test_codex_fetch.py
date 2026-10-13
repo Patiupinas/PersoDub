@@ -114,14 +114,25 @@ def test_sign_in_fetches_the_program_first_then_starts_it(monkeypatch):
     assert started == [["/kit/codex/bin/codex", "login"]]
 
 
+def test_claude_signs_in_with_its_own_command_and_nothing_is_fetched(monkeypatch):
+    monkeypatch.setattr(agent_api.agent_base, "find_cli", lambda name: "/bin/" + name)
+    monkeypatch.setattr(codex_fetch, "fetch", lambda: (_ for _ in ()).throw(AssertionError("not for Claude")))
+    started = []
+    monkeypatch.setattr(agent_api.subprocess, "Popen", lambda args, **kw: started.append((args, kw.get("env"))) or type("P", (), {"poll": lambda s: 0})())
+    r = client.post("/api/agent/login", json={"agent": "claude"})
+    assert r.status_code == 200
+    # `claude auth login`, in the user's own home (no private one).
+    assert started == [(["/bin/claude", "auth", "login"], None)]
+
+
 def test_a_failed_fetch_reaches_the_screen_as_its_sentence(monkeypatch):
     monkeypatch.setattr(agent_api.agent_base, "find_cli", lambda name: None)
     def fetch():
-        raise RuntimeError("Couldn't download the ChatGPT sign-in. Check your internet and try again.")
+        raise RuntimeError("Could not download the ChatGPT sign-in. Check your internet and try again.")
     monkeypatch.setattr(codex_fetch, "fetch", fetch)
     r = client.post("/api/agent/login", json={"agent": "chatgpt"})
     assert r.status_code == 502
-    assert r.json()["detail"].startswith("Couldn't download the ChatGPT sign-in")
+    assert r.json()["detail"].startswith("Could not download the ChatGPT sign-in")
 
 
 def test_a_second_sign_in_does_not_fetch_again(kit, monkeypatch):

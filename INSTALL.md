@@ -26,7 +26,7 @@ Both end in the same place — [After installing](#after-installing).
    with a normal double-click — no security warnings.
 
 On a first install, a "Setting up PersoDub" screen appears (roughly 0.6 GB). The Python + PyTorch
-and the models download when you first dub. It is safe to
+and the models download the first time you dub on this computer. It is safe to
 quit at any time — reopening the app resumes where it left off. Installed this way, the
 app also keeps itself up to date: on launch it checks for a newer release and offers to
 install it.
@@ -68,7 +68,7 @@ xcode-select --install
 Paste this single line into Terminal and press Enter:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/stronghamjji/PersoDub/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/stronghamjji/PersoDub/main/install.sh | bash
 ```
 
 This one line does everything: **fetch the code → auto-install Node.js → build → install → launch**.
@@ -84,7 +84,7 @@ Progress is shown as `[1/7]`, `[2/7]`, and so on. **It takes 10–20 minutes —
 
 - The app opens automatically at the end.
 - **If you see an "unidentified developer" warning**: System Settings → Privacy & Security → click **"Open Anyway"** at the bottom (needed only once).
-- On a first install, a "Setting up PersoDub" screen appears (roughly 0.6 GB). Python + PyTorch and the models download when you first dub. It is safe to quit at any time — reopening the app resumes where it left off.
+- On a first install, a "Setting up PersoDub" screen appears (roughly 0.6 GB). Python + PyTorch and the models download the first time you dub on this computer. It is safe to quit at any time; reopening the app resumes where it left off.
 
 Next: [After installing](#after-installing).
 
@@ -96,7 +96,7 @@ Windows has had less use than the Mac version so far, so please [report anything
 
 **What you need**
 - Windows 10 (21H2 or newer) or Windows 11, 64-bit
-- About 40 GB of free disk space
+- 40 GB of free disk space with an NVIDIA GPU, 30 GB without one
 - An NVIDIA graphics card — strongly recommended, see [Graphics: NVIDIA only](#graphics-nvidia-only) below
 - An internet connection
 - No administrator rights
@@ -125,7 +125,7 @@ and a desktop shortcut, and registers an uninstaller.
 
 ### First launch
 
-The first time you open PersoDub, a "Setting up PersoDub" screen appears — roughly **0.9 GB**. Python + PyTorch and the models download when you first dub.
+The first time you open PersoDub, a "Setting up PersoDub" screen appears (roughly **0.9 GB**). Python + PyTorch and the models download the first time you dub on this computer.
 
 Leave the app open while it downloads. If it closes, open it again — setup resumes where
 it left off.
@@ -134,8 +134,9 @@ it left off.
 
 On Windows, only NVIDIA graphics are accelerated. With AMD or Intel graphics everything
 still runs, on the processor instead. Nothing is skipped and no step fails, but
-translation and voice synthesis get much slower, and long videos become impractical.
-The measured numbers are in [Speed without a GPU](README.md#speed-without-a-gpu).
+voice synthesis (and a local translator) gets much slower, and long videos dubbed on
+this computer become impractical.
+More in [Speed without a GPU](docs/faq.md#speed-without-a-gpu).
 
 ### Uninstalling
 
@@ -162,17 +163,21 @@ These two steps are the same on macOS and Windows.
 
 ### Step 5. Add API keys (optional)
 
-Translation runs on the local **Gemma** model by default, so dubbing works with no keys at all.
+By default, **Start dubbing** uses this computer and works with no key: translation runs
+on ChatGPT through your own free sign-in on a new install, or on a local model (Hunyuan
+or Gemma) if you pick one. Perso API dubbing
+(**Advanced options > Dubbing > Perso API**) needs a Perso API key.
 To enable the cloud engines:
 
 1. Open **Settings** in the app.
 2. Enter the keys. Both are optional; only the ones you enter take effect.
-   - **Perso API key** — improves transcription and speaker-labeling accuracy.
+   - **Perso API key**: needed for Perso API dubbing. On this computer it also
+     improves transcription and speaker-labeling accuracy.
      Don't have one? Click **"Get a Perso API key"** under the field — it opens the
      signup page (a Perso account is required; signing up is free).
    - **Gemini API key** — improves translation quality.
      Get one from [Google AI Studio](https://aistudio.google.com/app/apikey).
-3. Save, then quit and reopen the app to apply them.
+3. Press **Save**. The keys apply to the next dub; there is no need to restart the app.
 
 ### Step 6. Try your first dub
 

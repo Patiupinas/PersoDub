@@ -3,6 +3,7 @@ import { statfs } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { t as inUserLanguage } from "./i18n.js";
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -16,7 +17,7 @@ const LEGACY_KIT_DIR_NAME = "persodub_full_mac";
 export function defaultKitDir({ env = process.env, home = homedir(), platform = process.platform,
                                 ignoreLegacy = false } = {}) {
   // ignoreLegacy is for the one caller that has decided the old kit is
-  // unusable (main.js, on a version mismatch) and wants the fresh-install
+  // unusable (bootFlow.js, on a version mismatch) and wants the fresh-install
   // location rather than the one already on disk.
   const legacy = join(home, LEGACY_KIT_DIR_NAME);
   if (!ignoreLegacy && existsSync(legacy)) return legacy;
@@ -39,20 +40,28 @@ export const WINDOWS_PATH_LIMIT = 260;
 // dependency upgrade can add a directory level without anyone noticing.
 export const KIT_DEEPEST_RELATIVE = 175;
 
+// The sentences below are said on screen in the user's language, and the
+// boot's failure report gets the same sentence in English (report.js reads
+// them in English): `t` is whichever of the two the caller wants said.
+/** A sentence filled in English, for a failure report. */
+export function inEnglish(key, vars = {}) {
+  return key.replace(/\{(\w+)\}/g, (m, name) => (Object.hasOwn(vars, name) ? String(vars[name]) : m));
+}
+
 /** A sentence to show the user, or null when the path is fine.
  *
  * Called before the first byte is downloaded. Without it a too-long path fails
  * tens of gigabytes later, midway through unpacking a venv, as a FileNotFound
  * on a file whose name is itself too long to print usefully.
  */
-export function kitPathTooLong(kitDir, platform = process.platform) {
+export function kitPathTooLong(kitDir, platform = process.platform, t = inUserLanguage) {
   if (platform !== "win32") return null;
   const longest = kitDir.length + KIT_DEEPEST_RELATIVE;
   if (longest <= WINDOWS_PATH_LIMIT) return null;
-  return `This folder's path is too long to install into (${kitDir.length} characters). `
-    + `Windows cannot open files deeper than ${WINDOWS_PATH_LIMIT} characters, and the kit `
-    + `needs about ${KIT_DEEPEST_RELATIVE} more than the folder you pick. `
-    + `Choose somewhere shorter, such as C:\\PersoDub.`;
+  return t(
+    "This folder's path is too long to install into ({length} characters). Windows cannot open files deeper than {limit} characters, and the kit needs about {more} more than the folder you pick. Choose somewhere shorter, such as C:\\PersoDub.",
+    { length: kitDir.length, limit: WINDOWS_PATH_LIMIT, more: KIT_DEEPEST_RELATIVE },
+  );
 }
 
 const GB = 1024 ** 3;
@@ -64,17 +73,15 @@ const gb = (bytes) => (bytes / GB).toFixed(1);
  * downloaded 15 GB and ran out at the end needs the remainder, and demanding
  * the full size again would lock out the very people this exists to help.
  */
-export function notEnoughSpace(neededBytes, freeBytes) {
+export function notEnoughSpace(neededBytes, freeBytes, t = inUserLanguage) {
   // A null reading means the check could not run -- see freeSpaceAt.
   if (freeBytes === null || freeBytes >= neededBytes) return null;
   // No "not enough space" sentence here: the screen's heading says that, and
   // repeating it pushed the two figures -- the only part that tells you what
-  // to do -- further down.
-  return `  Needs:  ${gb(neededBytes)} GB\n`
-    + `  Free:   ${gb(freeBytes)} GB\n\n`
-    // Both numbers, not just "not enough space": without them the usual
-    // outcome is clearing a little, retrying, and failing again.
-    + `Free up about ${gb(neededBytes - freeBytes)} GB and start again.`;
+  // to do -- further down. Both numbers, not just "not enough space": without
+  // them the usual outcome is clearing a little, retrying, and failing again.
+  return t("  Needs:  {needed} GB\n  Free:   {free} GB\n\nFree up about {more} GB and start again.",
+    { needed: gb(neededBytes), free: gb(freeBytes), more: gb(neededBytes - freeBytes) });
 }
 
 /** A sentence to show the user, or null when this computer has the memory to dub.
@@ -83,9 +90,9 @@ export function notEnoughSpace(neededBytes, freeBytes) {
  * 24 GB Mac in the middle of a dub. 7 GB, not 8, because an "8 GB" computer
  * reports a little under 8. The same rule app/room.py applies to a dub.
  */
-export function notEnoughMemory(totalBytes) {
+export function notEnoughMemory(totalBytes, t = inUserLanguage) {
   if (!totalBytes || totalBytes >= 7 * GB) return null;
-  return "This computer needs 8 GB of memory to dub.";
+  return t("This computer needs 8 GB of memory to dub.");
 }
 
 /** Bytes free on the volume the kit will live on, or null if unreadable.
@@ -112,7 +119,11 @@ export async function freeSpaceAt(dir, statfsImpl = statfs) {
 export const DEFAULTS = {
   kitDir: defaultKitDir(),
   sidecarPort: 3901,
+  // How long an engine may stay silent: no answer at all, not a slow one. The
+  // voice engine answers "loading" while its model loads, and each such
+  // answer restarts this clock -- up to engineLoadTimeoutMs in all.
   sidecarHealthTimeoutMs: 120000,
+  engineLoadTimeoutMs: 15 * 60 * 1000,
   backendHealthTimeoutMs: 60000,
   sidecarCmd: null,
   backendCmd: null,

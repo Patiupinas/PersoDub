@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+
 from fastapi.testclient import TestClient
 
 from app.engines.base import (
@@ -6,6 +10,7 @@ from app.engines.base import (
     list_engines,
     register_engine,
 )
+from app.engines.qwen_tts import QwenTTSEngine
 from app.main import app
 
 client = TestClient(app, base_url="http://127.0.0.1")
@@ -35,3 +40,29 @@ def test_engines_endpoint_lists_qwen3_tts():
     assert r.status_code == 200
     ids = [e["id"] for e in r.json()["engines"]]
     assert "qwen3_tts" in ids
+
+
+def test_the_voice_engine_is_registered_without_the_api_module():
+    # A remade line (app/qwen_pipeline.resynth_one_line) reads the registry,
+    # which used to be filled only once app/api/misc.py had been imported.
+    code = ("import sys; import app.qwen_pipeline; from app.engines.base import list_engines; "
+            "print([e.id for e in list_engines()], 'app.api.misc' in sys.modules)")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True,
+                         encoding="utf-8", check=True).stdout
+    assert out.strip() == "['qwen3_tts'] False"
+
+
+def test_the_voice_stage_treats_each_engine_as_it_did_by_its_id():
+    # Each flag stands where app/qwen_pipeline.py asked whether the engine
+    # was "qwen3_tts": Qwen3-TTS has all three, the socket's defaults none.
+    flags = ("needs_spoken_numbers", "adds_stray_sounds", "free_retakes")
+    assert [getattr(QwenTTSEngine, f) for f in flags] == [True, True, True]
+    assert [getattr(TTSEngine, f) for f in flags] == [False, False, False]
+    assert QwenTTSEngine.log_name == "Qwen"
+
+
+def test_an_engine_without_a_member_keeps_the_sockets_safe_default():
+    engine = FakeEngine()
+    assert engine.memory_mb() is None and engine.device_label() is None
+    assert engine.restart() is None

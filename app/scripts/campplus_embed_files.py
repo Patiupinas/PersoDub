@@ -28,12 +28,11 @@ import warnings
 warnings.filterwarnings("ignore")
 
 SR = 16000
-# Segments shorter than this are zero-padded before fbank -- same floor as
-# campplus_diarize.py's _embed (kaldi.fbank needs a minimum frame count).
+# Segments shorter than this are zero-padded before fbank (see embed).
 MIN_EMBED_SEC = 0.2
 
 
-def _lazy_imports():
+def lazy_imports():
     """Heavy deps imported lazily so --help / arg errors don't require them."""
     import numpy as np
     import onnxruntime as ort
@@ -43,7 +42,7 @@ def _lazy_imports():
     return np, ort, sf, torch, kaldi
 
 
-def _load_mono16k(path, np, sf):
+def load_mono16k(path, np, sf):
     """Read a wav as float32 mono at 16 kHz (resample if needed)."""
     x, sr = sf.read(path, always_2d=False)
     if x.ndim > 1:
@@ -55,27 +54,36 @@ def _load_mono16k(path, np, sf):
     return x
 
 
-def _embed(seg, sess, np, torch, kaldi):
-    """CAM++ embedding for one segment (fbank80 + CMN, L2-normalized) --
-    same computation as campplus_diarize.py._embed."""
-    if len(seg) < int(MIN_EMBED_SEC * SR):
-        seg = np.pad(seg, (0, int(MIN_EMBED_SEC * SR) - len(seg)))
+def raw_embedding(seg, sess, torch, kaldi):
+    """The CAM++ model's own output for 16 kHz mono audio (fbank80 + CMN), not
+    normalized. The one place the model is fed: campplus_diarize.py and
+    qwen_score_takes.py call it too. Exports name the input tensor
+    differently ("input" on the server's bundled model, "feats"/"x" on the
+    public ones), so the session is asked for it."""
     fb = kaldi.fbank(torch.tensor(seg).unsqueeze(0), num_mel_bins=80,
                      dither=0, sample_frequency=SR)
     fb = fb - fb.mean(dim=0, keepdim=True)
-    e = sess.run(None, {"input": fb.unsqueeze(0).numpy()})[0].flatten()
+    return sess.run(None, {sess.get_inputs()[0].name: fb.unsqueeze(0).numpy()})[0].flatten()
+
+
+def embed(seg, sess, np, torch, kaldi):
+    """L2-normalized CAM++ embedding of one segment, zero-padded up to
+    MIN_EMBED_SEC (kaldi.fbank needs a minimum frame count)."""
+    if len(seg) < int(MIN_EMBED_SEC * SR):
+        seg = np.pad(seg, (0, int(MIN_EMBED_SEC * SR) - len(seg)))
+    e = raw_embedding(seg, sess, torch, kaldi)
     return e / (np.linalg.norm(e) + 1e-9)
 
 
 def embed_files(wav_paths, campplus_model):
     """Embed each wav file; returns (embeddings, durations_sec), same order."""
-    np, ort, sf, torch, kaldi = _lazy_imports()
+    np, ort, sf, torch, kaldi = lazy_imports()
     sess = ort.InferenceSession(campplus_model, providers=["CPUExecutionProvider"])
     embs, durs = [], []
     for p in wav_paths:
-        x = _load_mono16k(p, np, sf)
+        x = load_mono16k(p, np, sf)
         durs.append(len(x) / float(SR))
-        embs.append(_embed(x, sess, np, torch, kaldi).tolist())
+        embs.append(embed(x, sess, np, torch, kaldi).tolist())
     return embs, durs
 
 

@@ -2,16 +2,25 @@
 
 [← Back to README](../README.md)
 
-**With the default engines, only the transcript text leaves your machine, and only
-for translation.** Separation, transcription, diarization and speech synthesis run
-locally; translation goes through your own ChatGPT account unless you pick a local
-translator in Advanced options, in which case nothing leaves at all.
+**By default, Start dubbing runs on this computer and needs no key.** Separation
+and speech synthesis run locally. Two steps can still leave by default:
+speech-to-text uploads the video to Perso while a Perso key is saved (without one,
+local Whisper and CAM++ run), and translation sends the transcript text through
+your own ChatGPT account on a new install (a computer that already has the Hunyuan
+model translates locally). With **Whisper** and a local translator (Hunyuan or
+Gemma), nothing from the video leaves at all. Set **Advanced options > Dubbing** to
+**Perso API** and the video is uploaded to Perso, which makes the whole
+dub; that needs a Perso API key.
 
-Enabling an optional cloud engine changes that, so it is worth being precise:
+Perso is a service of ESTsoft Inc. What it does with an uploaded video is set out in
+its own [privacy policy](https://perso.ai/privacy) and
+[terms of use](https://info.perso.ai/policy-perso-saas/policy/terms-of-service-en/docs/260526.html).
+
+What each dubbing service receives, precisely:
 
 | If you add | What is sent | Where |
 |---|---|---|
-| **Perso API key** | **The video file itself** is uploaded for transcription. Perso also becomes the default transcription engine for subsequent jobs. | Perso |
+| **Perso API key** | **The video file itself** (the part you kept) is uploaded. With Perso API dubbing, Perso transcribes, translates and voices it and sends back the finished video. Dubbing on this computer, the default, still uses Perso for speech-to-text while a key is saved, and **Audio separation** can be set to Perso; each of those uploads the video too. | Perso |
 | **Google Gemini key** | **The transcript text only** — not the video, not the audio. | Google |
 | **ChatGPT sign-in** (the default translator) | **The transcript text**, with the translation instructions, sent through your own ChatGPT account, under that account's own data settings. The program that carries it (OpenAI's Codex) runs in a folder of PersoDub's own with every tool switched off, so it reads nothing else on your computer and none of your own Codex settings go along; OpenAI's program may send its own usage statistics. The sign-in is OpenAI's own flow and stays on your computer; PersoDub never sees the password or token. | OpenAI |
 
@@ -30,16 +39,17 @@ the check off entirely.
 ## The Dub Agent
 
 The Dub Agent on the finished screen is a third way data can leave this machine, and
-it is worth the same precision. It does not run an assistant of ours: it runs a CLI
-you already have installed — **Claude Code** or **Codex** — as a program on your own
-machine, and that CLI talks to its own vendor on your own account.
+it is worth the same precision. It does not run an assistant of ours: it runs
+**Claude Code** or **Codex** as a program on your own machine, and that program
+talks to its own vendor on your account. Claude Code must already be installed;
+Codex can be your own copy or the one PersoDub downloads for the ChatGPT sign-in.
 
 | Assistant | What it can reach here | Where the conversation goes |
 |---|---|---|
-| **Claude Code** | PersoDub's own script tools only. Reading files and running shell commands are denied, and your own MCP servers are left out. | Anthropic |
-| **Codex** | Runs **read-only by default**, and its shell cannot reach the network. An escalation its own reviewer model approves may write to PersoDub's own agent folder (and the system temp folder) - not to the rest of your files. It can still **read any file on this computer that you can read**. If you keep standing instructions for Codex in your own `AGENTS.md` file, those are read into every turn here too. | OpenAI |
+| **Claude Code** | PersoDub's own script tools only. Reading files and running shell commands are denied, and your own MCP servers are left out. It runs apart from your own Claude Code setup: none of your settings files, hooks, plugins, `CLAUDE.md` or memory files are loaded, only your sign-in. | Anthropic |
+| **Codex** | Runs **read-only by default**, and its shell cannot reach the network. An escalation its own reviewer model approves may write to PersoDub's own agent folder (and the system temp folder) - not to the rest of your files. It can still **read any file on this computer that you can read**. It runs in a Codex folder of PersoDub's own, signed in with the app's ChatGPT sign-in, so your own Codex settings and `~/.codex/AGENTS.md` are not read. | OpenAI |
 
-**ChatGPT** can also be picked as the Dub Agent: it is the same OpenAI program, signed in with PersoDub's own ChatGPT sign-in, answering with ChatGPT's own model.
+**ChatGPT** is not a Dub Agent choice: it is the translator's sign-in, which the Codex assistant shares. Whichever assistant answers, an email address in its answer is shown as "(email hidden)", and the panel names only the kind of account that is signed in.
 
 In both cases the script of the job on screen is part of the conversation. With Codex,
 so is anything else it chooses to read. Your video is never uploaded for this.
@@ -53,7 +63,7 @@ assistant means nothing runs and nothing is sent.
 PersoDub reports six events — app launch, dub finished, dub failed, subtitles erased,
 erasing failed, install failed — to see how many installs finish a dub. Each carries the app version, your operating
 system, a random install ID, and on a failure one short code off a fixed list. A failed
-install also names which of its ten steps it stopped at, again off a fixed list. From
+install also names which of its twelve steps it stopped at, again off a fixed list. From
 0.6.2 a dub also says which of its parts went through Perso — transcription, separation,
 or the whole dub — each as one of two words, how many Perso credits that one job used,
 and the video's length in seconds (0.6.2 and 0.6.3 sent whole minutes); and a launch
@@ -66,7 +76,7 @@ restart. `PERSODUB_ANALYTICS_DEBUG=1` prints what would be sent instead of sendi
 
 ## Failure reports
 
-When an install or a dub fails, the app sends one report so the failure can be fixed.
+When an install, a dub or a subtitle erase fails, the app sends one report so the failure can be fixed.
 It becomes a public issue in this repository — a hundred machines that broke the same
 way land on one issue rather than a hundred.
 
@@ -81,10 +91,11 @@ path under your home folder is cut down to `~/…/*.mp4` — the name of the fol
 name of the file both go, and so does yours; anything shaped like an API key becomes
 `[REDACTED]`; and a link is cut down to its site. The one exception is PersoDub's own
 installation folder, whose paths are kept readable minus your name, because which model
-or which folder a step died in is the answer we are looking for. Your `kit.env` — the
-file your API keys live in — is never read by the reporting code at all, and no video,
+or which folder a step died in is the answer we are looking for. Your `kit.env`, the
+file your API keys live in, is read by the reporting code only for its on/off switches
+and the name of the torch build; nothing else from it goes into a report, and no video,
 audio, subtitle, project name or filename is ever included. The logs themselves never
-record what was said: a transcribed or a translated line is written down by its length,
+record what was said: a transcribed or translated line, or what a voice check hears, is written down by its length,
 not its words, and a Perso job by the credits it used, never your balance (from 0.6.4;
 earlier versions could quote a translation in an error sentence). The relay that posts the
 issue does not store your IP address, and applies the same rules a second time.
@@ -103,6 +114,9 @@ Issues page asks for the same facts, and you choose what to paste.
 Link fetching is powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 (released under the [Unlicense](https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE)),
 installed from PyPI on your machine at install time; PersoDub does not bundle or
-redistribute its code. The fetched video is saved locally and dubbed locally, like any
+redistribute its code. Reading and fetching a link contacts the site it points to, and
+when a fetch fails for a reason other than the network, the app updates yt-dlp from PyPI
+and tries once more. The fetched video is saved locally and is dubbed where **Dubbing**
+says (this computer by default), like any
 dropped file. Only dub videos you hold the rights to — downloading content may be
 restricted by the source platform's terms of service, and that responsibility is yours.

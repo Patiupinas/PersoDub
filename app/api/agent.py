@@ -35,6 +35,7 @@ from app.agents import base as agent_base
 from app.agents import claude as claude_agent
 from app.agents import codex as codex_agent
 from app.config import PERSODUB_LOG_DIR
+from app.i18n import t
 from app.translate import CHATGPT_DEFAULT_MODEL
 
 logger = logging.getLogger("persodub.api.agent")
@@ -46,8 +47,13 @@ AGENTS = {
     # `login` is what the user types in a terminal to sign this CLI in. It is
     # here rather than in the screen so one place names it: the failure message
     # and the strip's status line both say the same command.
+    # "login" is what to type in a terminal; "login_args" is how the app
+    # starts the same sign-in itself (`claude auth login` opens the browser).
     "claude": {"binary": "claude", "name": "Claude", "vendor": "Anthropic",
-               "driver": claude_agent, "login": "claude"},
+               "driver": claude_agent, "login": "claude",
+               "login_args": ["auth", "login"],
+               # The user's own sign-in, without their memory files (claude.ENV).
+               "env": claude_agent.ENV},
     # Codex signs in once with ChatGPT's own sign-in, in PersoDub's folder:
     # one Sign In covers translation and the Dub Agent (user, 2026-09-28).
     # No terminal command to name -- the app's sign-in window does it.
@@ -246,6 +252,51 @@ def _env_of(meta: dict) -> Optional[dict]:
     return agent_base.chatgpt_env() if meta.get("private_home") else None
 
 
+def _turn_env(meta: dict) -> Optional[dict]:
+    """_env_of, plus the switches an assistant's entry adds for answering a
+    message (Claude: no memory files). Its sign-in is not touched by them."""
+    if not meta.get("env"):
+        return _env_of(meta)
+    return {**(_env_of(meta) or os.environ), **meta["env"]}
+
+
+# Claude Code puts the signed-in account's email address into the assistant's
+# own context, and told in its instructions not to repeat it, Sonnet still
+# answered "Who am I signed in as?" with it, three times in three (2026-10-11,
+# Windows test F1). The panel can be on a shared screen, so an address is taken
+# out of whatever the assistant writes, on the way to it.
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def hide_emails(text: str) -> str:
+    return _EMAIL.sub("(email hidden)", text)
+
+
+# The run at the end of the text that could still be (part of) an address.
+_ADDRESS_TAIL = re.compile(r"[A-Za-z0-9._%+@-]*\Z")
+
+
+class _HideEmails:
+    """hide_emails over a reply that streams in pieces. An address can be cut
+    between two pieces, so the letters at the end that could still belong to
+    one are held back until a character that cannot (or the end of the reply)
+    shows where it ends. Only those: text with no spaces (Chinese, Japanese)
+    was held whole until a line break (final review, 2026-10-12)."""
+
+    def __init__(self):
+        self.held = ""
+
+    def feed(self, piece: str) -> str:
+        text = self.held + piece
+        cut = _ADDRESS_TAIL.search(text).start()
+        self.held = text[cut:]
+        return hide_emails(text[:cut])
+
+    def flush(self) -> str:
+        rest, self.held = self.held, ""
+        return hide_emails(rest)
+
+
 # A model name is letters, digits and . _ : - only. It reaches a command line,
 # and on Windows an npm .cmd shim hands that line to cmd.exe (review 2026-09-23).
 _MODEL_NAME = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
@@ -262,13 +313,14 @@ class AgentLoginRequest(BaseModel):
 @router.post("/api/agent/login")
 def agent_login(body: AgentLoginRequest):
     """Start this CLI's own sign-in. Codex opens the browser itself and waits
-    for the callback; nothing here reads or keeps what comes back. The cached
+    for the callback, and so does Claude (`claude auth login`); nothing here
+    reads or keeps what comes back. The cached
     answer is dropped so the next ?login=1 asks afresh -- the screen polls
     that until the sign-in lands. What the user sees is "Sign in with
     ChatGPT" (the ChatGPT translator, app/translate.py); the CLI is the wire."""
     meta = AGENTS.get(body.agent)
     if meta is None:
-        raise HTTPException(status_code=404, detail=f"Unknown assistant: {body.agent}")
+        raise HTTPException(status_code=404, detail=t("Unknown assistant: {agent}", agent=body.agent))
     binary = agent_base.find_cli(meta["binary"])
     if not binary and meta["binary"] == "codex":
         # No Codex on this computer: fetch PersoDub's own copy first (about
@@ -279,17 +331,18 @@ def agent_login(body: AgentLoginRequest):
             raise HTTPException(status_code=502, detail=str(e))
         binary = agent_base.find_cli(meta["binary"])
     if not binary:
-        raise HTTPException(status_code=409, detail=f"{meta['name']} is not installed on this computer.")
+        raise HTTPException(status_code=409, detail=t("{name} is not installed on this computer.", name=meta["name"]))
     codex_agent.forget_models()
     global _login_proc
     if _login_proc is not None and _login_proc.poll() is None:
         agent_base._end(_login_proc)
     try:
-        _login_proc = subprocess.Popen([binary, "login"], stdin=subprocess.DEVNULL,
+        _login_proc = subprocess.Popen([binary, *meta.get("login_args", ["login"])],
+                                       stdin=subprocess.DEVNULL,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        env=_env_of(meta))
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Could not start the sign-in ({type(e).__name__}).")
+        raise HTTPException(status_code=500, detail=t("Could not start the sign-in ({kind}).", kind=type(e).__name__))
     # Every assistant that reads this same sign-in is asked afresh.
     with _login_lock:
         for key, other in AGENTS.items():
@@ -326,7 +379,7 @@ async def agent_chat(body: AgentChatRequest, request: Request):
     """
     meta = AGENTS.get(body.agent)
     if meta is None or meta.get("sign_in_only"):
-        raise HTTPException(status_code=422, detail="Unknown assistant: %s" % body.agent)
+        raise HTTPException(status_code=422, detail=t("Unknown assistant: {agent}", agent=body.agent))
     driver = meta["driver"]
     if driver is None:
         raise HTTPException(status_code=501, detail="%s: %s"
@@ -343,7 +396,7 @@ async def agent_chat(body: AgentChatRequest, request: Request):
         binary = agent_base.find_cli(meta["binary"])
     if not binary:
         raise HTTPException(status_code=503,
-                            detail="%s is not installed." % meta["name"])
+                            detail=t("{name} is not installed.", name=meta["name"]))
 
     api_url = str(request.base_url).rstrip("/")
     agent_dir = os.path.join(AGENT_DIR, meta["dir"]) if meta.get("dir") else AGENT_DIR
@@ -363,7 +416,7 @@ async def agent_chat(body: AgentChatRequest, request: Request):
         # stack trace, and building the command line should not be the one
         # place that hands the user a 500.
         raise HTTPException(status_code=500,
-                            detail="Could not prepare the assistant: %s" % e)
+                            detail=t("Could not prepare the assistant: {reason}", reason=e))
 
     async def stream():
         # The runner blocks -- it reads the CLI's stdout a line at a time -- so
@@ -374,13 +427,44 @@ async def agent_chat(body: AgentChatRequest, request: Request):
         events = queue.Queue()
 
         def pump():
+            stopped = False
+            hide = _HideEmails()
             try:
                 for event in agent_base.run(binary, args, driver.translate,
                                             cwd=work_dir, agent_name=meta["name"],
                                             login_command=meta.get("login", ""),
-                                            input_text=prompt, env=_env_of(meta)):
+                                            input_text=prompt, env=_turn_env(meta)):
+                    # The turn was ended and said why: what the stopped CLI
+                    # says on its way out is that sentence again, and the panel
+                    # showed it twice (Windows test H18, 2026-10-10).
+                    if stopped and event.get("kind") == "error":
+                        continue
+                    if event.get("kind") == "text":
+                        shown = hide.feed(event.get("text") or "")
+                        if not shown:
+                            continue
+                        event = {**event, "text": shown}
+                    else:
+                        # The held words go before anything else: after a
+                        # tool's chip they started the next bubble, splitting
+                        # their sentence in two (final review, 2026-10-12).
+                        rest = hide.flush()
+                        if rest:
+                            events.put({"kind": "text", "text": rest})
+                        # An error's sentence and the CLI's own last words
+                        # reach the panel as well, and can name the account.
+                        event = {**event, **{k: hide_emails(event[k]) for k in ("text", "message", "detail")
+                                             if isinstance(event.get(k), str) and event[k]}}
                     events.put(event)
+                    # A reader that knows the turn cannot go on (a usage
+                    # limit the CLI would retry for minutes) ends it here.
+                    if event.get("kind") == "error" and event.get("stop"):
+                        stopped = True
+                        agent_base.stop_turn()
             finally:
+                rest = hide.flush()
+                if rest:
+                    events.put({"kind": "text", "text": rest})
                 events.put(None)      # whatever happened, the turn is over
 
         threading.Thread(target=pump, daemon=True).start()

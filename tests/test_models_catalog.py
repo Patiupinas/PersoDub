@@ -216,7 +216,7 @@ def test_api_models_shows_the_packs_with_this_platforms_size(monkeypatch, tmp_pa
     assert rows["engine"]["state"] == "ready"
     assert rows["ollama-runtime"]["state"] == "not_downloaded"
     assert rows["subtitle-eraser"]["bytes"] == 4400000000   # measured on disk, 2026-09-25
-    assert rows["subtitle-eraser"]["hint"] == "Erases burned-in subtitles."
+    assert rows["subtitle-eraser"]["hint"] == ""   # its group title, Erase subtitles, says it
 
 
 def test_packs_are_not_downloaded_or_removed_through_the_backend(monkeypatch, tmp_path):
@@ -246,7 +246,7 @@ def test_a_pack_cannot_be_removed_while_a_dub_runs_even_by_the_desktop_app(monke
     monkeypatch.setenv("PERSODUB_KIT_DIR", str(tmp_path))
     monkeypatch.setattr(models_module, "dub_in_progress", lambda: True)
     r = client.delete("/api/models/engine")
-    assert r.status_code == 409 and r.json()["detail"].startswith("A dub is running")
+    assert r.status_code == 409 and r.json()["detail"].startswith("Dubbing is running")
 
 
 def test_the_catalog_lists_the_packs_first():
@@ -264,13 +264,15 @@ def test_an_ollama_model_asked_for_without_its_runtime_is_refused_with_a_sentenc
     assert r.json()["detail"] == "Install Ollama first, then download this model."
 
 
-def test_every_downloadable_row_says_what_it_is_for():
-    for m in models_module.load_catalog():
-        if m["role"] == "always":
-            continue
-        assert m.get("hint"), m["id"]
+def test_only_a_row_its_group_title_does_not_explain_carries_a_hint():
+    # Settings lists the rows under what they are for (ui/src/modelsUi.mjs
+    # groupModels). A hint is left where that title does not say it all: two
+    # translators side by side, and what each base program carries.
+    hinted = {m["id"] for m in models_module.load_catalog() if m.get("hint")}
+    assert hinted == {"engine", "ollama-runtime", "gemma", "hunyuan"}
     rows = {m["id"]: m for m in models_module.status_rows()}
-    assert rows["engine"]["hint"].endswith("the voices on this computer.")
+    assert rows["engine"]["hint"] == "Audio separation, speech-to-text, voices"
+    assert rows["whisper"]["hint"] == ""
 
 
 def test_a_pack_the_desktop_app_is_installing_reads_as_downloading(tmp_path):

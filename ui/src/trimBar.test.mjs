@@ -75,7 +75,7 @@ test("a part chosen elsewhere is what the handles open on", () => {
   assert.equal(h.$("eraseTrimStart").value, "5");
   assert.equal(h.$("eraseTrimEnd").value, "15");
   assert.equal(h.$("eraseTrimRead").textContent,
-    "00:00:05.0 – 00:00:15.0 · 10.0s of 60.0s");
+    "00:00:05.0 – 00:00:15.0 · 00:10 of 01:00");
   assert.deepEqual(h.chosen.at(-1), { start: 5, end: 15 });
 
   // A range from outside is still kept inside the video, and still long enough
@@ -94,7 +94,7 @@ test("handles parked at both ends are no trim at all", () => {
   const h = bar();
   h.api.render(30);
   assert.equal(h.chosen.at(-1), null);
-  assert.equal(h.$("trimRead").textContent, "00:00:00.0 – 00:00:30.0 · 30.0s of 30.0s");
+  assert.equal(h.$("trimRead").textContent, "00:00:00.0 – 00:00:30.0 · 00:30 of 00:30");
 
   h.$("trimEnd").value = "20";
   h.$("trimEnd").fire("input");

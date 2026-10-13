@@ -47,7 +47,9 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 DEFAULT_CAMPPLUS = os.path.join("models", "campplus", "campplus.onnx")
 # Repo root = two directories above this file (app/scripts/ -> app/ -> root).
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SR = 16000
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+from app.scripts.campplus_embed_files import SR, raw_embedding  # noqa: E402
 
 
 def resolve_campplus_model(explicit=None):
@@ -120,11 +122,7 @@ def load16k(path, tmp_dir, sf):
 def embed(sess, x, torch, kaldi):
     if len(x) < SR * 0.4:
         return None
-    fb = kaldi.fbank(torch.tensor(x).unsqueeze(0), num_mel_bins=80, dither=0, sample_frequency=SR)
-    fb = fb - fb.mean(dim=0, keepdim=True)
-    # Exports name this tensor differently ("input" on the server's bundled
-    # model, "feats"/"x" on the public ones), so ask the session for it.
-    return sess.run(None, {sess.get_inputs()[0].name: fb.unsqueeze(0).numpy()})[0].flatten()
+    return raw_embedding(x, sess, torch, kaldi)
 
 
 def cos(a, b, np):
@@ -206,7 +204,7 @@ def score(payload, tmp_dir):
     if not os.path.exists(campplus):
         raise ValueError(
             "CAM++ model not found at %s -- set PERSODUB_CAMPPLUS_MODEL to an absolute path" % campplus)
-    language = payload.get("language") or "ko"
+    language = payload.get("language")   # None: Whisper detects it
     speakers = payload.get("speakers") or {}
     if not speakers:
         raise ValueError("no speaker references given")

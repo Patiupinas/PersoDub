@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import engines_status, eraser
+from app.api import _launch as launch_api
 from app.api import dub as dub_api
 from app.jobs import JobStore
 from app.main import app
@@ -27,7 +28,7 @@ def _all_engines_available(monkeypatch):
     monkeypatch.setattr(engines_status, "hunyuan_status", lambda: "available")
     monkeypatch.setattr(engines_status, "gemini_available", lambda: True)
     monkeypatch.setattr(engines_status, "perso_available", lambda: True)
-    monkeypatch.setattr(dub_api, "_missing_models", lambda *a, **kw: [])
+    monkeypatch.setattr(launch_api, "missing_models", lambda *a, **kw: [])
 
 
 def _start(name="v.mp4"):
@@ -199,10 +200,11 @@ def test_a_perso_cloud_dub_skips_the_local_line(slow_dub, monkeypatch):
     local one would idle both machines. It starts at once, and its ending must
     not free the seat the local job is still sitting in."""
     gate, ran = slow_dub
-    monkeypatch.setattr(dub_api, "current_value", lambda k: "1")
+    monkeypatch.setattr(launch_api, "current_value", lambda k: "1")
     cloud = []
 
-    def fake_cloud(jid, video_path, out_path, source, language_code, num_speakers, log):
+    def fake_cloud(jid, video_path, out_path, source, language_code, num_speakers, log,
+                   tts_model=None):
         cloud.append(jid)
         return {"out_path": out_path}
 

@@ -36,8 +36,35 @@ def test_a_process_that_complained_to_stdout_is_still_quoted():
 
 
 def test_a_process_that_said_nothing_at_least_names_its_exit_code():
-    said = describe_exit_failure("local separation", _Result(returncode=137))
-    assert "137" in said
+    said = describe_exit_failure("local separation", _Result(returncode=13))
+    assert "13" in said
+
+
+def test_a_process_killed_for_memory_says_so_not_just_its_code():
+    # SIGKILL (-9), and 137 (128+SIGKILL, the shell's way of reporting it) --
+    # both leave no stderr/stdout of their own, and used to read as "exited
+    # with code -9 and said nothing", sending someone to check a video that
+    # was never the problem.
+    for code in (-9, 137):
+        said = describe_exit_failure("local STT", _Result(returncode=code))
+        assert "out of memory" in said, said
+        assert "memory" in advice_for(said, "Check the video file.")
+
+
+def test_a_windows_out_of_memory_code_says_so_too():
+    # STATUS_NO_MEMORY (0xC0000017), which Python reports as the signed
+    # -1073741801 on Windows.
+    said = describe_exit_failure("local separation", _Result(returncode=-1073741801))
+    assert "out of memory" in said
+    assert "memory" in advice_for(said, "Check the video file.")
+
+
+def test_a_kill_signal_that_is_not_memory_still_names_its_exit_code():
+    # SIGTERM (-15, a cancel) is not SIGKILL -- it must not be read as an
+    # out-of-memory kill.
+    said = describe_exit_failure("local separation", _Result(returncode=-15))
+    assert "out of memory" not in said
+    assert "-15" in said
 
 
 def test_advice_follows_the_failure_not_the_stage():

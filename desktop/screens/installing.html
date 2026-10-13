@@ -1,14 +1,14 @@
-<!doctype html><meta charset="utf-8"><title>PersoDub: Installing</title>
+<!doctype html><meta charset="utf-8"><title data-i18n>PersoDub: Installing</title>
 <style>
-  body { font-family: -apple-system, sans-serif; max-width: 560px; margin: 0 auto;
-         padding: 60px 20px; background: #1e1e22; color: #ececf1; }
-  li { margin: 6px 0; color: #9a9aa6; }
-  li.active { color: #ececf1; font-weight: 600; }
+  body { font-family: -apple-system, sans-serif; max-width: 560px; margin: 0 auto; word-break: keep-all;
+         padding: 60px 20px; background: #0e131b; color: #eaf0fd; }
+  li { margin: 6px 0; color: #9ea5b0; }
+  li.active { color: #eaf0fd; font-weight: 600; }
   li.done { color: #3fbf5f; }
   li.done::after { content: " ✓"; }
-  #bar { width: 100%; height: 8px; background: #2c2c32; border-radius: 4px; overflow: hidden; margin: 18px 0 6px; }
+  #bar { width: 100%; height: 8px; background: #232831; border-radius: 4px; overflow: hidden; margin: 18px 0 6px; }
   #fill { height: 100%; width: 0%; background: #166CFB; transition: width .3s; }
-  #detail { color: #9a9aa6; font-size: 13px; min-height: 1.2em; overflow: hidden;
+  #detail { color: #9ea5b0; font-size: 13px; min-height: 1.2em; overflow: hidden;
             text-overflow: ellipsis; white-space: nowrap; }
   /* The mark and the name side by side, ranged left over the column they head --
      the shape Premiere, Resolve and Docker Desktop use on a screen that has to
@@ -16,30 +16,39 @@
      to be asked which one they are running. */
   .brand { display: flex; align-items: center; gap: 10px; margin: 0 0 26px; }
   .brand img { width: 34px; height: 34px; border-radius: 9px; display: block; }
-  .brand b { font-size: 14px; font-weight: 600; letter-spacing: .01em; color: #ececf1; }
-  .brand .ver { color: #9a9aa6; font-size: 12px; }
+  .brand b { font-size: 14px; font-weight: 600; letter-spacing: .01em; color: #eaf0fd; }
+  .brand .ver { color: #9ea5b0; font-size: 12px; }
 </style>
 <div class="brand"><img src="logo.png" alt=""><b>PersoDub</b><span class="ver" id="ver"></span></div>
 <h2 id="title"></h2>
 <ol id="steps"></ol>
 <div id="bar"><div id="fill"></div></div>
 <div id="detail"></div>
+<!-- The script's own words, here so the shell can put them in the user's
+     language (desktop/src/screenText.js). -->
+<div hidden>
+  <span id="updating" data-i18n>Updating PersoDub</span>
+  <span id="settingUp" data-i18n>Setting up PersoDub</span>
+  <span id="ofTotal" data-i18n>{done} of {total}</span>
+  <span id="failed" data-i18n>failed</span>
+</div>
 <script>
   // mode=update (same kit already installed) vs install (first time), and the
-  // total bytes the still-missing steps add up to -- both handed in by main.js
+  // total bytes the still-missing steps add up to -- both handed in by bootFlow.js
   // via the query string, since only it knows which kit this is and what
   // bytesStillNeeded came out to.
   const q = new URLSearchParams(location.search);
+  const say = (id) => document.getElementById(id).textContent;
   const gb = (b) => (b / 1024 ** 3).toFixed(1) + " GB";
   const title = document.getElementById("title");
-  // The figure main.js sends is a floor: it is measured before the payload
+  // The figure bootFlow.js sends is a floor: it is measured before the payload
   // step replaces the requirements files, which is what re-opens the venv
   // steps -- so steps it could not know about still arrive. Grow it as they
   // do, rather than showing "2.3 GB of 0.3 GB".
   let total = Number(q.get("bytes")) || 0;
   const counted = new Set();
   const setTitle = () => {
-    title.textContent = (q.get("mode") === "update" ? "Updating PersoDub" : "Setting up PersoDub")
+    title.textContent = say(q.get("mode") === "update" ? "updating" : "settingUp")
       + (total ? " · " + gb(total) : "");
   };
   setTitle();
@@ -78,14 +87,15 @@
       li.className = "active";
       if (p.pct != null) fill.style.width = p.pct + "%";
       detail.textContent = total
-        ? gb(received + (p.pct || 0) / 100 * (p.bytes || 0)) + " of " + gb(total) + (p.detail ? " · " + p.detail : "")
+        ? say("ofTotal").replace("{done}", gb(received + (p.pct || 0) / 100 * (p.bytes || 0))).replace("{total}", gb(total))
+          + (p.detail ? " · " + p.detail : "")
         : (p.detail || "");
     }
-    if (p.state === "error") { li.className = "active"; detail.textContent = p.detail || "failed"; }
+    if (p.state === "error") { li.className = "active"; detail.textContent = p.detail || say("failed"); }
   });
 </script>
 <script>
-  // The version comes in on the query string (desktop/main.js), so every launch
+  // The version comes in on the query string (desktop/src/bootFlow.js), so every launch
   // screen names the build the user is on without asking anyone.
   const v = new URLSearchParams(location.search).get("v");
   if (v) document.getElementById("ver").textContent = "v" + v;

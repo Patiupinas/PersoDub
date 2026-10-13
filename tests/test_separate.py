@@ -202,3 +202,64 @@ def test_separate_passes_computed_timeout_to_subprocess_run(monkeypatch, tmp_pat
     engine.separate("/fake/video.mp4", str(tmp_path))
 
     assert captured["timeout"] == 6000.0
+
+
+# --- the RoFormer: used when its weights are downloaded, Demucs otherwise ----
+
+def _capture_run(tmp_path, seen):
+    class _R:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, capture_output, text, timeout, **_kw):
+        seen["script"] = cmd[1]
+        seen["timeout"] = timeout
+        with open(cmd[cmd.index("--input") + 1], encoding="utf-8") as f:
+            seen["payload"] = json.load(f)
+        _write_output(str(tmp_path), {"ok": True, "vocals": "v.wav", "background": "b.wav"})
+        return _R()
+    return fake_run
+
+
+def _kit_with_roformer(kit, monkeypatch):
+    monkeypatch.setenv("PERSODUB_KIT_DIR", str(kit))
+    weights = kit / "models" / "melband-roformer" / "MelBandRoformer.ckpt"
+    weights.parent.mkdir(parents=True)
+    weights.write_bytes(b"weights")
+    return weights
+
+
+def test_the_roformer_separates_when_its_weights_are_downloaded(monkeypatch, tmp_path):
+    import sys
+    weights = _kit_with_roformer(tmp_path / "kit", monkeypatch)
+    seen = {}
+    monkeypatch.setattr(sep.subprocess, "run", _capture_run(tmp_path, seen))
+    engine = sep.SeparationEngine(python_path=sys.executable)
+    engine.separate("/fake/video.mp4", str(tmp_path))
+    assert engine.name == "RoFormer"
+    assert seen["script"] == sep.ROFORMER_SCRIPT_PATH
+    assert seen["payload"]["model_path"] == str(weights)
+
+
+def test_demucs_separates_while_the_roformer_is_not_downloaded(monkeypatch, tmp_path):
+    import sys
+    monkeypatch.setenv("PERSODUB_KIT_DIR", str(tmp_path / "kit"))
+    seen = {}
+    monkeypatch.setattr(sep.subprocess, "run", _capture_run(tmp_path, seen))
+    engine = sep.SeparationEngine(python_path=sys.executable)
+    engine.separate("/fake/video.mp4", str(tmp_path))
+    assert engine.name == "Demucs"
+    assert seen["script"] == sep.SCRIPT_PATH
+    assert "model_path" not in seen["payload"]
+
+
+def test_half_downloaded_roformer_weights_are_not_used(monkeypatch, tmp_path):
+    weights = _kit_with_roformer(tmp_path / "kit", monkeypatch)
+    weights.write_bytes(b"")   # a cancelled download leaves the file empty
+    assert sep.roformer_model_path() is None
+
+
+def test_the_roformer_gets_a_longer_ceiling_than_demucs(tmp_path):
+    demucs = sep.SeparationEngine(video_duration=600.0)
+    roformer = sep.SeparationEngine(video_duration=600.0, roformer_path=str(tmp_path / "w.ckpt"))
+    assert roformer.timeout == demucs.timeout * sep.ROFORMER_SLOWER

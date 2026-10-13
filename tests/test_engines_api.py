@@ -10,6 +10,7 @@ import requests
 from fastapi.testclient import TestClient
 
 from app import config, engines_status
+from app.api import _launch as launch_api
 from app.api import dub as dub_api
 from app.main import app
 
@@ -23,7 +24,7 @@ import pytest
 def _models_ready(monkeypatch):
     # Whisper/TTS markers live in a kit these tests never build; the 409
     # missing-model preflight has its own suite (test_dub_start_preflight.py).
-    monkeypatch.setattr(dub_api, "_missing_models", lambda *a, **kw: [])
+    monkeypatch.setattr(launch_api, "missing_models", lambda *a, **kw: [])
 
 
 class _FakeResponse:
@@ -227,6 +228,8 @@ def test_engines_endpoint_all_unavailable(monkeypatch):
     monkeypatch.setattr(engines_status, "gemini_available", lambda: False)
     monkeypatch.setattr(engines_status, "perso_available", lambda: False)
     monkeypatch.setattr(engines_status, "eraser_available", lambda: False)
+    monkeypatch.setattr(engines_status, "local_engine", lambda w: {"state": "running", "message": ""})
+    monkeypatch.setattr(engines_status, "voice_models", lambda: {"qwen3": "1.7B"})
 
     r = client.get("/api/engines")
     assert r.status_code == 200
@@ -236,7 +239,10 @@ def test_engines_endpoint_all_unavailable(monkeypatch):
         "hunyuan_available": False,
         "gemini_available": False,
         "perso_available": False,
+        "voice_models": {"qwen3": "1.7B"},
         "eraser_available": False,
+        "local_engines": {"voice": {"state": "running", "message": ""},
+                          "translation": {"state": "running", "message": ""}},
     }
 
 
@@ -248,6 +254,8 @@ def test_engines_endpoint_all_available(monkeypatch):
     monkeypatch.setattr(engines_status, "gemini_available", lambda: True)
     monkeypatch.setattr(engines_status, "perso_available", lambda: True)
     monkeypatch.setattr(engines_status, "eraser_available", lambda: True)
+    monkeypatch.setattr(engines_status, "local_engine", lambda w: {"state": "running", "message": ""})
+    monkeypatch.setattr(engines_status, "voice_models", lambda: {"qwen3": "1.7B"})
 
     r = client.get("/api/engines")
     assert r.status_code == 200
@@ -257,7 +265,10 @@ def test_engines_endpoint_all_available(monkeypatch):
         "hunyuan_available": True,
         "gemini_available": True,
         "perso_available": True,
+        "voice_models": {"qwen3": "1.7B"},
         "eraser_available": True,
+        "local_engines": {"voice": {"state": "running", "message": ""},
+                          "translation": {"state": "running", "message": ""}},
     }
 
 
@@ -384,6 +395,20 @@ def test_dub_start_translate_engine_case_insensitive(monkeypatch):
     assert r.status_code == 422
 
 
+def test_dub_start_translate_engine_is_trimmed(monkeypatch):
+    # "gemini " passed the Gemini key check by, and the run then translated
+    # with the default local model instead (2026-10-10).
+    monkeypatch.setattr(engines_status, "gemini_available", lambda: False)
+
+    r = client.post(
+        "/api/dub/start",
+        files={"video": ("v.mp4", b"vid", "video/mp4")},
+        data={"language": "Korean", "language_code": "ko", "translate_engine": "gemini "},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"].startswith("Gemini translation needs an API key")
+
+
 def test_dub_start_vertex_engine_skips_preflight(monkeypatch):
     # vertex (and anything else not gemma/qwen/gemini) is out of scope for
     # preflight -- the job must start even when every check is False.
@@ -497,3 +522,65 @@ def test_dub_start_hunyuan_available_job_starts(monkeypatch):
         data={"language": "Korean", "language_code": "ko", "translate_engine": "hunyuan"},
     )
     assert r.status_code == 200
+
+
+# --- local_engine: the voice engine and the translation runtime ------------
+
+def test_local_engine_states_follow_what_the_shell_wrote(monkeypatch, tmp_path):
+    import json
+    import os
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    monkeypatch.setenv("PERSODUB_KIT_DIR", str(kit))
+
+    def rt(**data):
+        (kit / "runtime.json").write_text(json.dumps({"version": 1, **data}))
+
+    rt()
+    assert engines_status.local_engine("voice") == {"state": "not_installed", "message": ""}
+    # The engine pack on disk: its two markers (app/models_catalog.json).
+    (kit / ".install").mkdir()
+    (kit / ".install" / "venv-engines.ok").write_text("")
+    os.makedirs(kit / "models" / "demucs" / "HTDemucs")
+    (kit / "models" / "demucs" / "HTDemucs" / "955717e8.safetensors").write_text("w")
+    stopped = engines_status.local_engine("voice")
+    assert stopped["state"] == "stopped" and "not running" in stopped["message"]
+    rt(tts_state="starting")
+    assert engines_status.local_engine("voice")["state"] == "starting"
+    rt(tts_state="failed")
+    failed = engines_status.local_engine("voice")
+    assert failed["state"] == "failed" and "could not start" in failed["message"]
+    rt(tts_url="http://127.0.0.1:1")
+    assert engines_status.local_engine("voice") == {"state": "running", "message": ""}
+    rt(ollama_state="failed")
+    assert engines_status.local_engine("translation")["state"] == "failed"
+
+
+def test_engines_endpoint_carries_both_local_engines(monkeypatch, tmp_path):
+    import json
+    monkeypatch.setenv("PERSODUB_KIT_DIR", str(tmp_path))
+    (tmp_path / "runtime.json").write_text(json.dumps({"version": 1, "tts_state": "failed"}))
+    for name in ("gemma_available", "qwen_available", "hunyuan_available", "gemini_available",
+                 "perso_available", "eraser_available"):
+        monkeypatch.setattr(engines_status, name, lambda: False)
+    body = client.get("/api/engines").json()
+    assert body["local_engines"]["voice"]["state"] == "failed"
+    assert body["local_engines"]["voice"]["message"].startswith("The voice engine is not running")
+    assert body["local_engines"]["translation"] == {"state": "not_installed", "message": ""}
+
+
+def test_voice_models_name_the_installed_qwen_size(monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setenv("PERSODUB_KIT_DIR", str(tmp_path))
+    # Not downloaded yet: the size cannot be known, and is left out.
+    assert engines_status.voice_models() == {"qwen3": ""}
+    # The size the downloaded model's own config.json gives.
+    model = tmp_path / "models" / "qwen3-tts"
+    model.mkdir(parents=True)
+    (model / "config.json").write_text(json.dumps({"tts_model_size": "1b7"}))
+    assert engines_status.voice_models()["qwen3"] == "1.7B"
+    (model / "config.json").write_text(json.dumps({"tts_model_size": "0b6"}))
+    assert engines_status.voice_models()["qwen3"] == "0.6B"
+    (model / "config.json").write_text("{not json")
+    assert engines_status.voice_models()["qwen3"] == ""

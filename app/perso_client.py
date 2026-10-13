@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from typing import List, Optional
 
@@ -89,6 +90,10 @@ def _with_utm(url: str, content: str) -> str:
     return url + ("&" if "?" in url else "?") + params
 
 
+# How long a proofread is given to show up in the project's progress before a
+# "Completed" is believed (PersoClient.proofread).
+PROOFREAD_SETTLE_S = 60
+
 RECHARGE_LINK = _with_utm(PERSO_RECHARGE_URL, "recharge")
 SIGNUP_LINK = _with_utm(PERSO_SIGNUP_URL, "signup")
 
@@ -143,6 +148,25 @@ class PersoProjectFailedError(RuntimeError):
         said = reason or "no reason given"
         super().__init__(f"{what} failed: {said} ({code})" if code
                          else f"{what} failed: {said}")
+
+
+class PersoModelRefusedError(RuntimeError):
+    """Perso refused because this project's voice model cannot do what was
+    asked (HTTP 400, code VT40918): a NIGHTINGALE project has no per-sentence
+    voice and no RED speed. Nothing to retry -- the way through is a whole
+    proofread, so the screen has to be able to tell this apart."""
+
+
+# The code Perso answers with when the project's voice model lacks the option.
+MODEL_REFUSED_CODE = "VT40918"
+NIGHTINGALE = "NIGHTINGALE"
+# The voice models a dubbing can be made with, in the order the screen shows
+# them: the three Perso's own site offers. Its list names a fourth, DODO,
+# which is not offered here. ORIOLE is what a dubbing gets when nobody chose,
+# as on Perso's site; it covers the languages AUDIO_ENGINE_V3 did before that
+# name left Perso's list (seen 2026-10-02).
+TTS_MODELS = (NIGHTINGALE, "ORIOLE", "WREN")
+DEFAULT_TTS_MODEL = "ORIOLE"
 
 
 def _dubbing_space_candidates(api_key: str, base_url: str = BASE_URL) -> list:
@@ -316,6 +340,15 @@ def _raise_for_status(r: httpx.Response) -> None:
 _REASON_FIELDS = ("message", "detail", "error", "errorMessage") + _CODE_FIELDS
 
 
+def _raise_for_edit(r: httpx.Response) -> None:
+    """_raise_for_status for the editing calls, which have one refusal more:
+    the project's voice model cannot do what was asked."""
+    if r.status_code == 400 and MODEL_REFUSED_CODE in (r.text or ""):
+        raise PersoModelRefusedError(
+            "This project's voice model does not support that (%s)" % MODEL_REFUSED_CODE)
+    _raise_for_status(r)
+
+
 def _perso_said(r: httpx.Response) -> str:
     """Perso's reason for a refusal, one short line, or "" when it gave none."""
     try:
@@ -331,23 +364,83 @@ def _perso_said(r: httpx.Response) -> str:
     return text[:160]
 
 
+# A credit watch: the balance read before a Perso call and again after it is
+# what the call cost -- unless another Perso call of this app ran meanwhile,
+# when the difference holds both (a separation read 15 for its own 5 while a
+# Wren dub spent 10 beside it, Windows C8, 2026-10-07). A watch another call
+# overlapped is not counted: an unknown cost is better than a wrong one.
+_WATCH_LOCK = threading.Lock()
+_WATCH_SEQ = [0]          # one counter for every begin and end, so order is exact
+_WATCHES_OPEN = {}        # watch id -> the sequence number it began at
+_WATCHES_CLOSED = []      # (began seq, ended seq, ended at) of the last hour
+_WATCH_KEEP_SECONDS = 3600.0
+
+
+def _tick() -> int:
+    _WATCH_SEQ[0] += 1
+    return _WATCH_SEQ[0]
+
+
+def begin_credit_watch(pc):
+    """describe_workspace() from before a Perso call, marked as a watch for
+    note_credits to close. None when the client cannot describe one."""
+    ws = getattr(pc, "describe_workspace", lambda: None)()
+    if not ws:
+        return ws
+    with _WATCH_LOCK:
+        wid = _tick()
+        _WATCHES_OPEN[wid] = wid
+        return dict(ws, _watch=wid)
+
+
+def _close_credit_watch(wid) -> bool:
+    """True when no other Perso call of this app ran while this watch was open.
+    Order comes from the sequence counter, not the clock: Windows' clock moves
+    every 15.6 ms, and two calls one after the other read as overlapping there."""
+    with _WATCH_LOCK:
+        began = _WATCHES_OPEN.pop(wid, None)
+        if began is None:
+            return True
+        now = time.monotonic()
+        alone = not _WATCHES_OPEN and not any(ended > began for _, ended, _ in _WATCHES_CLOSED)
+        _WATCHES_CLOSED.append((began, _tick(), now))
+        _WATCHES_CLOSED[:] = [w for w in _WATCHES_CLOSED if now - w[2] < _WATCH_KEEP_SECONDS]
+        return alone
+
+
+def end_credit_watch(ws) -> None:
+    """Close a watch whose call failed, so it does not count as still running
+    against every later call. Nothing when note_credits closed it already."""
+    if ws and "_watch" in ws:
+        _close_credit_watch(ws["_watch"])
+
+
 def note_credits(ws, pc, log, what: str) -> None:
     """Log what THIS call cost -- the balance before minus the balance after --
     and add it to the client's running total, which a finished job reports.
 
-    `ws` is describe_workspace() from before the call, or None. Never raises:
-    by the time this runs the work has succeeded and been billed, and a
-    surprise in the credits payload must not discard the paid result.
+    `ws` is begin_credit_watch() (or describe_workspace()) from before the
+    call, or None. A call another Perso call overlapped leaves the total
+    unknown (None) instead of wrong. Never raises: by the time this runs the
+    work has succeeded and been billed, and a surprise in the credits payload
+    must not discard the paid result.
     """
     try:
+        alone = _close_credit_watch(ws["_watch"]) if ws and "_watch" in ws else True
         if ws and ws.get("credits") is not None:
             after = (getattr(pc, "describe_workspace", lambda: None)() or {}).get("credits")
-            if after is not None:
-                used = int(ws["credits"]) - int(after)
-                # What this job used, not what is left: the log travels with a
-                # failure report, and docs/privacy.md says the balance never does.
-                log(f"   Perso credits used: {used}")
-                pc.credits_used = getattr(pc, "credits_used", 0) + max(used, 0)
+            if after is None:
+                return
+            if not alone:
+                log("   Perso credits used: not counted (another Perso job ran at the same time)")
+                pc.credits_used = None
+                return
+            used = int(ws["credits"]) - int(after)
+            # What this job used, not what is left: the log travels with a
+            # failure report, and docs/privacy.md says the balance never does.
+            log(f"   Perso credits used: {used}")
+            total = getattr(pc, "credits_used", 0)
+            pc.credits_used = None if total is None else total + max(used, 0)
     except Exception as e:
         logger.debug("No credits line after %s (%s)", what, type(e).__name__)
 
@@ -524,7 +617,8 @@ class PersoClient:
                   source_code: Optional[str], target_code: str,
                   num_speakers: Optional[int] = None,
                   space_seq: Optional[int] = None, log=None,
-                  target_tag: Optional[str] = None) -> str:
+                  target_tag: Optional[str] = None,
+                  tts_model: str = DEFAULT_TTS_MODEL) -> str:
         """Full cloud dub: upload -> translate project -> poll -> download.
 
         The whole pipeline runs on Perso's side (translation, voices, mix);
@@ -547,7 +641,7 @@ class PersoClient:
                 "sourceLanguageCode": source_code or "auto",
                 # languageTag tells Perso's regional variants apart (en-GB,
                 # es-ES, pt-PT); the plain code alone means its default region.
-                "targetLanguages": [{"languageCode": target_code, "ttsModel": "AUDIO_ENGINE_V3",
+                "targetLanguages": [{"languageCode": target_code, "ttsModel": tts_model,
                                      **({"languageTag": target_tag} if target_tag else {})}],
                 "numberOfSpeakers": int(num_speakers) if num_speakers else 1,
                 "preferredSpeedType": "GREEN",
@@ -563,7 +657,12 @@ class PersoClient:
 
         self._wait_completed(project_seq, space, what="Perso dubbing")
         log("   Downloading the finished video…")
+        return self.download_dub(project_seq, out_path, space)
 
+    def download_dub(self, project_seq: int, out_path: str,
+                     space_seq: Optional[int] = None) -> str:
+        """Save a finished project's dubbed video to out_path. Free: a download."""
+        space = int(space_seq) if space_seq is not None else self.space_seq
         # The gate the plugin checks before asking for a link: a completed
         # project whose video is not served yet must fail loudly, not save
         # an empty file.
@@ -632,6 +731,153 @@ class PersoClient:
         )
         _raise_for_status(r)
         return r.json() or {}
+
+    # ── Editing a finished dub on Perso's side ──────────────────────────────
+    # One sentence at a time, or the whole project (proofread). Request and
+    # response fields are the documented ones (developers.perso.ai, read
+    # 2026-09-29). None of the writes had been called for real when this was
+    # written -- the owner had not approved spending credits -- so every
+    # answer is read defensively: a field that is missing is None, not a crash.
+
+    def _sentence_url(self, project_seq: int, sentence_seq: int, tail: str = "") -> str:
+        return (f"{self.base_url}/video-translator/api/v1/project/{project_seq}"
+                f"/audio-sentence/{sentence_seq}{tail}")
+
+    @staticmethod
+    def _result(r: httpx.Response) -> dict:
+        """The `result` of an answer, or the answer itself when it has none."""
+        _raise_for_edit(r)
+        try:
+            body = r.json()
+        except ValueError:
+            return {}
+        if not isinstance(body, dict):
+            return {}
+        res = body.get("result", body)
+        return res if isinstance(res, dict) else {}
+
+    def edit_sentence(self, project_seq: int, sentence_seq: int, text: str) -> dict:
+        """Give one sentence new words. Perso takes them as the sentence's new
+        SOURCE (originalText) and translates them again, fitted to its time;
+        the answer's translatedText is what it keeps, and may differ from
+        `text`. The sentence has no voice until generate-audio (audioUrl is
+        empty meanwhile). Free (seen live 2026-09-29)."""
+        r = httpx.patch(self._sentence_url(project_seq, sentence_seq),
+                        json={"targetText": text}, headers=self._headers, timeout=120)
+        return self._result(r)
+
+    def match_rewrite(self, project_seq: int, sentence_seq: int, text: str) -> dict:
+        """How well `text` would fit the sentence's time: {matchingRate, rewrite}.
+        Nothing is saved -- it is the check Perso's own editor runs when a
+        field loses focus (seen in the browser, 2026-09-10)."""
+        r = httpx.post(self._sentence_url(project_seq, sentence_seq, "/match-rewrite"),
+                       json={"targetText": text}, headers=self._headers, timeout=60)
+        return self._result(r)
+
+    def regenerate_sentence_audio(self, project_seq: int, sentence_seq: int, text: str) -> dict:
+        """Speak one sentence again in Perso's voice. It speaks the words the
+        sentence has SAVED (edit_sentence); targetText is required but not
+        spoken (seen live 2026-09-29). Answers when the voice exists, with
+        its generateAudioFilePath (relative, under MEDIA_HOST). Counted as
+        spending credits, though none were taken on 2026-09-29.
+        A NIGHTINGALE project refuses: PersoModelRefusedError."""
+        r = httpx.patch(self._sentence_url(project_seq, sentence_seq, "/generate-audio"),
+                        json={"targetText": text}, headers=self._headers, timeout=300)
+        return self._result(r)
+
+    def reset_sentence(self, project_seq: int, sentence_seq: int) -> dict:
+        """Put one sentence back to what the last proofread left."""
+        r = httpx.put(self._sentence_url(project_seq, sentence_seq, "/reset"),
+                      headers=self._headers, timeout=120)
+        return self._result(r)
+
+    def project_detail(self, project_seq: int, space_seq: Optional[int] = None) -> dict:
+        """The project's own record: ttsModel, isEditable, progress (seen live
+        2026-09-29; it arrives with no `result` around it)."""
+        space = int(space_seq) if space_seq is not None else self.space_seq
+        r = httpx.get(
+            f"{self.base_url}/video-translator/api/v1/projects/{project_seq}/spaces/{space}",
+            headers=self._headers, timeout=60,
+        )
+        return self._result(r)
+
+    def retranslation_status(self, project_seq: int, space_seq: Optional[int] = None) -> bool:
+        """Whether Perso would take a proofread of this project right now.
+        False on a project nothing was changed in (seen live 2026-09-29)."""
+        space = int(space_seq) if space_seq is not None else self.space_seq
+        r = httpx.get(
+            f"{self.base_url}/video-translator/api/v1/projects/{project_seq}/spaces/{space}"
+            "/retranslation/status",
+            headers=self._headers, timeout=60,
+        )
+        return bool(self._result(r).get("retranslateAvailable"))
+
+    def proofread_price(self, project_seq: int, duration_ms: int, width: int, height: int,
+                        space_seq: Optional[int] = None,
+                        tts_model: Optional[str] = None) -> dict:
+        """What a proofread of this project would cost, asked of Perso's
+        estimate: {"credits": number or None, "export_count": int or None}.
+        Free, a read. The address and fields are the documented ones
+        (developers.perso.ai, read 2026-09-30) and were never seen live, so a
+        field that is missing or not a number is None, not a guess: the
+        discounted price is what Perso takes, the list price stands in for it.
+        export_count is 1 on a NIGHTINGALE project never proofread."""
+        space = int(space_seq) if space_seq is not None else self.space_seq
+        params = {"mediaType": "video", "durationMs": int(duration_ms),
+                  "width": int(width), "height": int(height),
+                  "projectSeq": int(project_seq)}
+        if tts_model:
+            # The rate per second depends on the voice model (NIGHTINGALE: 6).
+            params["ttsModelCounts"] = "%s:1" % tts_model
+        r = httpx.get(
+            f"{self.base_url}/video-translator/api/v1/projects/spaces/{space}/media/quota",
+            params=params, headers=self._headers, timeout=30,
+        )
+        res = self._result(r)
+
+        def number(value):
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+            return value if ok else None
+
+        credits = number(res.get("promotionExpectedUsedQuota"))
+        if credits is None:
+            credits = number(res.get("expectedUsedQuota"))
+        count = res.get("exportCount")
+        return {"credits": credits,
+                "export_count": count if isinstance(count, int) and not isinstance(count, bool) else None}
+
+    def proofread(self, project_seq: int, space_seq: Optional[int] = None,
+                  speed: str = "GREEN", lip_sync: Optional[bool] = None,
+                  on_asked=None) -> None:
+        """Have Perso go over the whole project again, and wait until it has.
+        SPENDS CREDITS (what the first dub cost; a NIGHTINGALE project's first
+        one is free). RED on a NIGHTINGALE project: PersoModelRefusedError.
+
+        on_asked() is called the moment Perso has taken the request, before
+        the wait: from there on the credits are spent, whatever happens to
+        this process, and the caller may want that written down."""
+        space = int(space_seq) if space_seq is not None else self.space_seq
+        body = {"preferredSpeedType": speed}
+        if lip_sync is not None:
+            body["isLipSync"] = bool(lip_sync)
+        r = httpx.post(
+            f"{self.base_url}/video-translator/api/v1/project/{project_seq}/space/{space}/proofread",
+            json=body, headers=self._headers, timeout=120,
+        )
+        _raise_for_edit(r)
+        if on_asked:
+            on_asked()
+        logger.info("Perso proofread of project %s (workspace %s)", project_seq, space)
+        # The project said "Completed" before this was asked, and may go on
+        # saying so for a moment: that one must not be taken for the new run.
+        self._wait_completed(project_seq, space, what="All at once",
+                             settle_s=PROOFREAD_SETTLE_S)
+
+    def wait_for_project(self, project_seq: int, space_seq: Optional[int] = None,
+                         what: str = "Perso") -> None:
+        """Wait until a project Perso is already working on has finished."""
+        space = int(space_seq) if space_seq is not None else self.space_seq
+        self._wait_completed(project_seq, space, what=what)
 
     def download_media(self, url: str, out_path: str) -> str:
         """Fetch one storage file (a sentence's audio, a subtitle) to disk.
@@ -711,8 +957,13 @@ class PersoClient:
         return self._fetch_script_timestamps(project_seq, space)
 
     def _wait_completed(self, project_seq: int, space: int, timeout_s: int = 3600,
-                        what: str = "Perso STT") -> None:
-        deadline = time.time() + timeout_s
+                        what: str = "Perso STT", settle_s: float = 0) -> None:
+        """settle_s is for work asked of a project that had ALREADY finished:
+        for that long a "Completed" is the old run's unless the project has
+        been seen doing something else since."""
+        began = time.time()
+        deadline = began + timeout_s
+        moved = False
         said = None
         while time.time() < deadline:
             if self.cancel_check and self.cancel_check():
@@ -737,7 +988,9 @@ class PersoClient:
             if failed:
                 logger.warning("%s project %s failed: %s %s", what, project_seq, why, code)
                 raise PersoProjectFailedError(what, why, code)
-            if reason == "Completed":
+            if reason != "Completed":
+                moved = True
+            elif moved or time.time() - began >= settle_s:
                 return
             time.sleep(self.poll_interval)
         raise TimeoutError(f"{what} timed out after {timeout_s}s (last said: {said or 'nothing'})")

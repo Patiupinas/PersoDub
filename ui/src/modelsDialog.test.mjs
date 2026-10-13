@@ -89,6 +89,9 @@ const PACK_409 = { missing: [
 /** Let the module's own awaits run out (its fetches resolve immediately). */
 const settle = () => new Promise((r) => setImmediate(r));
 
+/** The Settings catalog's model rows, without the group headings between them. */
+const listRows = (h) => h.$("modelsList").children.filter((c) => c.className.includes("model-row"));
+
 const DETAIL_TWO = {
   missing: [{ id: "whisper", name: "Whisper", bytes: 1.5e9 },
             { id: "qwen3-tts", name: "Qwen3 TTS", bytes: 2.5e9 }],
@@ -128,8 +131,8 @@ test("showModelsDialog paints the 409's title and line and opens the overlay", a
 
   h.api.showModelsDialog(DETAIL_TWO);
 
-  assert.equal(h.$("mnTitle").textContent, "Download 4.0 GB to start dubbing?");
-  assert.equal(h.$("mnLine").textContent, "One-time download for making voices on this computer.");
+  assert.equal(h.$("mnTitle").textContent, "Download 4.0 GB?");
+  assert.equal(h.$("mnLine").textContent, "One-time download for making voices.");
   assert.equal(h.$("mnError").textContent, "");
   assert.equal(h.$("mnProgress").hidden, true);
   assert.equal(h.$("mnDownload").hidden, false);
@@ -202,7 +205,7 @@ test("the dub restarts exactly once when every pending model is ready", async (t
 test("a stalled model says so in the dialog without cancelling the dub", async (t) => {
   const h = harness({ rows: [downloading("whisper", "Whisper", 1.5e9, 50),
                              { id: "qwen3-tts", name: "Qwen3 TTS", bytes: 2.5e9,
-                               state: "paused", error: "no space" }] });
+                               state: "paused", error: "Not enough space on this computer." }] });
   t.after(h.state.restore);
   h.api.showModelsDialog(DETAIL_TWO);
 
@@ -210,7 +213,7 @@ test("a stalled model says so in the dialog without cancelling the dub", async (
   await settle();
 
   assert.equal(h.$("mnError").textContent,
-    "Qwen3 TTS stopped (no space). Resume it from the line under its dropdown.");
+    "Qwen3 TTS stopped: Not enough space on this computer. Resume it from the line under its dropdown.");
   assert.equal(h.state.started, 0);
 });
 
@@ -274,7 +277,6 @@ test("Use Perso API closes the dialog and hands the switch to the page", (t) => 
   t.after(h.state.restore);
   h.api.showModelsDialog({ missing: [{ id: "engine", kind: "pack", name: "Python + PyTorch", bytes: 2e9 }] });
   assert.equal(h.$("mnSettings").hidden, false);
-  assert.equal(h.$("mnAlt").hidden, false);
   h.$("mnSettings").click();
   assert.equal(h.state.usePerso, 1);
   assert.equal(h.$("modelsNeededOverlay").classList.contains("open"), false);
@@ -291,7 +293,7 @@ test("the Settings catalog lists a row per model with the right button", async (
 
   await h.api.refreshModels();
 
-  const rows = h.$("modelsList").children;
+  const rows = listRows(h);
   assert.equal(rows.length, 4);
   const cells = (i) => rows[i].children.map((c) => c.textContent);
   assert.deepEqual(cells(0), ["Whisper", "1.5 GB", "Ready", "Remove"]);
@@ -300,11 +302,12 @@ test("the Settings catalog lists a row per model with the right button", async (
   // Nothing downloaded yet reads as its size alone, with no status beside it.
   assert.deepEqual(cells(3), ["Gemma", "3.0 GB", "", "Download"]);
   assert.equal(h.$("modelsSummary").textContent,
-    "4 models · 1.5 GB on this computer · attention needed");
-  assert.equal(h.$("modelsFold").open, true);
+    "4 models · 1.5 GB on this computer · downloading");
+  // The mark Settings reads to open on the Models tab.
+  assert.equal(h.$("modelsFold").dataset.attention, "1");
 });
 
-test("a quiet catalog counts what is on disk and stays folded", async (t) => {
+test("a quiet catalog counts what is on disk and asks for no attention", async (t) => {
   const h = harness({ rows: [ready("whisper", "Whisper", 1.5e9),
                              { id: "gemma", name: "Gemma", bytes: 3e9, state: "not_downloaded" }] });
   t.after(h.state.restore);
@@ -312,7 +315,7 @@ test("a quiet catalog counts what is on disk and stays folded", async (t) => {
   await h.api.refreshModels();
 
   assert.equal(h.$("modelsSummary").textContent, "2 models · 1.5 GB on this computer");
-  assert.equal(h.$("modelsFold").open, false);
+  assert.equal(h.$("modelsFold").dataset.attention, "");
 });
 
 test("a catalog row's button calls the endpoint it is labelled with", async (t) => {
@@ -321,10 +324,28 @@ test("a catalog row's button calls the endpoint it is labelled with", async (t) 
   await h.api.refreshModels();
   h.state.calls.length = 0;
 
-  h.$("modelsList").children[0].children[3].onclick();   // Remove
+  const btn = () => listRows(h)[0].children[3];
+  btn().onclick();   // Remove: the first press only asks
+  await settle();
+  assert.equal(btn().textContent, "Remove 1.0 GB?");
+  assert.equal(h.state.calls.length, 0, "nothing removed on one press");
+  btn().onclick();   // the second press removes
   await settle();
 
   assert.equal(h.state.calls[0], "DELETE /api/models/whisper");
+});
+
+
+test("the Remove question carries the size, and a paused download is said as paused", async (t) => {
+  const h = harness({ rows: [ready("whisper", "Whisper", 1e9),
+                             { id: "hunyuan", name: "Hunyuan", bytes: 1.1e9, state: "paused" }] });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  assert.equal(h.$("modelsSummary").textContent, "2 models · 1.0 GB on this computer · a download is paused");
+  const btn = () => listRows(h)[0].children[3];
+  btn().onclick();
+  await settle();
+  assert.equal(btn().textContent, "Remove 1.0 GB?");
 });
 
 test("a refused Remove shows the engine's own sentence", async (t) => {
@@ -350,7 +371,7 @@ test("Remove with the engine gone says to check the engine", async (t) => {
 
   await h.api.removeModel("whisper");
 
-  assert.equal(h.$("modelsError").textContent, "Could not remove it. Is the engine running?");
+  assert.equal(h.$("modelsError").textContent, "Could not remove it. Is PersoDub running?");
 });
 
 test("downloadModel and cancelModel hit their endpoints and start the poll", async (t) => {
@@ -382,7 +403,7 @@ test("Download and Start installs the packs through the desktop app first, then 
   t.after(h.state.restore);
   await h.api.refreshModels();
   h.api.showModelsDialog(PACK_409);
-  assert.equal(h.$("mnTitle").textContent, "Download 4.9 GB to start dubbing?");   // 4.9e9 bytes
+  assert.equal(h.$("mnTitle").textContent, "Download 4.9 GB?");   // 4.9e9 bytes
   h.$("mnDownload").click();
   await settle(); await settle(); await settle();
   assert.deepEqual(shell.asked, ["install engine"]);
@@ -423,12 +444,12 @@ test("a retry notice is shown on its own, so the Settings row does not cut it of
   shell.progress({ pack: "engine", stepId: "models", title: "Downloading sound-separation model (~80 MB)", state: "progress", pct: 63, detail: "Connection problem, retrying (2/3)" });
   // The Settings row keeps 34 characters: the step title in front of the
   // notice hid the word "retrying" behind an ellipsis (W22, 2026-09-22).
-  const row = h.$("modelsList").children[0];
+  const row = listRows(h)[0];
   assert.equal(row.children[2].textContent, "Connection problem, retrying (2/3)");
   assert.equal(row.children[3].textContent, "Cancel");
   // The next ordinary progress line puts the title back.
   shell.progress({ pack: "engine", stepId: "models", title: "Downloading sound-separation model (~80 MB)", state: "progress", pct: 70, detail: "12 MB / 80 MB" });
-  assert.equal(h.$("modelsList").children[0].children[2].textContent, "Downloading Python + PyTorch… 70% · Downloading sound-separation model (~80 MB): 12 MB / 80 MB");
+  assert.equal(listRows(h)[0].children[2].textContent, "Downloading Python + PyTorch… 70% · Downloading sound-separation model (~80 MB): 12 MB / 80 MB");
   finish({ ok: true });
   await p; await settle();
 });
@@ -453,7 +474,7 @@ test("without the desktop app a pack cannot be installed from the page, and the 
   h.api.showModelsDialog(PACK_409);
   h.$("mnDownload").click();
   await settle(); await settle();
-  assert.equal(h.$("mnError").textContent, "Python + PyTorch: Installed by the desktop app.");
+  assert.equal(h.$("mnError").textContent, "Python + PyTorch: Installed by PersoDub.");
   assert.ok(!h.state.calls.some((c) => c.startsWith("POST")));
 });
 
@@ -462,7 +483,7 @@ test("the Settings catalog's pack rows ask the desktop app to install or remove,
   const h = harness({ rows: [ENGINE, { ...ENGINE, id: "ollama-runtime", name: "Ollama", state: "ready" }], shell });
   t.after(h.state.restore);
   await h.api.refreshModels();
-  const [engineRow, runtimeRow] = h.$("modelsList").children;
+  const [engineRow, runtimeRow] = listRows(h);
   const btn = (row) => row.children[3];
   assert.equal(btn(engineRow).textContent, "Download");
   btn(engineRow).onclick();
@@ -471,24 +492,28 @@ test("the Settings catalog's pack rows ask the desktop app to install or remove,
   // Remove asks the engine first (it knows whether a dub is running); its
   // "packs are the desktop app's" refusal is the all-clear.
   h.state.responses = { "/api/models/ollama-runtime": { ok: false, json: async () => ({ detail: "Packs are installed by the desktop app" }) } };
-  btn(runtimeRow).onclick();
+  btn(runtimeRow).onclick();   // asks first
+  await settle();
+  btn(runtimeRow).onclick();   // then removes
   await settle(); await settle(); await settle();
   assert.deepEqual(shell.asked, ["install engine", "remove ollama-runtime"]);
   assert.ok(h.state.calls.includes("DELETE /api/models/ollama-runtime"));
 
   // A dub in progress: the engine's sentence is shown and the desktop app is not asked.
-  h.state.responses = { "/api/models/ollama-runtime": { ok: false, json: async () => ({ detail: "A dub is running right now. Wait for it to finish, then remove the model." }) } };
+  h.state.responses = { "/api/models/ollama-runtime": { ok: false, json: async () => ({ detail: "Dubbing is running right now. Wait for it to finish, then remove the model." }) } };
+  btn(runtimeRow).onclick();
+  await settle();
   btn(runtimeRow).onclick();
   await settle(); await settle(); await settle();
   assert.deepEqual(shell.asked, ["install engine", "remove ollama-runtime"], "not asked again");
-  assert.match(h.$("modelsError").textContent, /A dub is running/);
+  assert.match(h.$("modelsError").textContent, /Dubbing is running/);
 
   const bare = harness({ rows: [ENGINE] });
   t.after(bare.state.restore);
   await bare.api.refreshModels();
-  const row = bare.$("modelsList").children[0];
+  const row = listRows(bare)[0];
   assert.equal(btn(row).disabled, true);
-  assert.equal(row.children[2].textContent, "Installed by the desktop app");
+  assert.equal(row.children[2].textContent, "Installed by PersoDub");
 });
 
 test("an Ollama pull that failed before it began is told in the dialog, not polled at 0% forever", async (t) => {
@@ -499,9 +524,9 @@ test("an Ollama pull that failed before it began is told in the dialog, not poll
   h.$("mnDownload").click();
   await settle();
   // The runtime refused the connection: no pieces on disk, so not "paused" -- just failed.
-  h.state.rows = [{ id: "hunyuan", role: "translate", name: "Hunyuan", bytes: 1.1e9, state: "not_downloaded", error: "connection refused" }];
+  h.state.rows = [{ id: "hunyuan", role: "translate", name: "Hunyuan", bytes: 1.1e9, state: "not_downloaded", error: "Connection lost." }];
   await h.api.refreshModels();
-  assert.match(h.$("mnError").textContent, /Hunyuan stopped \(connection refused\)/);
+  assert.match(h.$("mnError").textContent, /Hunyuan stopped: Connection lost\./);
 });
 
 test("a download the engine refuses shows its sentence instead of starting nothing", async (t) => {
@@ -513,13 +538,57 @@ test("a download the engine refuses shows its sentence instead of starting nothi
   assert.equal(h.$("modelsError").textContent, "Hunyuan: Install Ollama first, then download this model.");
 });
 
-test("a catalog row says what the thing is for, under its name", async (t) => {
-  const h = harness({ rows: [{ ...ENGINE, hint: "Runs local dubbing on this computer." }] });
+test("a ready row says what it is for after its status, and a row on its way says only its status", async (t) => {
+  const h = harness({ rows: [
+    { id: "gemma", role: "translate", name: "Gemma 3", bytes: 8.1e9, state: "ready", hint: "More careful" },
+    { id: "hunyuan", role: "translate", name: "Hunyuan", bytes: 1.1e9, state: "downloading", progress: 10, hint: "Small and quick" },
+  ] });
   t.after(h.state.restore);
   await h.api.refreshModels();
-  const name = h.$("modelsList").children[0].children[0];
-  assert.equal(name.children[0].className, "model-hint");
-  assert.equal(name.children[0].textContent, "Runs local dubbing on this computer.");
+  const [gemma, hunyuan] = listRows(h);
+  assert.deepEqual(gemma.children[0].children, [], "nothing under the name");
+  const note = gemma.children[2].children[0];
+  assert.equal(note.className, "model-note");
+  assert.equal(note.textContent, "More careful");
+  assert.equal(hunyuan.children[2].textContent, "Downloading Hunyuan… 10%");
+  assert.deepEqual(hunyuan.children[2].children, [], "no note beside a download's line");
+});
+
+test("the rows sit under a heading for each purpose, each with what its ready rows take", async (t) => {
+  const h = harness({ rows: [
+    { ...ENGINE, state: "ready" },
+    { id: "whisper", role: "stt", name: "Whisper", bytes: 3.1e9, state: "ready" },
+    { id: "gemma", role: "translate", name: "Gemma 3", bytes: 8.1e9, state: "not_downloaded" },
+    { id: "hunyuan", role: "translate", name: "Hunyuan", bytes: 1.1e9, state: "ready" },
+  ] });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  // Headings and rows are siblings in the one list, each heading before its rows.
+  assert.deepEqual(h.$("modelsList").children.map((c) => [c.className, c.children[0].textContent, c.children[1].textContent]), [
+    ["model-group-head", "Speech-to-text", "3.1 GB"],
+    ["settings-row model-row", "Whisper", "3.1 GB"],
+    ["model-group-head", "Translation", "1.1 GB"],
+    ["settings-row model-row", "Gemma 3", "8.1 GB"],
+    ["settings-row model-row", "Hunyuan", "1.1 GB"],
+    ["model-group-head", "Base programs", "2.0 GB"],
+    ["settings-row model-row", "Python + PyTorch", "2.0 GB"],
+  ]);
+});
+
+test("a busy model's status takes its own line, so the percent is never cut; Ready stays beside the name", async (t) => {
+  const h = harness({ rows: [
+    { id: "whisper", role: "stt", name: "Whisper", bytes: 2.9e9, state: "ready" },
+    { id: "qwen3-tts", role: "tts", name: "Qwen3-TTS", bytes: 4.3e9, state: "downloading", progress: 43 },
+    { id: "gemma", role: "translate", name: "Gemma 3", bytes: 7.6e9, state: "paused", error: "The connection dropped." },
+  ] });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  // In group order: Gemma (Translation) comes before Qwen3-TTS (Text-to-speech).
+  const status = listRows(h).map((row) => row.children[2]);
+  assert.equal(status[0].className, "settings-hint model-ok");
+  assert.equal(status[1].className, "settings-hint model-busy model-status-long");
+  assert.equal(status[2].textContent, "Downloading Qwen3-TTS\u2026 43%");
+  assert.equal(status[2].className, "settings-hint model-busy model-status-long");
 });
 
 test("a pack being installed reads as downloading in the rows the page paints, and a failed one as paused with the reason", async (t) => {
@@ -543,7 +612,7 @@ test("a pack being installed reads as downloading in the rows the page paints, a
   assert.equal(painted.state, "paused");
   assert.equal(painted.error, "Health check timed out");
   // Settings says the same, with Resume.
-  const row = h.$("modelsList").children[0];
+  const row = listRows(h)[0];
   assert.equal(row.children[2].textContent, "Stopped: Health check timed out");
   assert.equal(row.children[3].textContent, "Resume");
 });
@@ -611,11 +680,10 @@ test("the dub dialog names no files, only the size, what it is for and the way r
     { id: "engine", kind: "pack", name: "Python + PyTorch", bytes: 2e9 },
     { id: "whisper", kind: "model", name: "Whisper", bytes: 2.9e9 },
   ] });
-  assert.equal(h.$("mnTitle").textContent, "Download 4.9 GB to start dubbing?");
-  assert.equal(h.$("mnAlt").hidden, false);
+  assert.equal(h.$("mnTitle").textContent, "Download 4.9 GB?");
+  assert.equal(h.$("mnSettings").hidden, false);
   // A translator's model has nothing to do with Perso dubbing: no way round offered.
   h.api.showModelsDialog({ missing: [{ id: "hunyuan", name: "Hunyuan", bytes: 1.1e9 }] });
-  assert.equal(h.$("mnAlt").hidden, true);
   assert.equal(h.$("mnSettings").hidden, true);
 });
 
@@ -651,7 +719,7 @@ test("a second pack pressed while one installs waits: the first keeps its place,
   assert.equal(h.$("modelsError").textContent, "Python + PyTorch is still installing. Wait for it to finish.");
   const painted = h.state.painted.at(-1).find((r) => r.id === "engine");
   assert.equal(painted.state, "downloading", "the first keeps its busy state");
-  const runtimeBtn = h.$("modelsList").children[1].children[3];
+  const runtimeBtn = listRows(h)[1].children[3];
   assert.equal(runtimeBtn.disabled, true);
   finish({ ok: true });
   await first; await settle();

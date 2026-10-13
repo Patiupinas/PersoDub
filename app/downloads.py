@@ -12,6 +12,8 @@ import threading
 import uuid
 from typing import Callable, Dict, Optional
 
+from app.i18n import t
+
 _PERCENT = re.compile(r"(\d+)%")
 
 # What Finder and Explorer refuse in a name, plus the colon macOS shows as
@@ -106,9 +108,27 @@ class DownloadStore:
             self._items[did] = d
         return d
 
+    def hold_again(self, did: str, path: str, title: str, duration_sec: float) -> Download:
+        """A file this store held before the app restarted -- the records live in
+        memory only, the files stay on disk -- held again under the same id."""
+        d = Download(did, "", os.path.dirname(path))
+        d.title = title or "video"
+        d.duration_sec = duration_sec or 0
+        d.path = path
+        d.percent = 100
+        d.status = "ready"
+        with self._lock:
+            self._items[did] = d
+        return d
+
     def start(self, url: str, root: str, probe: Callable, fetch: Callable,
-              error_type=Exception) -> Download:
-        """Probe, then fetch, on a thread; the record fills in as it goes."""
+              error_type=Exception, measure: Optional[Callable] = None) -> Download:
+        """Probe, then fetch, on a thread; the record fills in as it goes.
+
+        measure(path) -> seconds reads the length off the fetched file when the
+        site's page did not say it (Instagram reels: yt-dlp's info carries no
+        duration, 2026-10-08). Without it the screen opened the project at
+        00:00 with an empty timeline."""
         did = uuid.uuid4().hex[:8]
         folder = os.path.join(root, "downloads", did)
         os.makedirs(folder, exist_ok=True)
@@ -131,16 +151,19 @@ class DownloadStore:
                 d.status = "downloading"
                 dest = os.path.join(folder, "source.mp4")
                 fetch(url, dest, log=on_log)
+                if not d.duration_sec and measure:
+                    d.duration_sec = measure(dest) or 0
                 d.path = dest
                 d.percent = 100
                 d.status = "ready"
             except error_type as e:
                 d.reason = getattr(e, "reason", "unknown")
-                d.error = getattr(e, "message", None) or str(e) or "Couldn't fetch the video."
+                # `shown`: FetchError's message in the user's language.
+                d.error = getattr(e, "shown", None) or str(e) or t("Could not fetch the video.")
                 d.status = "failed"
             except Exception:  # noqa: BLE001 -- the record must never hang
                 d.reason = "unknown"
-                d.error = "Couldn't fetch the video."
+                d.error = t("Could not fetch the video.")
                 d.status = "failed"
 
         threading.Thread(target=run, daemon=True).start()

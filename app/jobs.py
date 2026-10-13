@@ -14,6 +14,7 @@ import threading
 import traceback
 import uuid
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Callable, Dict, List, Optional
 
 from app.config import PERSODUB_LOG_DIR
@@ -52,19 +53,50 @@ SAVED_FIELDS = ("id", "status", "kind", "language", "language_code", "source_lan
                 # the screens show, and is the user's to change (2026-09-10).
                 "project", "title", "day", "from_link", "created", "work_dir", "trim",
                 "trim_pending", "error", "remade_as", "area", "check",
+                # The error in the user's language, as the screens show it
+                # ("error" stays English: the desktop app sorts failures by
+                # its words, and the failure reports send it). Kept, so a
+                # restart still shows it; the language of the moment it failed.
+                "error_shown",
                 "stt_engine", "translator", "tts", "quality", "separation",
-                "dub_mode", "perso_project_seq",
+                "dub_mode", "perso_project_seq", "perso_space_seq",
+                # The Perso voice model a cloud dubbing was started with.
+                "perso_model",
                 # What a finished dub cost in Perso credits and how long the
                 # video was -- lifted off the result for the usage count the
-                # shell sends the moment a job is done (desktop/main.js).
+                # shell sends the moment a job is done (desktop/src/usageIpc.js).
                 "perso_credits", "duration",
+                # What separated the voice from the background: "RoFormer",
+                # "Demucs" or "Perso". "separation" above is the choice made
+                # (local or perso); this is what ran.
+                "separation_model",
                 # A redub: Resume must stay voices-only, never replay the
                 # original's (possibly paid) transcription.
                 "voices_only",
                 # What the boot re-arm needs to rebuild a queued job's work:
                 # the speaker count, and (for a link job still waiting to
                 # download) the link itself.
-                "num_speakers", "source_url")
+                "num_speakers", "source_url",
+                # The held video a dub was cut from and the parts it kept:
+                # Add language opens a new draft on them (dub_job_again).
+                "download_id", "ranges", "ranges_pending",
+                # A dubbing made with Add language: the id of its project's
+                # first dubbing, so one video's languages are one project.
+                # None on that first one, and on every job saved before it.
+                "project_id",
+                # The id a reopened separation's own video is held under
+                # (app/api/separate.py separate_open). The held record lives in
+                # memory only but its file stays on disk, so after a restart a
+                # reopen holds that same file again instead of copying the
+                # whole video into a new folder each time, and a dubbing that
+                # names the id still finds the two sounds
+                # (app/separate_launch.py stems_for).
+                "held_again")
+
+# A key a record carries only at run time, left out on purpose. `started`
+# (app/separate_launch.py) is when a separation began, for the time the screen
+# counts while it runs -- and nothing is running after a restart (restore turns
+# it into an error).
 
 # What GET /api/dub/jobs sends the screen: the same minus the two absolute
 # paths. The sidebar names a job, colours its dot and addresses everything else
@@ -73,21 +105,66 @@ SAVED_FIELDS = ("id", "status", "kind", "language", "language_code", "source_lan
 LIST_FIELDS = tuple(f for f in SAVED_FIELDS if f not in ("work_dir", "source_url"))
 
 
+class JobStatus(StrEnum):
+    """Where a job stands, in the words job.json, every HTTP answer and the
+    screen use. A StrEnum, so a member IS that word: it equals the plain string
+    a job.json is read back as, and json, f-strings and %s write it bare. Only
+    repr() names the class -- keep it out of anything shown or saved.
+
+    A job the app was closed under comes back as ERROR with the error
+    "interrupted" (restore below); that word is not a status of its own.
+    """
+    QUEUED = "queued"
+    RUNNING = "running"
+    CANCELLING = "cancelling"
+    CANCELLED = "cancelled"
+    DONE = "done"
+    ERROR = "error"
+
+
+class JobKind(StrEnum):
+    """What work a job is, as the `kind` field spells it. Read it through
+    kind_of: a record that has no kind is a dub."""
+    DUB = "dub"
+    ERASE = "erase"
+    SEPARATE = "separate"
+
+
 def kind_of(job: dict) -> str:
-    """What kind of work this job is: "dub" or "erase".
+    """What kind of work this job is: "dub", "erase" or "separate" (the voice
+    and the background of a video, apart -- app/separate_launch.py).
 
     The one place the default lives. Nothing writes "dub" onto a record -- a
     dub is what every job in this app was until subtitle erasing arrived, so a
     record that says nothing is one, whether it came from a file written last
     year or from a job started a second ago.
     """
-    return job.get("kind") or "dub"
+    return job.get("kind") or JobKind.DUB
 
 
 class JobCancelled(Exception):
     """Raised by a job's target function (see app/pipeline.py's cancel_check
     checkpoints) to signal cooperative cancellation -- caught by JobStore's
     thread wrapper and turned into a "cancelled" status instead of "error"."""
+
+
+def raise_if_cancelled(cancel_check: Optional[Callable[[], bool]], log: Callable[[str], None]) -> None:
+    """Cooperative cancellation checkpoint: when cancel_check says Cancel was
+    pressed, write "Cancelled by user request" to the job log and raise
+    JobCancelled.
+
+    cancel_check is polled instead of killing the worker thread/subprocess
+    mid-stage -- the safest form of interruption here (see
+    JobStore.request_cancel). Work already in flight (e.g. the Qwen3-TTS
+    sidecar call) always finishes; cancellation takes effect at the next
+    checkpoint: between pipeline stages (app/pipeline.py), between voice
+    lines and between pace-fit rounds (app/qwen_pipeline.py). The log line is
+    written at every one of them: without it a cancel in the voices left no
+    trace in the log.
+    """
+    if cancel_check is not None and cancel_check():
+        log("Cancelled by user request")
+        raise JobCancelled("cancelled by user")
 
 
 # The exception types whose message was WRITTEN for the user, and so can go
@@ -122,6 +199,27 @@ def error_text_for_ui(exc: BaseException) -> str:
     return "Unexpected error (%s) - see the job log" % type(exc).__name__
 
 
+def shown_error(message: str, shown: str) -> RuntimeError:
+    """A failure the engine words itself, in two languages: the message is
+    the English sentence (the job's error, its log, the failure reports and
+    the desktop app's sorting of failures all read that one), and `shown` is
+    the same sentence in the user's language, the job's error_shown. Built
+    from app/i18n.py's both(): raise shown_error(*both("No dialogue ...")).
+
+    A plain RuntimeError with one attribute more, so every handler and every
+    test that knew the RuntimeError a site raised before still knows it."""
+    e = RuntimeError(message)
+    e.shown = shown
+    return e
+
+
+def shown_text_for_ui(exc: BaseException) -> str:
+    """error_text_for_ui in the user's language: the twin the exception
+    carries (shown_error, or app/source_fetch.py's FetchError), else the
+    same English."""
+    return getattr(exc, "shown", None) or error_text_for_ui(exc)
+
+
 class JobStore:
     def __init__(self, log_dir: Optional[str] = None):
         self._jobs: Dict[str, dict] = {}
@@ -146,7 +244,7 @@ class JobStore:
         even on a job that came back from a file."""
         return {
             "id": jid,
-            "status": "running",
+            "status": JobStatus.RUNNING,
             "result": None,
             "error": None,
             "logs": [],
@@ -304,18 +402,39 @@ class JobStore:
                                os.path.basename(os.path.dirname(os.path.dirname(path))),
                                type(e).__name__)
                 continue
-            if rec.get("status") in ("running", "cancelling"):
+            if rec.get("status") in (JobStatus.RUNNING, JobStatus.CANCELLING):
                 # The thread died with the process; nothing will ever finish it.
                 # The token stays machine-readable; the screen turns it into a
                 # sentence.
-                rec["status"] = "error"
+                rec["status"] = JobStatus.ERROR
                 rec["error"] = "interrupted"
             loaded.add(os.path.dirname(path))
+            self._restore_clipped(rec, os.path.dirname(path))
             job = self._blank(jid)
             job.update(rec)
             with self._lock:
                 self._jobs.setdefault(jid, job)
         self._restore_old_folders(root, loaded)
+
+    @staticmethod
+    def _restore_clipped(rec: dict, work_dir: str) -> None:
+        """Put the lines the assembly step cut short back on a finished job.
+
+        job.json does not hold them; clipped_lines.json beside it does, and the
+        script table reads them from result.clipped. Without this a restart
+        turns every cut-off line back into one that "fits".
+        """
+        result = rec.get("result")
+        if not result or "clipped" in result:
+            return
+        try:
+            with open(os.path.join(work_dir, "clipped_lines.json"), encoding="utf-8") as f:
+                info = json.load(f)
+            clipped = list(info["clipped"])
+        except Exception:
+            return
+        result["clipped"] = clipped
+        result["clipped_count"] = len(clipped)
 
     def _restore_old_folders(self, root: str, loaded) -> None:
         """Rebuild a record for a finished folder that has no readable job.json.
@@ -343,7 +462,7 @@ class JobStore:
                 jid = hashlib.md5(work.encode("utf-8")).hexdigest()[:8]
                 job = self._blank(jid)
                 job.update(
-                    status="done",
+                    status=JobStatus.DONE,
                     project="_".join(parts[:-1]) or os.path.basename(work),
                     language_code=parts[-1] if len(parts) > 1 else None,
                     day=os.path.basename(os.path.dirname(work)),
@@ -388,21 +507,21 @@ class JobStore:
             j = self._jobs.get(jid)
             if j is None:
                 return None
-            if j["status"] == "queued":
+            if j["status"] == JobStatus.QUEUED:
                 # No thread to wind down: it stops the moment it is told to,
                 # and _dispatch_next skips it when its turn would have come.
-                j["status"] = "cancelled"
+                j["status"] = JobStatus.CANCELLED
                 self._pending = [(i, t) for i, t in self._pending if i != jid]
                 work_dir = j.get("work_dir")
-            elif j["status"] != "running":
+            elif j["status"] != JobStatus.RUNNING:
                 return j["status"]
             else:
                 j["cancel_requested"] = True
-                j["status"] = "cancelling"
-                return "cancelling"
+                j["status"] = JobStatus.CANCELLING
+                return JobStatus.CANCELLING
         if work_dir:
             self.persist(jid, work_dir)
-        return "cancelled"
+        return JobStatus.CANCELLED
 
     def run_async(self, target: Callable[[Callable[[str], None]], Any]) -> str:
         """Create a job, run target(log) on a background thread, return the job id.
@@ -430,19 +549,19 @@ class JobStore:
         idled both machines.
         """
         if parallel:
-            self.update(jid, status="running")
+            self.update(jid, status=JobStatus.RUNNING)
             self._launch(jid, target, holds_air=False)
             return
         with self._lock:
             if self._active is not None:
-                self._jobs[jid]["status"] = "queued"
+                self._jobs[jid]["status"] = JobStatus.QUEUED
                 self._pending.append((jid, target))
                 work_dir = self._jobs[jid].get("work_dir")
                 queued = True
             else:
                 self._active = jid
                 # Fresh jobs are born "running"; a re-armed queued one is not.
-                self._jobs[jid]["status"] = "running"
+                self._jobs[jid]["status"] = JobStatus.RUNNING
                 queued = False
         if queued:
             # The file beside the video has to say "queued" too, or a restart
@@ -462,9 +581,9 @@ class JobStore:
                     return
                 jid, target = self._pending.pop(0)
                 j = self._jobs.get(jid)
-                if j is None or j.get("status") != "queued":
+                if j is None or j.get("status") != JobStatus.QUEUED:
                     continue      # cancelled or deleted while it waited
-                j["status"] = "running"
+                j["status"] = JobStatus.RUNNING
                 self._active = jid
             work_dir = (self.get(jid) or {}).get("work_dir")
             if work_dir:
@@ -494,19 +613,19 @@ class JobStore:
                 # The Perso credits spent and the video's length travel the
                 # same way, and land on the record BEFORE the status flips:
                 # the shell reads them off the job the moment it sees "done".
-                spent = {k: result[k] for k in ("perso_credits", "duration")
+                spent = {k: result[k] for k in ("perso_credits", "duration", "separation_model")
                          if isinstance(result, dict) and result.get(k) is not None}
                 with self._lock:
-                    if self._jobs[jid]["status"] == "cancelling":
-                        self._jobs[jid]["status"] = "cancelled"
+                    if self._jobs[jid]["status"] == JobStatus.CANCELLING:
+                        self._jobs[jid]["status"] = JobStatus.CANCELLED
                     else:
                         self._jobs[jid].update(spent)
-                        self._jobs[jid]["status"] = "done"
+                        self._jobs[jid]["status"] = JobStatus.DONE
                         self._jobs[jid]["result"] = result
                         if detected and not self._jobs[jid].get("source_lang"):
                             self._jobs[jid]["source_lang"] = detected
             except JobCancelled:
-                self.update(jid, status="cancelled")
+                self.update(jid, status=JobStatus.CANCELLED)
             except Exception as e:
                 # The class name stays in the log for debugging; the stored
                 # error is what the UI shows the user under the red bar, and
@@ -520,7 +639,8 @@ class JobStore:
                 # sentence stays the last thing under the red bar.
                 if not isinstance(e, USER_FACING_ERRORS):
                     log(traceback.format_exc())
-                self.update(jid, status="error", error=error_text_for_ui(e))
+                self.update(jid, status=JobStatus.ERROR, error=error_text_for_ui(e),
+                            error_shown=shown_text_for_ui(e))
             # However it ended, the file beside the video now says so -- this is
             # the only moment the final status exists to be written down.
             work_dir = (self.get(jid) or {}).get("work_dir")

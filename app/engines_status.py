@@ -11,11 +11,16 @@ raising. When no Ollama pack is installed, runtime.url("ollama") is "" and the
 request itself fails, which ollama_model_status already reports as
 "unreachable" rather than raising.
 """
+import json
 import os
+import re
+from dataclasses import dataclass
+from typing import Callable
 
 import requests
 
-from app import config, eraser, runtime
+from app import config, eraser, i18n, runtime
+from app import models as model_store
 from app.settings_env import current_value
 
 
@@ -63,33 +68,33 @@ def ollama_model_available(url: str, model: str, timeout: float = 4.0) -> bool:
 
 
 def gemma_available() -> bool:
-    return ollama_model_available(runtime.url("ollama"), config.OLLAMA_GEMMA_MODEL)
+    return ollama_model_available(runtime.url("ollama"), TRANSLATORS["gemma"].ollama_model)
 
 
 def qwen_available() -> bool:
-    return ollama_model_available(runtime.url("ollama"), config.OLLAMA_QWEN_MODEL)
+    return ollama_model_available(runtime.url("ollama"), TRANSLATORS["qwen"].ollama_model)
 
 
 def hunyuan_available() -> bool:
-    return ollama_model_available(runtime.url("ollama"), config.OLLAMA_HUNYUAN_MODEL)
+    return ollama_model_available(runtime.url("ollama"), TRANSLATORS["hunyuan"].ollama_model)
 
 
 def gemma_status() -> str:
     """"unreachable" | "model_missing" | "available" -- see ollama_model_status.
     Used by dub_start's preflight (app/api/dub.py) to give an accurate 422."""
-    return ollama_model_status(runtime.url("ollama"), config.OLLAMA_GEMMA_MODEL)
+    return ollama_model_status(runtime.url("ollama"), TRANSLATORS["gemma"].ollama_model)
 
 
 def qwen_status() -> str:
     """"unreachable" | "model_missing" | "available" -- see ollama_model_status.
     Used by dub_start's preflight (app/api/dub.py) to give an accurate 422."""
-    return ollama_model_status(runtime.url("ollama"), config.OLLAMA_QWEN_MODEL)
+    return ollama_model_status(runtime.url("ollama"), TRANSLATORS["qwen"].ollama_model)
 
 
 def hunyuan_status() -> str:
     """"unreachable" | "model_missing" | "available" -- see ollama_model_status.
     Used by dub_start's preflight (app/api/dub.py) to give an accurate 422."""
-    return ollama_model_status(runtime.url("ollama"), config.OLLAMA_HUNYUAN_MODEL)
+    return ollama_model_status(runtime.url("ollama"), TRANSLATORS["hunyuan"].ollama_model)
 
 
 def eraser_available() -> bool:
@@ -108,6 +113,25 @@ def gemini_available() -> bool:
     # current_value, not config.GEMINI_API_KEY: the constant froze at import
     # time, so a key saved in Settings kept Gemini greyed out until a restart.
     return bool(current_value("GEMINI_API_KEY"))
+
+
+def voice_models() -> dict:
+    """The model behind each voice engine, as the screens name it:
+    {"qwen3": "1.7B"}, the size the downloaded model says it is in its own
+    config.json ("tts_model_size": "1b7"), "" when that cannot be read (not
+    downloaded yet, or a file without the field)."""
+    size = ""
+    entry = model_store.find("qwen3-tts")
+    kit = model_store.kit_dir()
+    if entry and kit:
+        try:
+            with open(os.path.join(kit, *entry["dir"].split("/"), "config.json"), encoding="utf-8") as f:
+                m = re.fullmatch(r"(\d+)b(\d*)", str(json.load(f).get("tts_model_size") or "").lower())
+            if m:
+                size = f"{m[1]}.{m[2]}B" if m[2] else f"{m[1]}B"
+        except (OSError, ValueError, AttributeError):
+            pass
+    return {"qwen3": size}
 
 
 def chatgpt_available() -> bool:
@@ -132,3 +156,112 @@ def perso_available() -> bool:
     # Perso greyed out for everyone who only saved a key in Settings. No
     # network call in this check -- /api/engines runs on every page load.
     return bool(current_value("PERSO_API_KEY"))
+
+
+@dataclass(frozen=True)
+class TranslatorInfo:
+    """What the app knows about one translator before a dub is made with it.
+
+    `probe` asks this machine now, through this module's own function for the
+    translator, looked up when it is called -- the name the tests replace. It
+    answers True or False for an account or a key, and one of
+    ollama_model_status's three words for a model on the local Ollama server.
+    """
+    name: str                  # its word in kit.env, a dub's form and job.json
+    label: str                 # how a sentence names it
+    kind: str                  # "account" (a sign-in), "key" (an API key) or "ollama"
+    probe: Callable[[], object]
+    # The refusal when an account or a key translator cannot run, said when
+    # it is asked for: in the user's language, which can change at any time.
+    unavailable: Callable[[], str] = lambda: ""
+    model_setting: str = ""    # the app/config.py name of an Ollama model's tag
+    catalog_id: str = ""       # its model's id in the catalog, when the app downloads it
+    offered: bool = True       # a choice on the Settings screen (app/setup.py STAGES)
+    big_model: bool = False    # wants more memory beside the voice engine (app/room.py)
+    spends: str = ""           # the user's money it spends, said before it becomes a default
+
+    @property
+    def ollama_model(self) -> str:
+        """Its Ollama model tag, read from app/config.py when asked."""
+        return getattr(config, self.model_setting)
+
+    @property
+    def needs_ollama_pack(self) -> bool:
+        """A model the app downloads runs in the app's own Ollama runtime
+        pack; one pulled by hand (Qwen) is the developer's own Ollama."""
+        return bool(self.catalog_id)
+
+
+# Every translator a dub start knows, in the order the Settings screen offers
+# them. A name not here ("vertex", or none for a Perso dub) is checked by
+# nothing before the dub starts.
+TRANSLATORS = {t.name: t for t in (
+    # In English on purpose: the page opens the ChatGPT sign-in when it reads
+    # "ChatGPT sign-in" in a refused start (ui/src/app.mjs submitDubStart).
+    TranslatorInfo("chatgpt", "ChatGPT", "account", lambda: chatgpt_available(),
+                   unavailable=lambda: ("ChatGPT translation needs a ChatGPT sign-in. Open Settings and "
+                                        "press Sign in with ChatGPT first.")),
+    TranslatorInfo("hunyuan", "Hunyuan", "ollama", lambda: hunyuan_status(),
+                   model_setting="OLLAMA_HUNYUAN_MODEL", catalog_id="hunyuan"),
+    TranslatorInfo("gemma", "Gemma", "ollama", lambda: gemma_status(),
+                   model_setting="OLLAMA_GEMMA_MODEL", catalog_id="gemma", big_model=True),
+    TranslatorInfo("gemini", "Gemini", "key", lambda: gemini_available(),
+                   unavailable=lambda: i18n.t("Gemini translation needs an API key. Open Settings and save "
+                                              "your Gemini API key first."),
+                   spends="Gemini API quota"),
+    # A dub's form may still name it; the Settings screen does not offer it.
+    TranslatorInfo("qwen", "Qwen", "ollama", lambda: qwen_status(),
+                   model_setting="OLLAMA_QWEN_MODEL", offered=False),
+)}
+
+# The offered translators by the names the log says them in.
+TRANSLATOR_NAMES = {t.name: t.label for t in TRANSLATORS.values() if t.offered}
+
+
+# The two engines the desktop shell starts and a local dub may need: the name
+# the runtime announces it under, and its pack.
+_LOCAL_ENGINES = {"voice": ("tts", "engine"), "translation": ("ollama", "ollama-runtime")}
+
+
+def _engine_words(which: str, state: str) -> str:
+    """The words an engine's state is told in, said when they are asked for.
+    GET /api/engines hands them to the page, and dub_start's preflight
+    (app/api/dub.py) refuses a dub with the same sentence. The voice engine's
+    two "voice engine is not running" stay in English: the page answers that
+    phrase by asking the shell to start the engine again (ui/src/app.mjs)."""
+    if which == "voice":
+        return {
+            "starting": i18n.t("The voice engine is still starting. Try again in a minute."),
+            "failed": "The voice engine is not running because it could not start. "
+                      "Try again, or use Perso for dubbing.",
+            "stopped": "The voice engine is not running. Quit and reopen PersoDub.",
+        }[state]
+    return {
+        "starting": i18n.t("The translation runtime is still starting. Try again in a minute."),
+        "failed": i18n.t("The translation runtime is not running because it could not start. "
+                         "Quit and reopen PersoDub, or choose another translator."),
+        "stopped": i18n.t("The translation runtime is not running. Quit and reopen PersoDub."),
+    }[state]
+
+
+def local_engine(which: str) -> dict:
+    """{"state", "message"} for "voice" or "translation".
+
+    state: "running" (it announced itself), "starting", "failed" (the shell
+    gave up on it at start), "stopped" (installed, but nothing is running
+    and nothing is on its way), or "not_installed" (its pack is not on this
+    kit). message is one plain sentence, "" for running and not_installed.
+    No network call: GET /api/engines runs on every page load."""
+    name, pack = _LOCAL_ENGINES[which]
+    if runtime.url(name):
+        return {"state": "running", "message": ""}
+    # Before the pack check: right after an install the pack still reads as
+    # downloading while the shell is already starting its process.
+    state = runtime.state(name)
+    if state:
+        return {"state": state, "message": _engine_words(which, state)}
+    entry = model_store.find(pack)
+    kit = model_store.kit_dir()
+    if not (kit and entry and model_store.model_state(entry, kit) == "ready"):
+        return {"state": "not_installed", "message": ""}
+    return {"state": "stopped", "message": _engine_words(which, "stopped")}

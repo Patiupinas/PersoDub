@@ -31,3 +31,48 @@ test("rejects after timeout when server never becomes healthy", async () => {
     (err) => err.message.includes(String(port)),
   );
 });
+
+test("a process that has exited ends the wait at once, not at the timeout", async () => {
+  const port = await getFreePort();
+  const t0 = Date.now();
+  await assert.rejects(
+    waitForHealth(`http://127.0.0.1:${port}/health`, { timeoutMs: 60000, intervalMs: 50, alive: () => false }),
+    (err) => err.exited === true,
+  );
+  assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms`);
+});
+
+test("a busy answer restarts the silence clock; silence alone runs it out", async () => {
+  const port = await getFreePort();
+  const started = Date.now();
+  // "loading" for 1.2 s, then ready: longer than the 400 ms silence limit.
+  const srv = await serveJson(port, () => ({ status: Date.now() - started > 1200 ? "ok" : "loading" }));
+  try {
+    const body = await waitForHealth(`http://127.0.0.1:${port}/health`, {
+      timeoutMs: 400, intervalMs: 50, maxMs: 10000,
+      predicate: (b) => b.status === "ok", busy: (b) => b.status === "loading",
+    });
+    assert.equal(body.status, "ok");
+    // Without `busy` an answer that is not the one wanted is silence, and the limit holds.
+    await assert.rejects(waitForHealth(`http://127.0.0.1:${port}/health`, {
+      timeoutMs: 400, intervalMs: 50, predicate: (b) => b.status === "never",
+    }), /timed out/);
+  } finally {
+    srv.close();
+  }
+});
+
+test("busy answers stop counting at maxMs", async () => {
+  const port = await getFreePort();
+  const srv = await serveJson(port, () => ({ status: "loading" }));
+  try {
+    const t0 = Date.now();
+    await assert.rejects(waitForHealth(`http://127.0.0.1:${port}/health`, {
+      timeoutMs: 300, intervalMs: 50, maxMs: 1000,
+      predicate: (b) => b.status === "ok", busy: (b) => b.status === "loading",
+    }), /timed out/);
+    assert.ok(Date.now() - t0 < 3000, `took ${Date.now() - t0} ms`);
+  } finally {
+    srv.close();
+  }
+});

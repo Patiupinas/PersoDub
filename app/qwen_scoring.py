@@ -11,7 +11,7 @@ app/qwen_pipeline.synth_lines can fall back to single-take behavior and the
 dub job still completes.
 
 Input JSON handed to the scorer:
-  {"language": "ko", "speakers": {spk: ref_wav_path, ...},
+  {"language": "es" (a Whisper code; null = detect), "speakers": {spk: ref_wav_path, ...},
    "lines": [{"i": int, "spk": str, "usable": float, "text": str,
               "takes": [{"k": int, "path": str}, ...]}, ...]}
 Output JSON the scorer writes back:
@@ -24,7 +24,7 @@ import os
 import subprocess
 from typing import Callable, Dict, List, Optional
 
-from app.config import QWEN_SCORER_PYTHON
+from app.config import LANGUAGE_NAMES, QWEN_SCORER_PYTHON
 
 SCRIPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "qwen_score_takes.py")
 
@@ -39,6 +39,19 @@ def _scorer_asr_timeout_per_take() -> float:
         return float(os.environ.get("PERSODUB_SCORER_ASR_TIMEOUT", "15"))
     except (TypeError, ValueError):
         return 15.0
+
+
+def whisper_code(language) -> Optional[str]:
+    """The Whisper code for a dub language, given as the app passes it (a name
+    like "Spanish" or a code like "es"); None lets Whisper detect it. Every
+    language the local path speaks (LANGUAGE_NAMES) is one Whisper knows by
+    the same code. Reading everything but Korean as English scored a correct
+    Spanish take as a poor one, so High quality picked by voice alone."""
+    lang = str(language or "").strip().lower()
+    for code, name in LANGUAGE_NAMES.items():
+        if lang in (code, name.lower()):
+            return code
+    return None
 
 
 def score_takes(
@@ -68,8 +81,7 @@ def score_takes(
         log("   Warning: take scorer script missing (%s) -- skipping take selection" % SCRIPT_PATH)
         return None
 
-    lang_code = "ko" if str(language).lower().startswith("k") else "en"
-    payload = {"language": lang_code, "speakers": speaker_ref_paths, "lines": lines_payload}
+    payload = {"language": whisper_code(language), "speakers": speaker_ref_paths, "lines": lines_payload}
     in_path = os.path.join(work_dir, "qwen_scorer_input.json")
     out_path = os.path.join(work_dir, "qwen_scorer_output.json")
     with open(in_path, "w", encoding="utf-8") as f:

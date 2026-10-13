@@ -274,3 +274,68 @@ def test_clone_has_its_own_longer_wait(monkeypatch, tmp_path):
     QwenTTSEngine(base_url="http://x").clone(str(p), "hello there", mode="icl")
     # The first clone also loads the 4 GB model: it waits longer than a line.
     assert captured["timeout"] == mod.CLONE_WAIT_SECONDS * mod.PERSODUB_TTS_WAIT_SCALE
+
+
+def test_memory_mb_reads_the_sidecars_resident_memory(monkeypatch):
+    class R:
+        status_code = 200
+        def json(self):
+            return {"status": "ok", "model_loaded": True, "rss_mb": 11264}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: R())
+    assert QwenTTSEngine(base_url="http://x").memory_mb() == 11264
+
+    class Old:   # a sidecar from before the field
+        status_code = 200
+        def json(self):
+            return {"status": "ok", "model_loaded": True}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: Old())
+    assert QwenTTSEngine(base_url="http://x").memory_mb() is None
+
+
+def test_restart_waits_for_the_engine_to_go_and_come_back_then_clones_again(monkeypatch, tmp_path):
+    from app.engines import qwen_tts as mod
+    ref = tmp_path / "ref.wav"
+    ref.write_bytes(b"RIFFxxxx")
+    gone = tmp_path / "gone.wav"
+    gone.write_bytes(b"RIFFyyyy")
+    posts, health = [], iter([True, False, False, True])   # old engine, down, down, new engine
+
+    class _R:
+        status_code = 200
+        def __init__(self, voice_id=None):
+            self.voice_id = voice_id
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {"voice_id": self.voice_id, "restarting": True, "model_loaded": next(health, True)}
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        posts.append(url)
+        return _R(files["ref_audio"][0] if files else None)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx, "get", lambda url, **k: _R())
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    engine = QwenTTSEngine(base_url="http://x")
+    engine.clone(str(ref), "hello", mode="icl")
+    engine.clone(str(gone), "bye", mode="icl")
+    gone.unlink()
+    engine.restart()
+    # /restart, then the voices again: the one whose reference file is gone is dropped.
+    assert posts == ["http://x/clone", "http://x/clone", "http://x/restart", "http://x/clone"]
+    assert list(engine._clones) == ["ref.wav"]
+
+
+def test_restart_gives_up_when_no_engine_comes_back(monkeypatch):
+    from app.engines import qwen_tts as mod
+    class _R:
+        status_code = 200
+        def json(self):
+            return {"model_loaded": False}
+    monkeypatch.setattr(httpx, "post", lambda url, **k: _R())
+    monkeypatch.setattr(httpx, "get", lambda url, **k: _R())
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    clock = iter(range(0, 10 ** 6, 100))
+    monkeypatch.setattr(mod.time, "monotonic", lambda: next(clock))
+    with pytest.raises(RuntimeError, match="did not come back"):
+        QwenTTSEngine(base_url="http://x").restart()

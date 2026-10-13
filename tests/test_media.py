@@ -206,3 +206,57 @@ def test_cut_video_removes_a_half_written_temp_file_when_ffmpeg_fails(monkeypatc
     with pytest.raises(RuntimeError):
         media.cut_video(str(src), 0.0, 1.0)
     assert not (tmp_path / "input.mp4.cut.mp4").exists()
+
+
+def test_a_windows_path_in_ffmpegs_last_line_loses_its_folders():
+    msg = media._failure("Could not trim the video",
+                         "C:\\Users\\name\\Videos\\a.mp4: Invalid data found when processing input\n")
+    assert msg == "Could not trim the video: a.mp4: Invalid data found when processing input"
+
+
+def test_ffmpegs_own_label_for_the_part_that_spoke_is_not_shown():
+    # Windows test 2026-10-10: the Export failure read "mp4 @ 000001f21babe040]
+    # Nothing was written ..." -- an address in front of the reason.
+    msg = media._failure("ffmpeg could not cut this video",
+                         "[out#0/mp4 @ 000001f21babe040] Nothing was written into output file, "
+                         "because at least one of its streams received no packets.\n")
+    assert msg == ("ffmpeg could not cut this video: Nothing was written into output file, "
+                   "because at least one of its streams received no packets.")
+
+
+def test_words_with_a_slash_are_not_cut_as_paths():
+    msg = media._failure("Could not trim the video", "/Users/someone/a.mp4: Input/output error\n")
+    assert msg == "Could not trim the video: a.mp4: Input/output error"
+
+
+def test_a_path_ffmpeg_was_given_is_cut_to_its_name_even_with_spaces(monkeypatch, tmp_path):
+    # A real temp path, so on Windows it is written with backslashes. Spaces
+    # in folder names are the usual case: "Application Support" on every Mac,
+    # a project folder named after its video, a Windows account name.
+    folder = tmp_path / "Application Support" / "내 영상"
+    folder.mkdir(parents=True)
+    src = str(folder / "a b.mp4")
+    _record(monkeypatch, _Done(returncode=1, stderr=src + ": Invalid data found when processing input\n"))
+    with pytest.raises(RuntimeError) as trim:
+        media.cut_video(src, 0.0, 1.0)
+    with pytest.raises(RuntimeError) as save:
+        media.run_new_file(media.audio_command(src, str(folder / "a b.mp3"), "mp3"), 1,
+                           "Could not save the audio")
+    assert str(trim.value) == "Could not trim the video: a b.mp4: Invalid data found when processing input"
+    assert str(save.value) == "Could not save the audio: a b.mp4: Invalid data found when processing input"
+
+
+# video_size reads whatever size ffprobe printed, even when ffprobe then exits
+# non-zero, and says (0, 0) only when there is no size to read -- the shared
+# probe (media.probe_size) must not tighten that for this caller.
+@pytest.mark.parametrize("returncode, stdout, expected", [
+    (0, "1280,720\n", (1280, 720)),
+    (1, "640,360\n", (640, 360)),
+    (1, "", (0, 0)),
+    (0, "N/A,N/A\n", (0, 0)),
+])
+def test_video_size_reads_what_ffprobe_printed_whatever_its_exit_code(monkeypatch, returncode, stdout, expected):
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
+    monkeypatch.setattr(media.subprocess, "run", fake_run)
+    assert media.video_size("clip.mp4") == expected

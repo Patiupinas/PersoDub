@@ -10,11 +10,14 @@ Three stages, each fail-closed:
 1. extract_nonverbal_segments -- candidates = energy on the vocals stem
    (app.qwen_assemble.detect_speech_regions) minus every padded original-speech
    cue span (+-0.3s) and every padded placed-dub-line span (+-0.1s); anything
-   shorter than 0.15s after trimming is dropped.
+   shorter than 0.8s after trimming is dropped, and so is a piece that starts
+   right where a padded cue span ends (the tail of a sentence the STT ended
+   early).
 2. Whisper veto -- each candidate is cut to a temp clip (silence-padded to
    >= 1.0s) and transcribed by a local openai-whisper in ONE subprocess (model
-   loaded once for the whole batch). KEEP only when the transcript is empty or
-   pure laughter/breath tokens (classify_transcript); ANY real word in any
+   loaded once for the whole batch). KEEP only when the transcript is pure
+   laughter tokens, or empty AND a voice-activity model (Silero, bundled with
+   faster-whisper) hears no speech in it (classify_transcript); ANY real word in any
    language rejects the candidate (it is speech STT missed -- copying it would
    be the leakage disaster safe mode exists to prevent), as do known whisper
    near-silence hallucinations ("Thank you", "MBC 뉴스", ...). If whisper
@@ -53,7 +56,17 @@ from app.timeouts import scaled_timeout
 
 SPEECH_PAD_SEC = 0.3   # original-speech cue spans padded this much per side
 DUB_PAD_SEC = 0.1      # placed dub-line spans padded this much per side
-MIN_SEGMENT_SEC = 0.15  # a trimmed candidate must last at least this long
+# A trimmed candidate must last at least this long. Measured 2026-10-01 on 267
+# pieces cut from real speech: 44% of 0.2s pieces, 23% of 0.3s and 11% of 0.5s
+# came back with an empty transcript; none of 0.8s did. A 0.22s piece of a
+# sung word was pasted at full volume that way (Michael Jackson, 37.84s).
+MIN_SEGMENT_SEC = 0.8
+# An empty transcript is not proof of no speech: 5 of 72 1.2s pieces of real
+# speech also came back empty (2026-10-01). Silero VAD put every one of the 141
+# speech pieces of 0.8s or more at a speech probability of 0.5 or above, and
+# the breaths and noise kept so far at 0.16-0.29. Whisper's own no_speech_prob
+# did not tell them apart (0.70-0.85 on those 5 speech pieces).
+MAX_SPEECH_PROB = 0.5
 MIN_RMS_DBFS = -45.0   # a candidate must be at least this loud on the stem --
 # below that it's noise floor, nothing audible to preserve (checker finding:
 # a -51dBFS sliver was whitelisted although it added nothing over safe mode)
@@ -90,13 +103,18 @@ def extract_nonverbal_segments(vocals_path: str,
                                min_dur_sec: float = MIN_SEGMENT_SEC) -> List[Tuple[float, float]]:
     """Candidate non-speech vocal segments ([start, end) seconds) on the stem:
     every energy-VAD region minus (a) padded original-speech cue spans and
-    (b) padded placed-dub-line spans, keeping only pieces >= min_dur_sec (c).
-    These are only CANDIDATES -- nothing is copied without the whisper veto."""
-    exclusions = sorted(pad_spans(speech_spans, speech_pad_sec) +
-                        pad_spans(dub_spans, dub_pad_sec))
+    (b) padded placed-dub-line spans, keeping only pieces >= min_dur_sec (c)
+    that do not start where a padded speech span ends (d): sound running on
+    from a cue is that sentence's tail, not a laugh. A breath running into
+    the next sentence is kept. These are only CANDIDATES -- nothing is copied
+    without the whisper veto."""
+    speech = pad_spans(speech_spans, speech_pad_sec)
+    exclusions = sorted(speech + pad_spans(dub_spans, dub_pad_sec))
     out = subtract_spans(list(detect_speech_regions(vocals_path)), exclusions)
     return [(a, b) for a, b in out
-            if b - a >= min_dur_sec and _span_rms_db(vocals_path, a, b) >= MIN_RMS_DBFS]
+            if b - a >= min_dur_sec
+            and not any(s <= a <= e + 1e-6 for s, e in speech)
+            and _span_rms_db(vocals_path, a, b) >= MIN_RMS_DBFS]
 
 
 # --- whisper-veto decision rule -------------------------------------------
@@ -126,16 +144,17 @@ _LAUGH_LATIN_RE = re.compile(r"e?(?:ha|he|ho|hi){2,}h*|h[aeo]h+")
 _LAUGH_HANGUL_RE = re.compile(r"[하호후흐헤히]{2,}|[ㅋㅎ]{2,}")
 
 
-def classify_transcript(text: str) -> bool:
-    """True = KEEP: the transcript is empty (after stripping whitespace,
-    whitelisted punctuation and known non-verbal tags) or is, in its ENTIRETY,
-    one repeated laugh pattern. False = REJECT: everything else -- real words
-    in any language, foreign scripts, digits, breath-ish single tokens,
-    whisper hallucinations ("Thank you", ...) all fail closed."""
+def classify_transcript(text: str, speech_prob: float = 1.0) -> bool:
+    """True = KEEP: the transcript is, in its ENTIRETY, one repeated laugh
+    pattern, or it is empty (after stripping whitespace, whitelisted
+    punctuation and known non-verbal tags) and the voice-activity model heard
+    no speech (speech_prob < MAX_SPEECH_PROB). False = REJECT: everything
+    else -- real words in any language, foreign scripts, digits, breath-ish
+    single tokens, whisper hallucinations ("Thank you", ...) all fail closed."""
     t = _NV_TAG_RE.sub(" ", text.strip().lower())
     norm = _PUNCT_RE.sub("", t)
     if not norm:
-        return True
+        return speech_prob < MAX_SPEECH_PROB
     return bool(_LAUGH_LATIN_RE.fullmatch(norm) or _LAUGH_HANGUL_RE.fullmatch(norm))
 
 
@@ -146,12 +165,19 @@ import json, sys
 import whisper
 model_name, in_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
 model = whisper.load_model(model_name)
-texts = []
-for p in json.load(open(in_path)):
+try:
+    from faster_whisper.vad import get_vad_model
+    vad = get_vad_model()
+except Exception:
+    vad = None   # no voice-activity model: every empty transcript counts as speech
+out = []
+for p in json.load(open(in_path, encoding="utf-8")):
     r = model.transcribe(p, fp16=False, temperature=0.0,
                          condition_on_previous_text=False)
-    texts.append(r.get("text", ""))
-json.dump(texts, open(out_path, "w"))
+    x = whisper.load_audio(p)   # 16kHz mono float32, what Silero takes
+    n = len(x) // 512 * 512
+    out.append([r.get("text", ""), float(vad(x[:n]).max()) if vad is not None and n else 1.0])
+json.dump(out, open(out_path, "w", encoding="utf-8"))
 """
 
 
@@ -195,7 +221,7 @@ def whisper_veto(vocals_path: str, candidates: Sequence[Tuple[float, float]],
             clips.append(p)
         in_path = os.path.join(td, "in.json")
         out_path = os.path.join(td, "out.json")
-        with open(in_path, "w") as f:
+        with open(in_path, "w", encoding="utf-8") as f:
             json.dump(clips, f)
         try:
             r = subprocess.run([python_bin, "-c", _WHISPER_RUNNER, model, in_path, out_path],
@@ -203,15 +229,16 @@ def whisper_veto(vocals_path: str, candidates: Sequence[Tuple[float, float]],
                                timeout=scaled_timeout(video_duration, NONVERBAL_TIMEOUT))
             if r.returncode != 0:
                 raise RuntimeError(r.stderr[-300:])
-            texts = json.load(open(out_path))
-            if len(texts) != len(candidates):
+            heard = json.load(open(out_path, encoding="utf-8"))
+            if len(heard) != len(candidates):
                 raise RuntimeError("whisper returned %d texts for %d clips"
-                                   % (len(texts), len(candidates)))
+                                   % (len(heard), len(candidates)))
         except Exception as exc:  # fail-closed: no verified transcript, no copy
             return [{"start": a, "end": b, "keep": False, "error": True,
                      "text": "<whisper unavailable: %s>" % exc} for a, b in candidates]
-    return [{"start": a, "end": b, "text": txt.strip(), "keep": classify_transcript(txt)}
-            for (a, b), txt in zip(candidates, texts)]
+    return [{"start": a, "end": b, "text": txt.strip(), "speech_prob": round(sp, 3),
+             "keep": classify_transcript(txt, sp)}
+            for (a, b), (txt, sp) in zip(candidates, heard)]
 
 
 # --- overlay ----------------------------------------------------------------

@@ -1,7 +1,7 @@
 // Naming a finished download when something with that name is already there.
 //
 // Free of fs and electron so the node:test unit tests run with nothing else
-// present -- the caller passes `exists` (see desktop/main.js).
+// present -- the caller passes `exists` (see downloadsIpc.js).
 export const MAX_COUNTER = 999;
 
 export function uniqueName(filename, exists) {

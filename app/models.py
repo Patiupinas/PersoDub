@@ -20,6 +20,8 @@ import logging
 import os
 import shutil
 
+from app.i18n import t
+
 log = logging.getLogger("persodub.models")
 
 CATALOG_PATH = os.path.join(os.path.dirname(__file__), "models_catalog.json")
@@ -184,12 +186,30 @@ def free_bytes_at(path):
 
 
 def dub_in_progress() -> bool:
-    """True while any dub job runs -- removal is refused then (409)."""
+    """True while any job is queued, running or still stopping -- removal is
+    refused then (409). A stopped job's thread goes on using the models until
+    its next checkpoint, and a queued one loads them when its turn comes."""
     from app import state  # late import: read the store as it stands right now
+    from app.jobs import JobStatus
     try:
-        return any(j.get("status") == "running" for j in state.job_store.all())
+        return any(j.get("status") in (JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCELLING)
+                   for j in state.job_store.all())
     except Exception:
         return False
+
+
+def shown_words(text: str) -> str:
+    """A catalog name or hint (models_catalog.json) in the user's language.
+    Each one is written out here, where the tables' check (tests/test_i18n.py)
+    can see it; a product's own name (Whisper, Gemma 3) has no entry and stays
+    as it is, and so does a line added to the catalog without one here."""
+    return {
+        "Audio separation, speech-to-text, voices": t("Audio separation, speech-to-text, voices"),
+        "Translation": t("Translation"),
+        "Subtitle eraser": t("Subtitle eraser"),
+        "More careful": t("More careful"),
+        "Small and quick": t("Small and quick"),
+    }.get(text, text)
 
 
 def find(mid):
@@ -207,9 +227,10 @@ def status_rows():
     for m in load_catalog():
         if m["role"] == "always":
             continue
-        row = {"id": m["id"], "role": m["role"], "name": m["name"], "bytes": _pack_bytes(m),
-               # One line under the name in Settings: what this is for.
-               "hint": m.get("hint", "")}
+        row = {"id": m["id"], "role": m["role"], "name": shown_words(m["name"]), "bytes": _pack_bytes(m),
+               # A short note after "Ready" in Settings, only where the row's
+               # group title does not say what it is for; "" when it does.
+               "hint": shown_words(m.get("hint", ""))}
         with _lock:
             rt = dict(_downloads.get(m["id"]) or {})
         if rt.get("state") in ("queued", "downloading"):
@@ -226,6 +247,8 @@ def status_rows():
     return rows
 
 
+# In English on purpose: the page hands a pack's removal to the desktop app
+# when the refusal starts with these words (ui/src/modelsDialog.mjs).
 PACKS_ARE_THE_SHELLS = "Packs are installed by the desktop app"
 
 
@@ -237,7 +260,7 @@ def request_download(entry) -> str:
     if entry["source"].get("kind") == "ollama" and not _runtime.url("ollama"):
         # Only the runtime can pull into its store, and it is not running:
         # say so up front instead of queueing a pull that fails on an empty URL.
-        raise ValueError("Install Ollama first, then download this model.")
+        raise ValueError(t("Install Ollama first, then download this model."))
     with _lock:
         state = (_downloads.get(entry["id"]) or {}).get("state")
         if state in ("queued", "downloading"):
@@ -275,7 +298,7 @@ def remove_model(entry):
             # Only the runtime can take a model out of its shared blob store,
             # and it is not running. Say so: a silent "removed" that removed
             # nothing is worse than a refusal.
-            raise ValueError("Install Ollama first, then remove this model.")
+            raise ValueError(t("Install Ollama first, then remove this model."))
         # A model pulled under one name and renamed (Hunyuan: pulled from
         # hf.co/..., then given its tag with our template) is held by both
         # names; deleting only the tag freed nothing, 1.1 GB stayed on disk
@@ -316,7 +339,30 @@ def _drain():
             # row's error field, so a support log said nothing (Windows, 2026-09-07).
             log.exception("download of %s failed", mid)
             with _lock:
-                _downloads[mid] = {"state": "failed", "pct": None, "error": str(e)[:300]}
+                if cancelled():
+                    # A cancel that broke the connection on its way out is
+                    # still a cancel: the disk says paused, nothing failed.
+                    _downloads.pop(mid, None)
+                else:
+                    _downloads[mid] = {"state": "failed", "pct": None, "error": _stopped_reason(e)}
+
+
+# The row's error is read on screen, so it says why in plain words; the
+# exception itself is in the log above. "ChunkedEncodingError: ('Connection
+# broken: IncompleteRead(...)')" was shown when Wi-Fi dropped (Windows H9/H10,
+# 2026-10-06). The hf tool's failure arrives as its last lines of text.
+_NO_ROOM = ("no space left", "errno 28", "not enough space", "disk is full")
+_NO_NETWORK = ("connection", "incompleteread", "chunkedencoding", "timed out", "timeout",
+               "network", "no such host", "getaddrinfo", "name resolution", "max retries", "ssl")
+
+
+def _stopped_reason(exc) -> str:
+    text = ("%s %s" % (type(exc).__name__, exc)).lower()
+    if any(w in text for w in _NO_ROOM):
+        return t("Not enough space on this computer.")
+    if any(w in text for w in _NO_NETWORK):
+        return t("Connection lost.")
+    return t("The download stopped.")
 
 
 def _run_download(entry, kit, progress, cancelled):
@@ -326,11 +372,18 @@ def _run_download(entry, kit, progress, cancelled):
         _pull_hf(entry, kit, progress, cancelled)
 
 
-def _hf_cli(kit: str) -> str:
-    """The `hf` CLI in app_venv -- the one venv every install has. It moved
-    here from qwen_venv in 0.5.1, when that venv was retired."""
+def _venv_python(kit: str) -> str:
+    """The interpreter in app_venv -- the one venv every install has. It moved
+    here from qwen_venv in 0.5.1, when that venv was retired.
+
+    The hf CLI is run as a module through this interpreter (`-m
+    huggingface_hub.cli.hf`), not via app_venv's own hf(.exe) launcher: that
+    launcher is a freshly created, unsigned file pip writes into the venv at
+    install time, and exactly the kind of thing Smart App Control or an
+    antivirus can refuse to run with "spawn UNKNOWN" (issue #48). Same fix as
+    desktop/src/installSpec.js's models step, on the app side."""
     bindir = "Scripts" if _sys.platform == "win32" else "bin"
-    return os.path.join(kit, "app_venv", bindir, "hf.exe" if _sys.platform == "win32" else "hf")
+    return os.path.join(kit, "app_venv", bindir, "python.exe" if _sys.platform == "win32" else "python")
 
 
 HF_ATTEMPTS = 3            # a CDN read timeout mid-file is retried; hf resumes the .incomplete
@@ -364,7 +417,7 @@ def _pull_hf(entry, kit, progress, cancelled):
     dest = os.path.join(kit, *entry["dir"].split("/"))
     os.makedirs(dest, exist_ok=True)
     src = entry["source"]
-    argv = [_hf_cli(kit), "download", src["repo"], *src.get("files", []),
+    argv = [_venv_python(kit), "-m", "huggingface_hub.cli.hf", "download", src["repo"], *src.get("files", []),
             "--revision", src["rev"], "--local-dir", dest]
     env = {**os.environ, "HF_HUB_DOWNLOAD_TIMEOUT": HF_DOWNLOAD_TIMEOUT,
            "HF_HUB_DISABLE_PROGRESS_BARS": "0", "PYTHONUTF8": "1"}
@@ -389,10 +442,17 @@ def _pull_hf(entry, kit, progress, cancelled):
         # The percent is measured on its own clock, not on the tool's output:
         # without a terminal the tool prints almost nothing while a file
         # streams in, and the figure sat at 10% for a whole 2.9 GB (Windows).
+        # A cancel is heard on the same clock, for the same reason: checked
+        # only between the tool's lines, Cancel let a 3.1 GB download run to
+        # the end (Windows test C3, 2026-10-10). Ending the tool ends its
+        # output, so the reading loop below stops by itself.
         stop_meter = _threading.Event()
 
         def meter():
             while not stop_meter.wait(1.0):
+                if cancelled():
+                    _end(proc)
+                    return
                 report_from_disk(force=True)
         _threading.Thread(target=meter, daemon=True).start()
         try:

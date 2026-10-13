@@ -1,9 +1,8 @@
 // The trim bar: a play button, a readout, a bar with a handle at each end and a
 // ruler under it -- the one control that says which part of a video the app is
-// to work on. Two screens ask that question, so one implementation answers it:
-// the New project dialog (which part to dub, or to save as a clip) and the
-// Erase subtitles screen (which part to clean). Before this file the second had
-// no answer at all and erased whole videos the user had already cut down.
+// to work on, in the New project dialog (which part to dub, or to save as a
+// clip). The Erase tab asks the same question on the timeline's cut tools
+// instead (ui/src/timeline.mjs).
 //
 // It draws itself into a box the page provides and reads nothing else off the
 // page: the video it scrubs, the clock it writes the position into, and what to
@@ -12,7 +11,8 @@
 //
 // What is NOT here: playRange/cancelRange, which belong to the page (the
 // finished screen plays its lines with the same pair).
-import { fmtClock, fmtClockTenths } from "./format.mjs";
+import { fmtClock, fmtClockTenths, fmtLength } from "./format.mjs";
+import { t } from "./i18n.mjs";
 
 // The shortest part worth working on; also what keeps the two handles from
 // crossing over each other.
@@ -73,11 +73,11 @@ export function initTrimBar({ $, prefix = "", getVideo, getClock = null,
     // inline in static/index.html (pinned by newProject.test.mjs).
     box.innerHTML = `
     <div class="trim-row">
-      <button class="trim-play" id="${id("trimPlay")}" type="button" title="Play the selected part" aria-label="Play the selected part">
+      <button class="trim-play" id="${id("trimPlay")}" type="button" title="${t("Play the selected part")}" aria-label="${t("Play the selected part")}">
         <svg class="ico-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.5v13l10.5-6.5z"/></svg>
         <svg class="ico-pause" viewBox="0 0 18 18" aria-hidden="true"><rect x="5" y="3" width="3" height="12" rx="1"/><rect x="10" y="3" width="3" height="12" rx="1"/></svg>
       </button>
-      <span class="trim-label">Trim</span>
+      <span class="trim-label">${t("Trim")}</span>
       <span class="trim-read" id="${id("trimRead")}"></span>
     </div>
     <div class="trim-scale" id="${id("trimScale")}">
@@ -85,8 +85,8 @@ export function initTrimBar({ $, prefix = "", getVideo, getClock = null,
         <div class="trim-hatch" id="${id("trimHatchStart")}" style="left: 0"></div>
         <div class="trim-hatch" id="${id("trimHatchEnd")}" style="right: 0"></div>
         <div class="trim-sel" id="${id("trimSel")}"></div>
-        <input type="range" class="trim-range" id="${id("trimStart")}" min="0" step="${TRIM_STEP}" aria-label="Trim start">
-        <input type="range" class="trim-range" id="${id("trimEnd")}" min="0" step="${TRIM_STEP}" aria-label="Trim end">
+        <input type="range" class="trim-range" id="${id("trimStart")}" min="0" step="${TRIM_STEP}" aria-label="${t("Trim start")}">
+        <input type="range" class="trim-range" id="${id("trimEnd")}" min="0" step="${TRIM_STEP}" aria-label="${t("Trim end")}">
         <div class="trim-head" id="${id("trimHead")}" hidden><i></i></div>
       </div>
       <div class="trim-ruler" id="${id("trimRuler")}"></div>
@@ -139,8 +139,9 @@ export function initTrimBar({ $, prefix = "", getVideo, getClock = null,
       // length: otherwise an untrimmed 22.085s video reads "22.0s of 22.1s", as
       // if a tenth had been shaved off it.
       const shownEnd = whole ? duration : end;
-      $(id("trimRead")).textContent =
-        `${fmtClockTenths(start)} – ${fmtClockTenths(shownEnd)} · ${(shownEnd - start).toFixed(1)}s of ${duration.toFixed(1)}s`;
+      $(id("trimRead")).textContent = t("{from} – {to} · {length} of {total}", {
+        from: fmtClockTenths(start), to: fmtClockTenths(shownEnd),
+        length: fmtLength(shownEnd - start), total: fmtLength(duration) });
       onChange(whole ? null : { start, end });
       // A handle dragged past the playhead leaves it outside the part being
       // dubbed, where it means nothing: put it away.
@@ -225,7 +226,7 @@ export function initTrimBar({ $, prefix = "", getVideo, getClock = null,
     playState = () => {
       const playing = !video.paused && !video.ended;
       playBtn.classList.toggle("playing", playing);
-      const label = playing ? "Pause" : "Play the selected part";
+      const label = playing ? t("Pause") : t("Play the selected part");
       playBtn.title = label; playBtn.setAttribute("aria-label", label);
       if (playing) {
         headAt = video.currentTime;

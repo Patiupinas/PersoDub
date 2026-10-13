@@ -49,9 +49,18 @@ QWEN_TTS_URL = os.environ.get("QWEN_TTS_URL", "http://127.0.0.1:3901")
 
 # Qwen3-TTS voice-clone mode: "timbre" (speaker-embedding-only, clones from
 # reference audio alone -- no transcript needed) | "icl" (in-context-learning,
-# requires a transcript of the reference audio). Default = timbre (user's
-# choice: removes the ref-transcript machinery from the critical path).
-QWEN_VOICE_MODE = os.environ.get("QWEN_VOICE_MODE", "timbre")
+# given the transcript of the reference audio too). Default = icl
+# (2026-10-03): cloned from the sound alone, 20 of 28 test lines opened with a
+# stray "어/아"; given the words as well, with the reference trimmed and the
+# randomness below lowered, 2 of 28 did, and the voice was the closest to the
+# speaker's. A speaker whose reference yields no words is cloned from its
+# sound (app/engines/base.py TTSEngine.assign_voices).
+QWEN_VOICE_MODE = os.environ.get("QWEN_VOICE_MODE", "icl")
+# How freely Qwen3-TTS samples each line: 0.6 / 0.9 against the model's own
+# 0.9 / 1.0. Lowered alone it halved the stray sounds (20 of 28 lines to 10);
+# with the words above it took them from 4 to 2.
+QWEN_TEMPERATURE = float(os.environ.get("QWEN_TEMPERATURE", "0.6"))
+QWEN_TOP_P = float(os.environ.get("QWEN_TOP_P", "0.9"))
 
 # Gemini (Google AI Studio) translation — consumer API key, NOT Vertex.
 # Kept for back-compat only: it freezes whatever the environment held at import
@@ -264,6 +273,17 @@ PERSODUB_LOG_DIR = os.environ.get("PERSODUB_LOG_DIR", "logs")
 # noisy take's envelope being misread as "all silence" and trimming far more
 # than that.
 QWEN_TRIM_LEAD_SEC = _env_float("QWEN_TRIM_LEAD_SEC", 1.0, minimum=0.0)
+
+# Most a line that runs into the next one is sped up (ffmpeg atempo, pitch
+# kept) before the rest is cut. 1.10 is about where a speed change stops being
+# heard (owner decision 2026-10-01); 1.0 turns it off.
+QWEN_MAX_SPEEDUP = _env_float("QWEN_MAX_SPEEDUP", 1.10, minimum=1.0)
+
+# Fast mode, a script the app translated itself: lines that end well before
+# their slot or run well past it are written again to the length the slot
+# holds at the speaker's measured pace, and voiced again (app/text/pace_fit.py).
+# 0 turns it off.
+PACE_FIT = _env_int("PERSODUB_PACE_FIT", 1)
 
 # Cap on the gain ratio allowed between two cue-adjacent lines in
 # match_line_gains. Each line's gain is individually "correct" for matching

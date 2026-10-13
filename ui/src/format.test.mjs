@@ -5,6 +5,7 @@
 // Run with: node --test ui/src/format.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
+import { modKey, plainFailure, rawLogLines, fmtLength, videoCard, videoCardHtml } from "./format.mjs";
 import {
   fmtClock,
   fmtClockTenths,
@@ -106,7 +107,7 @@ test("errorText unwraps a FastAPI detail out of the raw response body", () => {
 });
 
 test("errorText passes anything that is not JSON straight through", () => {
-  assert.equal(errorText(new Error("Failed to fetch")), "Failed to fetch");
+  assert.equal(errorText(new Error("Unsupported target language: xx")), "Unsupported target language: xx");
   assert.equal(errorText("plain string"), "plain string");
   // Valid JSON without a detail is not a server error envelope: use it as it is.
   assert.equal(errorText(new Error('{"other": 1}')), '{"other": 1}');
@@ -148,4 +149,82 @@ test("statusParts cuts a top-bar status into the pieces its chips are made of", 
   assert.deepEqual(statusParts(undefined), []);
   // A stray separator does not make an empty chip.
   assert.deepEqual(statusParts("Working ·  · English"), ["Working", "English"]);
+});
+
+test("errorText turns a request that never reached the app into what to do about it", () => {
+  const told = "PersoDub is not running. Restart the app.";
+  assert.equal(errorText(new TypeError("Failed to fetch")), told);
+  assert.equal(errorText(new TypeError("Load failed")), told);
+  assert.equal(errorText(new TypeError("NetworkError when attempting to fetch resource.")), told);
+  assert.equal(errorText(new Error("network error")), told);
+  assert.equal(errorText("TypeError: Failed to fetch"), told);
+  // A sentence that only mentions fetching is somebody's own words and stays.
+  assert.equal(errorText(new Error("Failed to fetch the video from that link.")), "Failed to fetch the video from that link.");
+});
+
+test("errorText never shows a list of field errors or a page of HTML", () => {
+  const body = JSON.stringify({ detail: [{ loc: ["body", "file"], msg: "field required", type: "value_error.missing" }] });
+  assert.equal(errorText(new Error(body)), "That did not work. Try again.");
+  assert.equal(errorText(new Error('{"detail": {"code": 3}}')), "That did not work. Try again.");
+  assert.equal(errorText(new Error("<!DOCTYPE html><html><body>500</body></html>")), "That did not work. Try again.");
+});
+
+test("shortcut tips say Cmd on a Mac and Ctrl everywhere else", () => {
+  assert.equal(modKey("MacIntel"), "Cmd");
+  assert.equal(modKey("Win32"), "Ctrl");
+  assert.equal(modKey("Linux x86_64"), "Ctrl");
+  assert.equal(modKey(""), "Ctrl");
+});
+
+test("a failure's plain sentence is shown, and a program's own words are not", () => {
+  // A sentence the server wrote for a person stays as it is.
+  assert.equal(plainFailure("No dialogue lines were found in this video."), "No dialogue lines were found in this video.");
+  // What happened, without the program's last line after it.
+  assert.equal(plainFailure("Could not look for subtitles in this video (RuntimeError: CUDA out of memory)"),
+    "Could not look for subtitles in this video.");
+  assert.equal(plainFailure("local STT reported an error ([Errno 2] No such file)"), "Local STT reported an error.");
+  assert.equal(plainFailure("Qwen dub mux failed: Conversion failed! /tmp/x.mp4"), "Qwen dub mux failed.");
+  // A program's words through and through: nothing for the screen.
+  assert.equal(plainFailure("[Errno 28] No space left on device: '/Users/x/y'"), "");
+  assert.equal(plainFailure("Traceback (most recent call last):"), "");
+  assert.equal(plainFailure("KeyError: 'segments'"), "");
+  assert.equal(plainFailure("'NoneType' object has no attribute 'get'"), "");
+  assert.equal(plainFailure("interrupted"), "");
+  assert.equal(plainFailure(""), "");
+});
+
+test("Raw log holds the failure's own text when the screen did not show it whole", () => {
+  assert.deepEqual(rawLogLines(["a", "b"], "No dialogue lines were found in this video."), ["a", "b"]);
+  assert.deepEqual(rawLogLines(["a"], "KeyError: 'segments'"), ["a", "KeyError: 'segments'"]);
+  assert.deepEqual(rawLogLines(["boom KeyError: 'segments'"], "KeyError: 'segments'"), ["boom KeyError: 'segments'"]);
+  assert.deepEqual(rawLogLines(null, "interrupted"), []);
+});
+
+// How LONG something is: minutes and seconds with leading zeros, everywhere a
+// length is shown (owner, 2026-09-30). A position keeps fmtClock.
+test("fmtLength is mm:ss with leading zeros, and the hour in front once there is one", () => {
+  assert.equal(fmtLength(0), "00:00");
+  assert.equal(fmtLength(39.7), "00:39");
+  assert.equal(fmtLength(60), "01:00");
+  assert.equal(fmtLength(728), "12:08");
+  assert.equal(fmtLength(3730), "1:02:10");
+  assert.equal(fmtLength(-3), "00:00");
+  assert.equal(fmtLength("x"), "00:00");
+});
+
+test("the Video card: its label, the file name and the kept length, with what was cut only when something was", () => {
+  assert.deepEqual(videoCard({ name: "quiz.mp4", kept: 39.7, total: 39.7 }),
+    { label: "Video", name: "quiz.mp4", length: "00:39", cut: "" });
+  assert.deepEqual(videoCard({ name: "quiz.mp4", kept: 29.7, total: 39.7 }),
+    { label: "Video", name: "quiz.mp4", length: "00:29", cut: "00:10 cut" });
+  // Less than a second gone is not said.
+  assert.equal(videoCard({ name: "a", kept: 9.6, total: 10 }).cut, "");
+  // A length that is not known is not made up.
+  assert.deepEqual(videoCard({ name: "Street food", kept: 0, total: 0 }),
+    { label: "Video", name: "Street food", length: "", cut: "" });
+  assert.equal(videoCardHtml({ name: "a<b>.mp4", kept: 29.7, total: 39.7 }),
+    '<div class="k">Video</div><div class="m vc-name" title="a&lt;b&gt;.mp4">a&lt;b&gt;.mp4</div>'
+    + '<div class="s vc-len">00:29<span class="vc-cut">00:10 cut</span></div>');
+  assert.equal(videoCardHtml({ name: "a.mp4", kept: 10, total: 10 }),
+    '<div class="k">Video</div><div class="m vc-name" title="a.mp4">a.mp4</div><div class="s vc-len">00:10</div>');
 });

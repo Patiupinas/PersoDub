@@ -73,6 +73,7 @@ def test_signed_out_is_its_own_error(monkeypatch):
     monkeypatch.setattr(translate.subprocess, "Popen", run)
     with pytest.raises(ChatGptNotSignedInError):
         ChatGptTranslator(binary="/bin/codex", model="").translate(["안녕"], "Spanish")
+    assert len(run.calls) == 1  # not retried -- the account's own state, not a blip
 
 
 def test_usage_limit_is_its_own_error(monkeypatch):
@@ -80,6 +81,28 @@ def test_usage_limit_is_its_own_error(monkeypatch):
     monkeypatch.setattr(translate.subprocess, "Popen", run)
     with pytest.raises(ChatGptLimitError):
         ChatGptTranslator(binary="/bin/codex", model="").translate(["안녕"], "Spanish")
+    assert len(run.calls) == 1  # not retried -- the account's own state, not a blip
+
+
+# OpenAI's sentence word for word (2026-10-02), curly apostrophe included.
+OPENAI_LIMIT = ("ERROR: You\u2019ve hit your usage limit. Upgrade to Plus to continue using Codex "
+                "(https://chatgpt.com/explore/plus), or try again at Oct 24th, 2026 1:07 PM.")
+
+
+def test_the_limit_error_carries_the_reset_time_openai_named(monkeypatch):
+    run = _fake_run(None, code=1, stderr=OPENAI_LIMIT)
+    monkeypatch.setattr(translate.subprocess, "Popen", run)
+    with pytest.raises(ChatGptLimitError) as e:
+        ChatGptTranslator(binary="/bin/codex", model="").translate(["안녕"], "Spanish")
+    assert e.value.resets == "Oct 24, 1:07 PM"
+
+
+def test_a_limit_message_without_a_date_names_no_reset_time(monkeypatch):
+    run = _fake_run(None, code=1, stderr="ERROR: You've hit your usage limit.")
+    monkeypatch.setattr(translate.subprocess, "Popen", run)
+    with pytest.raises(ChatGptLimitError) as e:
+        ChatGptTranslator(binary="/bin/codex", model="").translate(["안녕"], "Spanish")
+    assert e.value.resets is None
 
 
 def test_missing_program_reads_as_signed_out():
@@ -90,10 +113,71 @@ def test_missing_program_reads_as_signed_out():
 def test_other_failure_quotes_the_last_line(monkeypatch):
     run = _fake_run(None, code=2, stderr="something\nerror: stream disconnected before completion")
     monkeypatch.setattr(translate.subprocess, "Popen", run)
+    monkeypatch.setattr(translate.time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError) as e:
         ChatGptTranslator(binary="/bin/codex", model="").translate(["안녕"], "Spanish")
     assert "stream disconnected" in str(e.value)
     assert not isinstance(e.value, (ChatGptLimitError, ChatGptNotSignedInError))
+
+
+def _fake_run_then_succeed(fail_times, reply, code=1, stderr="error: stream disconnected"):
+    """A subprocess.Popen stand-in that fails `fail_times` runs the way
+    `_fake_run(code=...)` would, then answers `reply` from then on."""
+    calls = []
+
+    class _Proc:
+        def __init__(self, cmd, **kw):
+            self.args = cmd
+
+        def communicate(self, input=None, timeout=None):
+            calls.append((self.args, {"input": input}))
+            out = self.args[self.args.index("-o") + 1]
+            if len(calls) > fail_times:
+                with open(out, "w", encoding="utf-8") as f:
+                    f.write(reply)
+                return "", ""
+            return "", stderr
+
+        @property
+        def returncode(self):
+            return 0 if len(calls) > fail_times else code
+
+    _Proc.calls = calls
+    return _Proc
+
+
+def test_a_passing_failure_is_retried_and_then_succeeds(monkeypatch):
+    run = _fake_run_then_succeed(fail_times=2, reply='["Hola"]')
+    monkeypatch.setattr(translate.subprocess, "Popen", run)
+    waits = []
+    monkeypatch.setattr(translate.time, "sleep", lambda s: waits.append(s))
+    assert ChatGptTranslator(binary="/bin/codex", model="").translate(["안녕"], "Spanish") == ["Hola"]
+    assert len(run.calls) == 3
+    assert waits == [5, 15]
+
+
+def test_a_passing_failure_gives_up_after_two_more_tries(monkeypatch):
+    run = _fake_run_then_succeed(fail_times=99, reply='["Hola"]')
+    monkeypatch.setattr(translate.subprocess, "Popen", run)
+    waits = []
+    monkeypatch.setattr(translate.time, "sleep", lambda s: waits.append(s))
+    with pytest.raises(RuntimeError) as e:
+        ChatGptTranslator(binary="/bin/codex", model="").translate(["안녕"], "Spanish")
+    assert "stream disconnected" in str(e.value)
+    assert len(run.calls) == 3  # first try + two retries
+    assert waits == [5, 15]
+
+
+def test_a_sign_in_failure_is_never_retried_even_mid_job(monkeypatch):
+    run = _fake_run_then_succeed(fail_times=99, reply='["Hola"]',
+                                 code=1, stderr="Error: not logged in")
+    monkeypatch.setattr(translate.subprocess, "Popen", run)
+    waits = []
+    monkeypatch.setattr(translate.time, "sleep", lambda s: waits.append(s))
+    with pytest.raises(ChatGptNotSignedInError):
+        ChatGptTranslator(binary="/bin/codex", model="").translate(["안녕"], "Spanish")
+    assert len(run.calls) == 1
+    assert waits == []
 
 
 def test_stage_turns_signed_out_into_a_notice(tmp_path, monkeypatch):
@@ -167,6 +251,7 @@ def test_the_videos_own_words_are_not_an_account_state(monkeypatch):
     not ChatGPT's limit, and never reaches the error message."""
     run = _fake_run(None, code=1, stderr="user\n1. You've hit your usage limit, unauthorized!\n")
     monkeypatch.setattr(translate.subprocess, "Popen", run)
+    monkeypatch.setattr(translate.time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError) as e:
         ChatGptTranslator(binary="/bin/codex", model="").translate(["안녕"], "Spanish")
     assert not isinstance(e.value, (ChatGptLimitError, ChatGptNotSignedInError))

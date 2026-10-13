@@ -11,27 +11,32 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
 from typing import Callable, List, NoReturn, Optional
 
 from app import config, media, room
+from app.audio.onset import snap_starts
 from app.config import QWEN_N_TAKES
 from app.diar_campplus_client import diarize
 from app.engines.base import VoiceEngineDown
 from app.engines.qwen_tts import QwenTTSEngine
-from app.jobs import JobCancelled
+from app.i18n import both
+from app.jobs import JobCancelled, raise_if_cancelled, shown_error
 from app.perso_client import (
     PersoClient,
     PersoCreditExhaustedError,
     PersoInvalidKeyError,
     PersoProjectFailedError,
     PersoUnavailableError,
+    begin_credit_watch,
+    end_credit_watch,
     note_credits,
     perso_to_cues,
     short_reason,
 )
 from app.qwen_pipeline import cleanup_takes, run_qwen_dub
-from app.run_errors import advice_for
+from app.run_errors import advice_both
 from app.scripts.check_leakage import _validate_manifest_spans, measure_leakage
 from app.scripts.suppress_vocal_echo import suppress_vocal_echo
 from app.separate import SeparationEngine
@@ -47,7 +52,10 @@ from app.text.length_fit import fit_translate
 from app.text.srt import (
     borrow_time,
     build_srt,
+    clamp_cues,
+    merge_by_pause,
     parse_srt,
+    split_at_sentence_ends,
     split_cues_into_sentences,
 )
 from app.translate import (
@@ -81,18 +89,10 @@ def _log_stage(log: Callable[[str], None], name: str, text: str) -> None:
     log(f"{stage_marker(name)} {text}")
 
 
-def _check_cancel(cancel_check: Optional[Callable[[], bool]], log: Callable[[str], None]) -> None:
-    """Cooperative cancellation checkpoint, called between pipeline stages.
-
-    cancel_check is polled instead of killing the worker thread/subprocess
-    mid-stage -- the safest form of interruption here (see
-    app/jobs.py:JobStore.request_cancel). A stage already in flight (e.g. the
-    Qwen3-TTS sidecar call) always finishes; cancellation takes effect at the
-    next checkpoint.
-    """
-    if cancel_check is not None and cancel_check():
-        log("Cancelled by user request")
-        raise JobCancelled("cancelled by user")
+# The cancellation checkpoint between stages (and between a translator's asks)
+# is app/jobs.py's, shared with the voice stage; this is the name the stages
+# below were written against.
+_check_cancel = raise_if_cancelled
 
 
 def _check_room(work_dir: str, video_path: str, video_duration: Optional[float]) -> None:
@@ -104,7 +104,8 @@ def _check_room(work_dir: str, video_path: str, video_duration: Optional[float])
     """
     short = room.short_of_room(work_dir, video_path, video_duration)
     if short:
-        raise RuntimeError(short)
+        # Measured twice, once per language: a read of the free space is cheap.
+        raise shown_error(short, room.short_of_room(work_dir, video_path, video_duration, shown=True) or short)
 
 
 # The provider failures every stage reports the same way: one short sentence in
@@ -113,33 +114,43 @@ def _check_room(work_dir: str, video_path: str, video_duration: Optional[float])
 # exception attribute holding a clickable link, or None when the fix lives
 # inside the app (Settings) rather than on the web -- the wording of each
 # message is a user decision (2026-08-06), so change it here and nowhere else.
+# Each sentence is a function returning both() -- (English, the user's
+# language) -- so it is said in the language of the moment it is raised.
 # Where to take a failure that is not the user's to fix. The stage sentence
 # says which part stopped; this says who can answer for it, because "Perso STT
 # failed" on its own left the user with nowhere to go (user, 2026-09-11). Left
 # off the two the user CAN fix -- recharging and correcting a key are not
 # questions for Perso.
-ASK_PERSO = "Ask Perso if it keeps happening."
-ASK_GOOGLE = "Ask Google if it keeps happening."
-CHECK_FILE = "Check the video file."
+def _ask_perso():
+    return both("Ask Perso if it keeps happening.")
+
+
+def _ask_google():
+    return both("Ask Google if it keeps happening.")
+
+
+def _check_file():
+    return both("Check the video file.")
+
 
 _NOTICE_ERRORS = {
     PersoCreditExhaustedError: (
         "perso_credit_exhausted",
-        "Perso credits are used up. Recharge to continue.",
+        lambda: both("Perso credits are used up. Recharge to continue."),
         "link",
-        "",
+        None,
     ),
     PersoInvalidKeyError: (
         "perso_invalid_key",
-        "Perso rejected the API key. Open Settings and check the key.",
+        lambda: both("Perso rejected the API key. Open Settings and check the key."),
         None,
-        "",
+        None,
     ),
     PersoUnavailableError: (
         "perso_unavailable",
-        "Perso's server is temporarily unavailable. Wait a few minutes, then run this job again.",
+        lambda: both("Perso's server is temporarily unavailable. Wait a few minutes, then run this job again."),
         None,
-        ASK_PERSO,
+        _ask_perso,
     ),
     # Reached, accepted, worked on, given up. The other three are about not
     # getting to Perso at all; this one has an answer from Perso saying the
@@ -149,39 +160,41 @@ _NOTICE_ERRORS = {
     # by raise_notice, so the screen and Perso's dashboard read alike.
     PersoProjectFailedError: (
         "perso_project_failed",
-        "Perso could not finish this job. Try again, or check the project on Perso.",
+        lambda: both("Perso could not finish this job. Try again, or check the project on Perso."),
         None,
-        ASK_PERSO,
+        _ask_perso,
     ),
     GeminiQuotaExhaustedError: (
         "gemini_quota_exhausted",
-        "Gemini quota is used up. Upgrade the key's plan, or try again after the daily reset.",
+        lambda: both("Gemini quota is used up. Upgrade the key's plan, or try again after the daily reset."),
         "link",
-        "",
+        None,
     ),
     GeminiUnavailableError: (
         "gemini_unavailable",
-        "Google's Gemini server is temporarily overloaded. Wait a few minutes, then run this job again.",
+        lambda: both("Google's Gemini server is temporarily overloaded. Wait a few minutes, then run this job again."),
         None,
-        ASK_GOOGLE,
+        _ask_google,
     ),
     ChatGptNotSignedInError: (
         "chatgpt_signed_out",
-        "ChatGPT is not signed in. Sign in with ChatGPT in Settings, then Resume.",
+        lambda: both("ChatGPT is not signed in. Sign in with ChatGPT in Settings, then Resume. "
+                     "Or continue with another translator."),
         None,
-        "",
+        None,
     ),
     VoiceEngineDown: (
         "voice_engine_down",
-        "The voice engine stopped responding. Quit and reopen PersoDub, then Resume.",
+        lambda: both("The voice engine stopped responding. Quit and reopen PersoDub, then Resume."),
         None,
-        "",
+        None,
     ),
     ChatGptLimitError: (
         "chatgpt_limit",
-        "ChatGPT usage limit reached for now. Wait for it to reset, then Resume. Or Start over with another translator.",
+        lambda: both("ChatGPT usage limit reached for now. Wait for it to reset, then Resume. "
+                     "Or continue with another translator."),
         None,
-        "",
+        None,
     ),
 }
 
@@ -206,8 +219,10 @@ def raise_notice(e, log, on_notice) -> NoReturn:
 
     Always raises. Logs one "   Error: …" line (with the link in parentheses
     when the exception carries one), hands on_notice the structured dict the UI
-    reads, then raises RuntimeError(message) chained from e -- exactly what
-    each hand-written except block did before.
+    reads, then raises the message chained from e -- exactly what each
+    hand-written except block did before. In two languages: the English one is
+    the message (the error, the log, the notice's "message"), the user's is
+    the notice's "message_shown" and the job's error_shown (shown_error).
     """
     for cls in type(e).__mro__:
         entry = _NOTICE_ERRORS.get(cls)
@@ -215,20 +230,29 @@ def raise_notice(e, log, on_notice) -> NoReturn:
             break
     else:  # pragma: no cover -- callers only pass types listed above
         raise e
-    notice_type, msg, link_attr, ask = entry
+    notice_type, words, link_attr, ask = entry
+    msg, shown = words()
     # Perso's own words, kept whole and put after ours: the sentence above
     # says what to do, and this says what Perso said, so the screen can be
     # held up against Perso's dashboard (user, 2026-09-11).
     said = getattr(e, "reason", "") or ""
     code = getattr(e, "code", "") or ""
     if said or code:
-        msg = f"{msg} Perso said: {said or 'no reason given'}"
+        perso = both("Perso said: {said}", said=said) if said else both("Perso said: no reason given")
+        msg, shown = f"{msg} {perso[0]}", f"{shown} {perso[1]}"
         if code:
-            msg = f"{msg} ({code})"
+            msg, shown = f"{msg} ({code})", f"{shown} ({code})"
     # Last, after their own words: the code is the thing to quote when asking.
     if ask:
-        msg = f"{msg} {ask}"
-    notice = {"type": notice_type, "message": msg}
+        asked = ask()
+        msg, shown = f"{msg} {asked[0]}", f"{shown} {asked[1]}"
+    # A ChatGPT limit that named its reset time says it (weeks, on a free plan),
+    # in the order the popup says it: when, then the two ways on.
+    resets = getattr(e, "resets", None)
+    if isinstance(e, ChatGptLimitError) and resets:
+        msg, shown = both("ChatGPT usage limit reached. Resets {resets}. Resume then, or continue with "
+                          "another translator.", resets=resets)
+    notice = {"type": notice_type, "message": msg, "message_shown": shown}
     if link_attr:
         notice["link"] = getattr(e, link_attr)
         log(f"   Error: {msg} ({notice['link']})")
@@ -236,11 +260,45 @@ def raise_notice(e, log, on_notice) -> NoReturn:
         log(f"   Error: {msg}")
     if on_notice:
         on_notice(notice)
-    raise RuntimeError(msg) from e
+    raise shown_error(msg, shown) from e
 
 
 # The name the stages below were written against.
 _raise_notice = raise_notice
+
+
+# What each Perso part says when it fails on an error none of its except
+# clauses named: which part stopped, why ({reason}), and what to switch to --
+# one whole sentence per part, so each language words it its own way.
+_PERSO_FAILED = {
+    "Perso separation": lambda reason: both(
+        "Perso separation failed ({reason}). Check Settings, or switch separation back to Local.",
+        reason=reason),
+    "Perso STT": lambda reason: both(
+        "Perso STT failed ({reason}). Check Settings, or switch to Whisper (free, offline).", reason=reason),
+    "Perso dubbing": lambda reason: both(
+        "Perso dubbing failed ({reason}). Check Settings, or use this computer for dubbing.", reason=reason),
+}
+
+
+def _raise_perso_failed(e, log, what) -> NoReturn:
+    """Fail a Perso stage on an error none of its except clauses named.
+
+    Always raises. Logs one "   Error: …" line saying which stage stopped
+    (`what`, a key of _PERSO_FAILED), why, and what to switch to, then raises
+    that sentence (shown_error), chained from e. Shared by the two Perso
+    stages below and the cloud dub (app/dub_launch.py), which word such a
+    failure alike.
+    """
+    # short_reason, not str(e): httpx's text ends in the address it called,
+    # and a sentence that finishes with a URL reads as somewhere the user
+    # is being sent (user, 2026-09-11). The whole of it goes to the log.
+    logger.warning("%s failed: %s", what, e)
+    msg, shown = _PERSO_FAILED[what](short_reason(e))
+    asked = _ask_perso()
+    msg, shown = f"{msg} {asked[0]}", f"{shown} {asked[1]}"
+    log(f"   Error: {msg}")
+    raise shown_error(msg, shown) from e
 
 
 def _manifest_exclude_spans(manifest_path, mix_wav, log):
@@ -359,7 +417,7 @@ def _auto_translate_srt(
     durations = [round(c["end"] - c["start"], 2) for c in cues]
     # A translator that cannot follow a length rule is given none: no slots,
     # so no budgets and no re-asks (app/translate.py length_rules).
-    slots = durations if getattr(translator, "length_rules", True) else None
+    slots = durations if translator.length_rules else None
 
     # Translate with an explicit per-line character budget, re-requesting only
     # out-of-window lines (too long or too short) for a closer rewrite.
@@ -391,12 +449,12 @@ def _auto_translate_srt(
     # An untranslated line is not a wrong-language one: it has had its retries.
     # A translator whose own wording stands (ChatGPT) is not asked again: the
     # lines are counted for the log and kept as written (user, 2026-09-25).
-    if not getattr(translator, "recheck_script", True):
+    if not translator.recheck_script:
         kept_as_written = [i for i, t2 in enumerate(translated)
                            if t2.strip() and not script_ok(t2, target_lang)]
         if kept_as_written:
             log(f"   {len(kept_as_written)} lines keep words in another script, as the translator wrote them")
-    for _ in range(2 if getattr(translator, "recheck_script", True) else 0):
+    for _ in range(2 if translator.recheck_script else 0):
         bad = [i for i, t2 in enumerate(translated)
                if t2.strip() and not script_ok(t2, target_lang)]
         if not bad:
@@ -411,13 +469,13 @@ def _auto_translate_srt(
                 translated[i] = t2
     still_bad = [i for i, t2 in enumerate(translated)
                  if t2.strip() and not script_ok(t2, target_lang)]
-    if still_bad and getattr(translator, "recheck_script", True):
+    if still_bad and translator.recheck_script:
         log(f"   Warning: {len(still_bad)} lines still not in the target language — output needs review")
     untranslated = [i for i, t2 in enumerate(translated) if not t2.strip()]
     if untranslated and len(untranslated) == len(translated):
         # A dub of nothing but silence is not a finished job -- and without this
         # it would reach the voice stage and fail there, blaming the TTS engine.
-        raise RuntimeError(f"no line could be translated (0 of {len(translated)})")
+        raise shown_error(*both("no line could be translated (0 of {n})", n=len(translated)))
     if untranslated:
         log(f"   Warning: {len(untranslated)} lines could not be translated — left silent, "
             f"marked \"Not translated\" in the script")
@@ -484,31 +542,30 @@ def _separate_with_perso(video_path, work_dir, perso_client, cancel_check, on_no
     client -- its upload cache is what keeps the same video from being
     uploaded twice when both stages go through Perso.
     """
-    pc = perso_client or PersoClient()
-    pc.cancel_check = cancel_check
-    # Say which workspace is paying -- same reason as the STT stage below.
-    ws = getattr(pc, "describe_workspace", lambda: None)()
-    if ws:
-        name = ws.get("name") or f"workspace {ws.get('seq')}"
-        log(f"   Perso workspace: {name} (#{ws.get('seq')})")
+    # The client is made inside the `try`, so one that cannot be made (no key,
+    # or the workspace lookup offline or refused) is worded like a failed
+    # call. ws is set first because the `finally` reads it.
+    ws = None
     try:
+        pc = perso_client or PersoClient()
+        pc.cancel_check = cancel_check
+        # Say which workspace is paying -- same reason as the STT stage below.
+        ws = begin_credit_watch(pc)
+        if ws:
+            name = ws.get("name") or f"workspace {ws.get('seq')}"
+            log(f"   Perso workspace: {name} (#{ws.get('seq')})")
         sep_paths = pc.separate(video_path, work_dir)
+        # What THIS job consumed, not just the balance -- a surprise in the
+        # credits payload must never discard the paid result (STT stage rule).
+        note_credits(ws, pc, log, "Perso separation")
     except JobCancelled:
         raise  # a user cancel is not a Perso failure -- don't rewrap it
     except _PERSO_NOTICE_ERRORS as e:
         _raise_notice(e, log, on_notice)
     except Exception as e:
-        # short_reason, not str(e): httpx's text ends in the address it called,
-        # and a sentence that finishes with a URL reads as somewhere the user
-        # is being sent (user, 2026-09-11). The whole of it goes to the log.
-        logger.warning("Perso separation failed: %s", e)
-        msg = (f"Perso separation failed ({short_reason(e)}). Check Settings, "
-               f"or switch separation back to Local. {ASK_PERSO}")
-        log(f"   Error: {msg}")
-        raise RuntimeError(msg) from e
-    # What THIS job consumed, not just the balance -- a surprise in the
-    # credits payload must never discard the paid result (STT stage rule).
-    note_credits(ws, pc, log, "Perso separation")
+        _raise_perso_failed(e, log, "Perso separation")
+    finally:
+        end_credit_watch(ws)   # a call that failed must not count as still running
     return sep_paths, pc
 
 
@@ -518,33 +575,55 @@ def _stage_separate(video_path, work_dir, sep_engine, perso_client,
 
     Local Demucs (default) or Perso cloud. Either way a failure fails the whole
     job: no silent engine substitution (2026-08-06 rule), and no container
-    fallback. Returns (vocals_path, background_path, perso_client); the client
-    comes back because the Perso path may have created one, and the STT stage
-    reuses it so the same video is not uploaded twice.
+    fallback. Returns (vocals_path, background_path, perso_client, model); the
+    client comes back because the Perso path may have created one, and the STT
+    stage reuses it so the same video is not uploaded twice. `model` is what
+    did the separating ("RoFormer", "Demucs" or "Perso"), for the job record:
+    the log alone used to say which, and the record said "demucs" for a
+    RoFormer run (2026-10-09).
 
     video_duration, when known, scales the local Demucs subprocess timeout for
     long videos (see app.timeouts.scaled_timeout) -- unused on the Perso path.
     """
+    began = time.monotonic()
     if (sep_engine or "").lower() == "perso":
+        model = "Perso"
         _log_stage(log, "separate", "Separating background audio via Perso cloud…")
         sep_paths, perso_client = _separate_with_perso(
             video_path, work_dir, perso_client, cancel_check, on_notice, log)
     else:
-        _log_stage(log, "separate", "Separating background audio locally (Demucs)…")
+        engine = SeparationEngine(video_duration=video_duration)
+        # getattr: test fakes may not carry them.
+        model = getattr(engine, "name", "Demucs")
+        _log_stage(log, "separate",
+                   f"Separating background audio locally ({model}, {getattr(engine, 'model_file', '?')})…")
         try:
-            sep_paths = SeparationEngine(video_duration=video_duration).separate(video_path, work_dir)
+            sep_paths = engine.separate(video_path, work_dir)
         except Exception as e:
             # This one runs on the user's own machine, so there is nobody to
             # ask -- but which thing to look at depends on what stopped it. A
             # timeout and a full disk are not a broken file, and saying so
             # sent people to check the one thing that was fine (2026-09-15).
-            raise RuntimeError(
-                f"Voice separation failed on this computer. {advice_for(str(e), CHECK_FILE)} "
-                f"({str(e)[:400]})")
-    return sep_paths["vocals"], sep_paths["background"], perso_client
+            advice = advice_both(str(e), _check_file())
+            failed = both("Voice separation failed on this computer.")
+            raise shown_error(f"{failed[0]} {advice[0]} ({str(e)[:400]})",
+                             f"{failed[1]} {advice[1]} ({str(e)[:400]})")
+    # The line a reader judges the stage by: it finished, with what, how long.
+    log(f"   Separated in {time.monotonic() - began:.0f} s with {model}: "
+        f"{os.path.basename(sep_paths['vocals'])}, {os.path.basename(sep_paths['background'])}")
+    return sep_paths["vocals"], sep_paths["background"], perso_client, model
 
 
-def _stage_transcribe_perso(video_path, perso_client, cancel_check, on_notice, log):
+def _separation_note(vocals_path, background_path, model=None):
+    """What SEPARATED_NAME holds: the two files by name, and the model that
+    made them when it is known (a test fake gives none)."""
+    note = {"vocals": os.path.basename(vocals_path), "background": os.path.basename(background_path)}
+    if model:
+        note["model"] = model
+    return note
+
+
+def _stage_transcribe_perso(video_path, perso_client, cancel_check, on_notice, log, video_duration=None):
     """Stage 2/6 -- Perso cloud STT (diarization & timestamps). Returns
     (cues, client) -- the client so the job can report what the stage spent.
 
@@ -553,6 +632,9 @@ def _stage_transcribe_perso(video_path, perso_client, cancel_check, on_notice, l
     line to show for it (user decision 2026-08-06: no fallback; say what is
     wrong and how to fix it instead).
     """
+    # Set before the `try` because the `finally` reads it, and a client that
+    # cannot be made fails before begin_credit_watch has set it.
+    ws = None
     try:
         _log_stage(log, "transcribe", "Running Perso STT (diarization & timestamps)…")
         pc = perso_client or PersoClient()
@@ -564,18 +646,21 @@ def _stage_transcribe_perso(video_path, perso_client, cancel_check, on_notice, l
         # from what the Settings screen shows -- this line is how the user
         # finds that out (billed the wrong-workspace confusion of
         # 2026-08-06). getattr: test fakes may not carry it.
-        ws = getattr(pc, "describe_workspace", lambda: None)()
+        ws = begin_credit_watch(pc)
         if ws:
             name = ws.get("name") or f"workspace {ws.get('seq')}"
             log(f"   Perso workspace: {name} (#{ws.get('seq')})")
-        perso_cues = perso_to_cues(pc.transcribe(video_path))
+        segments = pc.transcribe(video_path)
+        # What THIS job consumed (balance before minus after), not just the
+        # remaining balance (user feedback 2026-08-06). Counted as soon as
+        # Perso answers, before the answer is read, as separation and the
+        # cloud dub count theirs: the call is billed whatever it holds, an
+        # empty transcript too. A surprise in the credits payload must never
+        # discard the paid result.
+        note_credits(ws, pc, log, "Perso STT")
+        perso_cues = clamp_cues(perso_to_cues(segments), video_duration)
         if not perso_cues:
             raise RuntimeError("Perso result is empty")
-        # What THIS job consumed (balance before minus after), not just the
-        # remaining balance (user feedback 2026-08-06). By this point
-        # transcription has succeeded AND been billed, so a surprise in
-        # the credits payload must never discard the paid result.
-        note_credits(ws, pc, log, "Perso STT")
         # The client goes back with the cues, as _stage_separate's does: it
         # carries what this stage spent, which the finished job reports.
         return perso_cues, pc
@@ -584,14 +669,13 @@ def _stage_transcribe_perso(video_path, perso_client, cancel_check, on_notice, l
     except _PERSO_NOTICE_ERRORS as e:
         _raise_notice(e, log, on_notice)
     except Exception as e:
-        logger.warning("Perso STT failed: %s", e)
-        msg = (f"Perso STT failed ({short_reason(e)}). Check Settings, "
-               f"or switch to Whisper (free, offline). {ASK_PERSO}")
-        log(f"   Error: {msg}")
-        raise RuntimeError(msg) from e
+        _raise_perso_failed(e, log, "Perso STT")
+    finally:
+        end_credit_watch(ws)   # a call that failed must not count as still running
 
 
-def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, video_duration=None):
+def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, video_duration=None,
+                            vocals_path=None):
     """Stage 2/6 -- local Whisper transcription (no container at all).
 
     Returns (src_cues, detected_source_language_code, diar_engine): Whisper
@@ -599,7 +683,8 @@ def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, 
     also turns CAM++ on unless the caller already picked a diarization engine.
 
     video_duration, when known, scales the subprocess timeout for long videos
-    (see app.timeouts.scaled_timeout).
+    (see app.timeouts.scaled_timeout) and ends every line where the video
+    does; vocals_path lets Whisper's made-up lines over quiet stretches go.
     """
     _log_stage(log, "transcribe", "Transcribing locally (Whisper, no container)…")
     detected = {"code": None}
@@ -608,20 +693,22 @@ def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, 
         # forcing it once made an en->ko job decode English speech as Korean
         # phonetic gibberish. Only the UI's explicit SOURCE pick
         # (source_language_code) may be given as a hint; None = auto-detect.
+        # Word times, so a line can end where a sentence ends (split_at_sentence_ends).
         src_cues = transcribe_local(
-            video_path, language=source_language_code, log=log,
+            video_path, language=source_language_code, word_timestamps=True, log=log,
             on_language=lambda c: detected.__setitem__("code", c),
-            video_duration=video_duration,
+            video_duration=video_duration, vocals_path=vocals_path,
         )
     except JobCancelled:
         raise  # a user cancel is not a failure of this stage
     except Exception as e:
         # Was re-raised bare, which put a library's own words on the failure
         # card with no hint of which part had stopped (user, 2026-09-11).
-        msg = (f"Speech recognition failed on this computer. "
-               f"{advice_for(str(e), CHECK_FILE)} ({str(e)[:400]})")
+        advice = advice_both(str(e), _check_file())
+        failed = both("Speech recognition failed on this computer.")
+        msg = f"{failed[0]} {advice[0]} ({str(e)[:400]})"
         log(f"   Error: {msg}")
-        raise RuntimeError(msg) from e
+        raise shown_error(msg, f"{failed[1]} {advice[1]} ({str(e)[:400]})") from e
     # Local Whisper sets no speaker_id -- CAM++ can still label the cues it produced.
     return src_cues, detected["code"], diar_engine or "campplus"
 
@@ -664,7 +751,8 @@ def _pick_source_cues(source_srt_path, perso_cues, src_cues):
     whatever STT produced (Perso if it ran, else local Whisper).
     """
     if source_srt_path is None:
-        return perso_cues if perso_cues is not None else src_cues
+        # A machine transcript cuts at every sentence; a user's script is kept as written.
+        return merge_by_pause(split_at_sentence_ends(perso_cues if perso_cues is not None else src_cues))
     with open(source_srt_path, encoding="utf-8-sig") as f:
         source_cues = parse_srt(f.read())
     # parse_srt returns bare {start,end,text} -- a script file carries no
@@ -678,6 +766,19 @@ def _pick_source_cues(source_srt_path, perso_cues, src_cues):
     return source_cues
 
 
+def _ready_translator(translator, translate_engine, work_dir, cancel_check, log):
+    tr = translator or get_translator(translate_engine)
+    # ChatGPT: a Resume re-reads what was already answered (the others keep nothing).
+    tr.answers_dir = os.path.join(work_dir, "chatgpt_answers")
+    # Cancel between asks, not only after the stage: a cancel during a
+    # long translation kept asking ChatGPT for 2.5 minutes (8 more
+    # requests off the user's allowance, Windows 2026-09-25). Every
+    # request goes through the translator's ask, which runs before_ask first.
+    if cancel_check is not None:
+        tr.before_ask = lambda: _check_cancel(cancel_check, log)
+    return tr
+
+
 def _stage_translate(srt_path, source_cues, language, translate_engine, translator,
                      work_dir, on_notice, log, cancel_check=None):
     """Stage 3/6 -- translated subtitles, provided or auto-translated.
@@ -689,30 +790,21 @@ def _stage_translate(srt_path, source_cues, language, translate_engine, translat
     """
     auto_translated = False
     if srt_path is None:
-        tr = translator or get_translator(translate_engine)
-        if hasattr(tr, "answers_dir"):   # ChatGPT: a Resume re-reads what was already answered
-            tr.answers_dir = os.path.join(work_dir, "chatgpt_answers")
-        # Cancel between asks, not only after the stage: a cancel during a
-        # long translation kept asking ChatGPT for 2.5 minutes (8 more
-        # requests off the user's allowance, Windows 2026-09-25). Every
-        # translator sends each request through its _ask.
-        if cancel_check is not None and hasattr(tr, "_ask"):
-            ask = tr._ask
-            def _ask_unless_cancelled(prompt, _ask=ask):
-                _check_cancel(cancel_check, log)
-                return _ask(prompt)
-            tr._ask = _ask_unless_cancelled
+        tr = _ready_translator(translator, translate_engine, work_dir, cancel_check, log)
         # Name the engine (and model) that translated -- a Gemini run and a
         # local Gemma run were indistinguishable in the log (user feedback
-        # 2026-08-06). getattr: test fakes may carry neither attribute.
-        tr_name = getattr(tr, "display_name", "") or type(tr).__name__
-        tr_model = getattr(tr, "model", None)
+        # 2026-08-06).
+        tr_name = tr.display_name or type(tr).__name__
+        tr_model = tr.model
         engine_label = f"{tr_name} — {tr_model}" if tr_model else tr_name
         _log_stage(log, "translate",
                    f"Translating from source subtitles ({len(source_cues)} lines, {engine_label})…")
         # Same shape as the Perso credit handling above: a short sentence says
         # what happened, the structured notice carries it (plus a link when one
         # helps) to the UI popup. The raw HTTP error stays out of the screen.
+        # A ChatGPT that cannot answer (limit, sign-in) stops the dubbing here
+        # too: the popup offers the other translators and Resume carries on
+        # with the one the user picks (owner, 2026-10-03), never one of ours.
         try:
             srt_path = _auto_translate_srt(
                 source_cues, language, tr, work_dir, log=log,
@@ -727,11 +819,12 @@ def _stage_translate(srt_path, source_cues, language, translate_engine, translat
             # ask about. Either way the sentence names the translator, so
             # the card says which part stopped (user, 2026-09-11).
             logger.warning("Translation failed (%s): %s", engine_label, e)
-            where = ASK_GOOGLE if "gemini" in tr_name.lower() else \
-                "Try again, or pick another translator in Settings."
-            msg = f"Translation failed ({tr_name}: {str(e)[:120]}). {where}"
+            where = _ask_google() if "gemini" in tr_name.lower() else \
+                both("Try again, or pick another translator in Settings.")
+            failed = both("Translation failed ({translator}: {reason}).", translator=tr_name, reason=str(e)[:120])
+            msg = f"{failed[0]} {where[0]}"
             log(f"   Error: {msg}")
-            raise RuntimeError(msg) from e
+            raise shown_error(msg, f"{failed[1]} {where[1]}") from e
         auto_translated = True
     else:
         _log_stage(log, "translate", "Using the provided translated subtitles")
@@ -741,13 +834,14 @@ def _stage_translate(srt_path, source_cues, language, translate_engine, translat
         segments = parse_srt(f.read())
     log(f"   {len(segments)} dialogue lines prepared")
     if not segments:
-        raise RuntimeError("No dialogue lines were found in this video.")
+        raise shown_error(*both("No dialogue lines were found in this video."))
     return segments, auto_translated
 
 
 def _stage_synthesize(segments, ref_cues, work_dir, vocals_path, background_path,
                       language, n_takes, qwen_engine, on_notice, log, video_duration=None,
-                      reuse_lines=False, cancel_check=None):
+                      reuse_lines=False, cancel_check=None, translator=None,
+                      sample_cues=None):
     """Stage 4/6 -- cloning & synthesis (Qwen3-TTS, the app's only TTS engine).
 
     Returns the path of the full-length dubbed audio.
@@ -776,7 +870,9 @@ def _stage_synthesize(segments, ref_cues, work_dir, vocals_path, background_path
                             language=language, n_takes=effective_n_takes, log=log,
                             on_notice=on_notice, video_duration=video_duration,
                             **({"reuse_lines": True} if reuse_lines else {}),
-                            **({"cancel_check": cancel_check} if cancel_check else {}))
+                            **({"cancel_check": cancel_check} if cancel_check else {}),
+                            **({"translator": translator} if translator else {}),
+                            **({"sample_cues": sample_cues} if sample_cues else {}))
     except VoiceEngineDown as e:
         # The one voice failure that is not one line's: nothing more will be
         # made this run, so the job stops here and the screen says why.
@@ -789,7 +885,12 @@ def _stage_finish(video_path, audio_wav, out_path, work_dir, log):
     d_vid = _video_duration(video_path)
     r = _mux(video_path, audio_wav, out_path, d_vid)
     if r.returncode != 0:
-        raise RuntimeError(f"Qwen dub mux failed: {r.stderr[-200:]}")
+        # ffmpeg could not put the sound on the picture: not the voice
+        # engine's failure, whichever engine made the voices. Only its last
+        # line, with the folders cut off (media._failure), reaches the screen.
+        paths = (video_path, audio_wav, out_path)
+        what = both("Could not build the finished video")
+        raise shown_error(media._failure(what[0], r.stderr, paths), media._failure(what[1], r.stderr, paths))
     ensure_video_length(video_path, out_path, log)
     # Final assembly + length gate passed -- only now drop the losing take
     # candidates that were kept for a possible reassembly pass (see
@@ -799,9 +900,9 @@ def _stage_finish(video_path, audio_wav, out_path, work_dir, log):
     # Rewriting one line and re-speaking only that line needs all three, and a
     # rewrite is the normal thing to do after watching the dub back (user
     # decision 2026-08-24, reversing the 0.3.6 cleanup). They cost disk, so
-    # app/api/dub.py's check_space warns before a job that would not fit and points at the
-    # per-job delete button. cleanup_intermediates() is still here and is what
-    # that warning tells the user to reach for.
+    # app/api/_launch.py's check_space refuses a job that would not fit, and
+    # app/room.py asks again before each stage. cleanup_intermediates() is
+    # still here, though only its tests call it.
     log("   keeping the per-line audio so single lines can be redone")
 
 
@@ -856,6 +957,122 @@ def _saved_transcript(work_dir: str):
     if isinstance(d, dict) and isinstance(d.get("cues"), list) and d["cues"]:
         return d
     return None
+
+
+def _duration_or_none(video_path):
+    """The video's length, measured once, up front, so the heavy local stages
+    (separation, transcription, diarization, the nonverbal gate) can scale
+    their subprocess timeouts to the video instead of a fixed wall that
+    ignores length -- long videos used to die on it (issue: 21 occurrences).
+    A failed probe (corrupt file, ffprobe missing, ...) must never fail the
+    dub over a timeout number, so it gives None: every stage then uses
+    today's fixed default, same as before this change."""
+    try:
+        return _video_duration(video_path)
+    except Exception:
+        return None
+
+
+def _separate_or_reuse(video_path, work_dir, resume, sep_engine, perso_client, cancel_check, on_notice, log,
+                       video_duration=None):
+    """Stage 1/6, or the separation the earlier run saved (SEPARATED_NAME)
+    when resuming. Returns (vocals_path, background_path, perso_client,
+    model, reused)."""
+    saved = _saved_separation(work_dir) if resume else None
+    if saved:
+        _log_stage(log, "separate", "Separated audio from the earlier run, reused")
+        vocals_path, background_path = saved
+        model = (_load_json(work_dir, SEPARATED_NAME) or {}).get("model")
+        return vocals_path, background_path, perso_client, model, True
+    vocals_path, background_path, perso_client, model = _stage_separate(
+        video_path, work_dir, sep_engine, perso_client, cancel_check, on_notice, log,
+        video_duration=video_duration)
+    _save_json(work_dir, SEPARATED_NAME, _separation_note(vocals_path, background_path, model))
+    return vocals_path, background_path, perso_client, model, False
+
+
+def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, source_language_code,
+                         diar_engine, num_speakers, perso_client, cancel_check, on_notice, log,
+                         video_duration=None):
+    """Stage 2/6, or the transcript the earlier run saved (TRANSCRIPT_NAME)
+    when `reuse`. Perso cloud STT if the user picked it, else local Whisper.
+    Whisper auto-detects the source language, and that code comes back so
+    the result can surface it; Perso STT reports no language, so it stays
+    None. Returns (src_cues, perso_cues, detected_code, perso_client,
+    reused)."""
+    saved = _saved_transcript(work_dir) if reuse else None
+    if saved:
+        _log_stage(log, "transcribe",
+                   "Transcript from the earlier run, reused (%d lines)" % len(saved["cues"]))
+        src_cues = saved["cues"]
+        perso_cues = src_cues if saved.get("perso") else None
+        return src_cues, perso_cues, saved.get("detected"), perso_client, True
+    detected_code = None
+    perso_cues = None
+    if stt_engine == "perso":
+        perso_cues, perso_client = _stage_transcribe_perso(
+            video_path, perso_client, cancel_check, on_notice, log, video_duration=video_duration)
+    if perso_cues is None:
+        src_cues, detected_code, diar_engine = _stage_transcribe_local(
+            video_path, source_language_code, diar_engine, log, video_duration=video_duration,
+            vocals_path=vocals_path)
+    else:
+        src_cues = perso_cues
+    # A machine transcript can start a line before its speech (Whisper
+    # did by 0.15 s or more on 15 of 49 lines): the dub would speak before
+    # the mouth moves. Saved moved, so a Resume reads the same starts.
+    moved = snap_starts(src_cues, vocals_path)
+    if moved:
+        log("   %d line start(s) moved to where the speech begins" % moved)
+    _stage_diarize(diar_engine, vocals_path, src_cues, num_speakers, log, video_duration=video_duration)
+    _save_json(work_dir, TRANSCRIPT_NAME,
+               {"cues": src_cues, "perso": perso_cues is not None, "detected": detected_code})
+    return src_cues, perso_cues, detected_code, perso_client, False
+
+
+def _translate_or_reuse(reuse, srt_path, source_cues, language, translate_engine, translator,
+                        work_dir, on_notice, log, cancel_check=None):
+    """Stage 3/6, or the translation the earlier run finished when `reuse`
+    (translated.srt is only ever written whole). Returns (segments,
+    auto_translated, reused)."""
+    kept_translation = os.path.join(work_dir, "translated.srt")
+    if reuse and _usable_file(kept_translation):
+        _log_stage(log, "translate", "Translation from the earlier run, reused")
+        with open(kept_translation, encoding="utf-8-sig") as f:
+            segments = parse_srt(f.read())
+        log(f"   {len(segments)} dialogue lines prepared")
+        return segments, True, True
+    segments, auto_translated = _stage_translate(
+        srt_path, source_cues, language, translate_engine, translator,
+        work_dir, on_notice, log, cancel_check=cancel_check)
+    return segments, auto_translated, False
+
+
+def _result_of(job_id, out_path, video_path, work_dir, segments, auto_translated, detected_code,
+               perso_client, sep_model) -> dict:
+    """What run_dub returns for a finished dub."""
+    # Lines the assembly cut short (ran into the next line, or past the end of
+    # the video -- app/qwen_assemble.place_lines), for the UI to show later.
+    # Absent only for a job whose synthesis stage never reached place_lines at
+    # all, which _stage_synthesize would already have failed on.
+    clipped_info = _load_json(work_dir, "clipped_lines.json") or {"clipped": [], "clipped_count": 0}
+    return {
+        "job_id": job_id,
+        "out_path": out_path,
+        "num_segments": len(segments),
+        "auto_translated": auto_translated,
+        "detected_source_language": detected_code,
+        # For the usage count: what the job spent on Perso (None when no stage
+        # went there) and how long the video was. The probe just succeeded in
+        # _stage_finish, so asking again is safe.
+        "perso_credits": getattr(perso_client, "credits_used", None),
+        "duration": _video_duration(video_path),
+        # What separated the voice from the background, onto the record the
+        # same way (None when a reused separation did not say).
+        "separation_model": sep_model,
+        "clipped": clipped_info["clipped"],
+        "clipped_count": clipped_info["clipped_count"],
+    }
 
 
 def run_dub(
@@ -926,94 +1143,65 @@ def run_dub(
     os.makedirs(work_dir, exist_ok=True)
 
     _check_cancel(cancel_check, log)
+    video_duration = _duration_or_none(video_path)
 
-    # Measured once, up front, so the heavy local stages below (separation,
-    # transcription, diarization, the nonverbal gate) can scale their
-    # subprocess timeouts to the video instead of a fixed wall that ignores
-    # length -- long videos used to die on it (issue: 21 occurrences). A
-    # failed probe (corrupt file, ffprobe missing, ...) must never fail the
-    # dub over a timeout number, so it falls back to None: every stage below
-    # then uses today's fixed default, same as before this change.
-    try:
-        video_duration = _video_duration(video_path)
-    except Exception:
-        video_duration = None
+    def checkpoint():
+        # Between two stages: stop if Cancel was pressed, or if the rest of
+        # the job will not fit on the disk.
+        _check_cancel(cancel_check, log)
+        _check_room(work_dir, video_path, video_duration)
 
     _check_room(work_dir, video_path, video_duration)
-    saved_sep = _saved_separation(work_dir) if resume else None
-    if saved_sep:
-        _log_stage(log, "separate", "Separated audio from the earlier run, reused")
-        vocals_path, background_path = saved_sep
-    else:
-        vocals_path, background_path, perso_client = _stage_separate(
-            video_path, work_dir, sep_engine, perso_client, cancel_check, on_notice, log,
-            video_duration=video_duration)
-        _save_json(work_dir, SEPARATED_NAME, {"vocals": os.path.basename(vocals_path),
-                                              "background": os.path.basename(background_path)})
+    vocals_path, background_path, perso_client, sep_model, sep_reused = _separate_or_reuse(
+        video_path, work_dir, resume, sep_engine, perso_client, cancel_check, on_notice, log,
+        video_duration=video_duration)
 
-    _check_cancel(cancel_check, log)
-    _check_room(work_dir, video_path, video_duration)
+    checkpoint()
 
-    # Transcription: Perso cloud STT if the user picked it, else local
-    # Whisper. Whisper auto-detects the source language; capture it so the
-    # result can surface it. Perso STT reports no language, so this stays None.
     # Each reuse holds only while everything before it was reused too: a stage
     # made again can change the lines, and a later stage's files from the
     # earlier run would then belong to different lines (review 2026-09-23).
-    saved_tx = _saved_transcript(work_dir) if resume and saved_sep else None
-    if saved_tx:
-        _log_stage(log, "transcribe",
-                   "Transcript from the earlier run, reused (%d lines)" % len(saved_tx["cues"]))
-        src_cues = saved_tx["cues"]
-        perso_cues = src_cues if saved_tx.get("perso") else None
-        detected_code = saved_tx.get("detected")
-    else:
-        detected_code = None
-        perso_cues = None
-        if stt_engine == "perso":
-            perso_cues, perso_client = _stage_transcribe_perso(
-                video_path, perso_client, cancel_check, on_notice, log)
-        if perso_cues is None:
-            src_cues, detected_code, diar_engine = _stage_transcribe_local(
-                video_path, source_language_code, diar_engine, log, video_duration=video_duration)
-        else:
-            src_cues = perso_cues
-        _stage_diarize(diar_engine, vocals_path, src_cues, num_speakers, log, video_duration=video_duration)
-        _save_json(work_dir, TRANSCRIPT_NAME,
-                   {"cues": src_cues, "perso": perso_cues is not None, "detected": detected_code})
+    src_cues, perso_cues, detected_code, perso_client, tx_reused = _transcribe_or_reuse(
+        video_path, work_dir, sep_reused, vocals_path, stt_engine, source_language_code,
+        diar_engine, num_speakers, perso_client, cancel_check, on_notice, log,
+        video_duration=video_duration)
     source_cues = _pick_source_cues(source_srt_path, perso_cues, src_cues)
 
-    _check_cancel(cancel_check, log)
-    _check_room(work_dir, video_path, video_duration)
+    checkpoint()
 
     # Translated subtitles (provided or auto-translated)
-    kept_translation = os.path.join(work_dir, "translated.srt")
-    translation_reused = bool(resume and saved_tx and srt_path is None and _usable_file(kept_translation))
-    if translation_reused:
-        _log_stage(log, "translate", "Translation from the earlier run, reused")
-        with open(kept_translation, encoding="utf-8-sig") as f:
-            segments = parse_srt(f.read())
-        log(f"   {len(segments)} dialogue lines prepared")
-        auto_translated = True
-    else:
-        segments, auto_translated = _stage_translate(
-            srt_path, source_cues, language, translate_engine, translator,
-            work_dir, on_notice, log, cancel_check=cancel_check)
+    segments, auto_translated, translation_reused = _translate_or_reuse(
+        tx_reused and srt_path is None, srt_path, source_cues, language, translate_engine, translator,
+        work_dir, on_notice, log, cancel_check=cancel_check)
 
     # Preserve emotion & speaker -- the reference lines the Qwen path builds its
     # per-speaker voice samples from. (If source subtitles exist, their timing is
     # more accurate, so prefer them.)
     ref_cues = source_cues or src_cues
+    # The voice samples are cut from the transcript's own lines when no script
+    # was given: the merged lines run past the 7 s a sample may be, and in a
+    # Shuka lecture the only one short enough was its last, which the end of
+    # the video cut off mid-sentence (2026-10-04).
+    sample_cues = None if source_srt_path else src_cues
 
-    _check_cancel(cancel_check, log)
-    _check_room(work_dir, video_path, video_duration)
+    # A script the app translated itself may be written again once its lines
+    # are voiced, by the same translator, to fit each slot at the speaker's
+    # real pace (app/qwen_pipeline.fit_to_pace). Never a script the user gave.
+    pace_tr = None
+    if config.PACE_FIT and auto_translated:
+        pace_tr = _ready_translator(translator, translate_engine, work_dir, cancel_check, log)
+        if not getattr(pace_tr, "length_rules", True):
+            log("   pace fit off: %s does not follow a length" % (getattr(pace_tr, "display_name", "") or "this translator"))
+            pace_tr = None
+
+    checkpoint()
     audio_wav = _stage_synthesize(
         segments, ref_cues, work_dir, vocals_path, background_path,
         language, n_takes, qwen_engine, on_notice, log, video_duration=video_duration,
-        reuse_lines=bool(resume and (translation_reused or srt_path)), cancel_check=cancel_check)
+        reuse_lines=bool(resume and (translation_reused or srt_path)), cancel_check=cancel_check,
+        translator=pace_tr, sample_cues=sample_cues)
 
-    _check_cancel(cancel_check, log)
-    _check_room(work_dir, video_path, video_duration)
+    checkpoint()
 
     # The check stage: catch original speech bleeding through the dub.
     audio_wav = leakage_gate(audio_wav, vocals_path,
@@ -1023,18 +1211,8 @@ def run_dub(
     _check_room(work_dir, video_path, video_duration)
     _stage_finish(video_path, audio_wav, out_path, work_dir, log)
     log("Done!")
-    return {
-        "job_id": job_id,
-        "out_path": out_path,
-        "num_segments": len(segments),
-        "auto_translated": auto_translated,
-        "detected_source_language": detected_code,
-        # For the usage count: what the job spent on Perso (None when no stage
-        # went there) and how long the video was. The probe just succeeded in
-        # _stage_finish, so asking again is safe.
-        "perso_credits": getattr(perso_client, "credits_used", None),
-        "duration": _video_duration(video_path),
-    }
+    return _result_of(job_id, out_path, video_path, work_dir, segments, auto_translated, detected_code,
+                      perso_client, sep_model)
 
 
 _INTERMEDIATE = re.compile(

@@ -11,7 +11,16 @@
 //
 // A single 2s poll runs only while something is downloading (same cadence as
 // the dub-progress poll).
-import { gb, modelStatusLine, dubStartDialog, overallProgress, allReady } from "./modelsUi.mjs";
+import { gb, modelStatusLine, dubStartDialog, overallProgress, allReady, groupModels } from "./modelsUi.mjs";
+import { t } from "./i18n.mjs";
+
+/** The desktop app's "Connection problem, retrying (2/3)" in the page's
+ * language. The shell sends it in English, because this file knows a retry by
+ * those words (desktop/src/installer.js). */
+export function retryLine(detail) {
+  const m = /^Connection problem, retrying \((\d+)\/(\d+)\)/.exec(detail || "");
+  return m ? t("Connection problem, retrying ({n}/{m})", { n: m[1], m: m[2] }) : detail;
+}
 
 /**
  * Wire the models UI to a page.
@@ -41,9 +50,35 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
   // absent in a plain browser) and follows the progress events it sends.
   let packBusy = null;     // { id, name, title, line, pct }
   let packFailed = null;   // { id, reason } until the next attempt or refresh clears it
-  const PACK_HINT = "Installed by the desktop app";
+  // A pack in a plain browser: the desktop app installs it. Read when drawn,
+  // so it is in the page's language; the sentences below say it whole.
+  const packHint = () => t("Installed by PersoDub");
 
   const modelRow = (id) => modelRows.find((m) => m.id === id) || null;
+
+  // Remove takes two presses: the first turns the button into the question
+  // with the size, the second (within REMOVE_ARM_MS) removes. One press used
+  // to delete 1.9 GB on the spot (Windows G2, 2026-10-07).
+  const REMOVE_ARM_MS = 10000;
+  let removeArmed = null;   // { id, until }
+  function armRemove(btn, m, remove) {
+    const armed = removeArmed && removeArmed.id === m.id && Date.now() < removeArmed.until;
+    btn.textContent = armed ? t("Remove {size} GB?", { size: gb(m.bytes) }) : t("Remove");
+    btn.onclick = () => {
+      if (removeArmed && removeArmed.id === m.id && Date.now() < removeArmed.until) {
+        removeArmed = null;
+        return remove();
+      }
+      removeArmed = { id: m.id, until: Date.now() + REMOVE_ARM_MS };
+      repaint();
+      // The question goes away by itself; the timer must not keep a test
+      // process alive, nor fail one whose page is already torn down.
+      const timer = setTimeout(() => {
+        if (removeArmed && removeArmed.id === m.id) { removeArmed = null; try { repaint(); } catch { /* page gone */ } }
+      }, REMOVE_ARM_MS);
+      if (timer.unref) timer.unref();
+    };
+  }
 
   if (shell && shell.onInstallProgress) {
     shell.onInstallProgress((p) => {
@@ -54,7 +89,7 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
       // A retry notice stands alone: with the step title in front of it, the
       // Settings row's 34 characters ended before the word "retrying" (W22).
       packBusy.retry = p.state === "progress" && /^Connection problem/.test(p.detail || "");
-      packBusy.line = packBusy.retry ? p.detail : p.state === "progress" && p.detail && p.detail !== p.title ? `${p.title}: ${p.detail}` : (p.title || "");
+      packBusy.line = packBusy.retry ? retryLine(p.detail) : p.state === "progress" && p.detail && p.detail !== p.title ? `${p.title}: ${p.detail}` : (p.title || "");
       // The shell sends the pack's overall percent on every event.
       if (p.pct != null) packBusy.pct = p.pct;
       repaint();
@@ -90,16 +125,16 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
   async function installPack(id) {
     const name = (modelRow(id) || {}).name || id;
     if (!shell || !shell.installPack) {
-      showPackError(`${name}: ${PACK_HINT}.`);
-      tellPack({ id, error: `${name}: ${PACK_HINT}.` });
+      showPackError(t("{name}: Installed by PersoDub.", { name }));
+      tellPack({ id, error: t("{name}: Installed by PersoDub.", { name }) });
       return false;
     }
     if (packBusy) {
       // One at a time, and the one running keeps its place on screen: a second
       // press used to take over the busy slot and show the first as paused.
       if (packBusy.id !== id) {
-        showPackError(`${packBusy.name} is still installing. Wait for it to finish.`);
-        tellPack({ id, error: `${packBusy.name} is still installing. Wait for it to finish.` });
+        showPackError(t("{name} is still installing. Wait for it to finish.", { name: packBusy.name }));
+        tellPack({ id, error: t("{name} is still installing. Wait for it to finish.", { name: packBusy.name }) });
       }
       return false;
     }
@@ -110,7 +145,7 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
     try { res = await shell.installPack(id); }
     catch (e) { res = { ok: false, reason: String((e && e.message) || e) }; }
     packBusy = null;
-    if (!res || !res.ok) packFailed = { id, reason: (res && res.reason) || "The install could not finish." };
+    if (!res || !res.ok) packFailed = { id, reason: (res && res.reason) || t("The install could not finish.") };
     await fetchModels();
     repaint();
     if (packFailed) {
@@ -127,7 +162,7 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
   }
   async function removePack(id) {
     $("modelsError").textContent = "";
-    if (!shell || !shell.removePack) { $("modelsError").textContent = PACK_HINT + "."; return; }
+    if (!shell || !shell.removePack) { $("modelsError").textContent = t("Installed by PersoDub."); return; }
     // The engine knows whether a dub is running; its DELETE refuses a pack
     // either way, and the sentence tells which reason. Only "packs are the
     // desktop app's" means the coast is clear.
@@ -135,10 +170,10 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
       const r = await fetch(`/api/models/${id}`, { method: "DELETE" });
       const body = await r.json().catch(() => null);
       const why = String((body && body.detail) || "");
-      if (!why.startsWith("Packs are installed")) { $("modelsError").textContent = why || "Could not remove it."; return; }
-    } catch { $("modelsError").textContent = "Could not remove it. Is the engine running?"; return; }
+      if (!why.startsWith("Packs are installed")) { $("modelsError").textContent = why || t("Could not remove it."); return; }
+    } catch { $("modelsError").textContent = t("Could not remove it. Is PersoDub running?"); return; }
     const res = await shell.removePack(id).catch((e) => ({ ok: false, reason: String((e && e.message) || e) }));
-    if (!res || !res.ok) $("modelsError").textContent = (res && res.reason) || "Could not remove it.";
+    if (!res || !res.ok) $("modelsError").textContent = (res && res.reason) || t("Could not remove it.");
     await fetchModels();
     repaint();
   }
@@ -216,7 +251,7 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
         // The engine's reason -- "install the Translation runtime first" --
         // in the dialog and in Settings, instead of a download that never starts.
         const body = await r.json().catch(() => null);
-        showPackError(`${(row && row.name) || id}: ${String((body && body.detail) || "The download could not start.")}`);
+        showPackError(`${(row && row.name) || id}: ${String((body && body.detail) || t("The download could not start."))}`);
       }
     } catch { /* poll shows it */ }
     startPolling();
@@ -250,9 +285,9 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
       const r = await fetch(`/api/models/${id}`, { method: "DELETE" });
       if (!r.ok) {
         const body = await r.json().catch(() => null);
-        $("modelsError").textContent = String((body && body.detail) || "Could not remove it.");
+        $("modelsError").textContent = String((body && body.detail) || t("Could not remove it."));
       }
-    } catch { $("modelsError").textContent = "Could not remove it. Is the engine running?"; }
+    } catch { $("modelsError").textContent = t("Could not remove it. Is PersoDub running?"); }
     await fetchModels();
     repaint();
   }
@@ -261,60 +296,85 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
     const list = $("modelsList");
     list.replaceChildren();
     let onDisk = 0;
-    for (const m of rowsToPaint()) {
-      if (m.state === "ready") onDisk += m.bytes;
-      const row = document.createElement("div");
-      row.className = "settings-row model-row";
-      const name = document.createElement("span");
-      name.textContent = m.name;
-      if (m.hint) {
-        // What it is for, under the name: "AI engine" says nothing on its own.
-        const hint = document.createElement("small");
-        hint.className = "model-hint";
-        hint.textContent = m.hint;
-        name.append(hint);
+    for (const group of groupModels(rowsToPaint())) {
+      // A heading for each purpose, with what its rows take on this computer.
+      // It sits in the list beside the rows, so the rows' lines still draw.
+      const head = document.createElement("div");
+      head.className = "model-group-head";
+      const title = document.createElement("span");
+      title.textContent = t(group.title);
+      const total = document.createElement("span");
+      total.className = "model-size";
+      total.textContent = `${gb(group.bytes)} GB`;
+      head.append(title, total);
+      list.append(head);
+      for (const m of group.rows) {
+        if (m.state === "ready") onDisk += m.bytes;
+        const row = document.createElement("div");
+        row.className = "settings-row model-row";
+        const name = document.createElement("span");
+        name.textContent = m.name;
+        const size = document.createElement("span");
+        size.className = "model-size";
+        size.textContent = `${gb(m.bytes)} GB`;
+        const st = modelStatusLine(m);
+        const status = document.createElement("span");
+        // Anything but "Ready" takes a line of its own under the name, whole:
+        // beside the name a download's line was cut before its percent.
+        status.className = "settings-hint" + (st.cls ? " " + st.cls : "")
+          + (m.state === "ready" ? "" : " model-status-long");
+        status.textContent = m.state === "not_downloaded" ? "" : st.text;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-outline model-btn";
+        if (m.role === "pack") {
+          // The desktop app installs and removes packs; a plain browser can only look.
+          if (packBusy && packBusy.id === m.id) {
+            status.textContent = packBusy.retry ? packBusy.line : st.text + (packBusy.line ? ` · ${packBusy.line}` : "");
+            btn.textContent = t("Cancel"); btn.onclick = () => cancelPack(m.id);
+          } else if (packFailed && packFailed.id === m.id) {
+            status.textContent = t("Stopped: {reason}", { reason: packFailed.reason });
+            btn.textContent = t("Resume"); btn.onclick = () => installPack(m.id);
+          } else if (!shell) {
+            if (m.state !== "ready") status.textContent = packHint();
+            btn.textContent = m.state === "ready" ? t("Remove") : t("Download");
+            btn.disabled = true; btn.title = packHint();
+          } else if (packBusy) {
+            // Another pack is installing: this one waits its turn.
+            btn.textContent = m.state === "ready" ? t("Remove") : t("Download");
+            btn.disabled = true; btn.title = t("{name} is still installing", { name: packBusy.name });
+          } else if (m.state === "ready") { armRemove(btn, m, () => removePack(m.id)); }
+          else { btn.textContent = m.state === "paused" ? t("Resume") : t("Download"); btn.onclick = () => installPack(m.id); }
+        } else if (m.state === "ready") { armRemove(btn, m, () => removeModel(m.id)); }
+        else if (m.state === "downloading") { btn.textContent = t("Cancel"); btn.onclick = () => cancelModel(m.id); }
+        else if (m.state === "paused") { btn.textContent = t("Resume"); btn.onclick = () => downloadModel(m.id); }
+        else { btn.textContent = t("Download"); btn.onclick = () => downloadModel(m.id); }
+        if (m.state === "ready" && m.hint) {
+          // What it is for, after "Ready", where the group's title does not
+          // say it all. A row on its way keeps the cell for its own line. Added
+          // last: a textContent set above would wipe it.
+          const note = document.createElement("span");
+          note.className = "model-note";
+          note.textContent = m.hint;
+          status.append(note);
+        }
+        row.append(name, size, status, btn);
+        list.append(row);
       }
-      const size = document.createElement("span");
-      size.className = "model-size";
-      size.textContent = `${gb(m.bytes)} GB`;
-      const st = modelStatusLine(m);
-      const status = document.createElement("span");
-      status.className = "settings-hint" + (st.cls ? " " + st.cls : "");
-      status.textContent = m.state === "not_downloaded" ? "" : st.text;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn btn-outline model-btn";
-      if (m.role === "pack") {
-        // The desktop app installs and removes packs; a plain browser can only look.
-        if (packBusy && packBusy.id === m.id) {
-          status.textContent = packBusy.retry ? packBusy.line : st.text + (packBusy.line ? ` · ${packBusy.line}` : "");
-          btn.textContent = "Cancel"; btn.onclick = () => cancelPack(m.id);
-        } else if (packFailed && packFailed.id === m.id) {
-          status.textContent = `Stopped: ${packFailed.reason}`;
-          btn.textContent = "Resume"; btn.onclick = () => installPack(m.id);
-        } else if (!shell) {
-          if (m.state !== "ready") status.textContent = PACK_HINT;
-          btn.textContent = m.state === "ready" ? "Remove" : "Download";
-          btn.disabled = true; btn.title = PACK_HINT;
-        } else if (packBusy) {
-          // Another pack is installing: this one waits its turn.
-          btn.textContent = m.state === "ready" ? "Remove" : "Download";
-          btn.disabled = true; btn.title = `${packBusy.name} is still installing`;
-        } else if (m.state === "ready") { btn.textContent = "Remove"; btn.onclick = () => removePack(m.id); }
-        else { btn.textContent = m.state === "paused" ? "Resume" : "Download"; btn.onclick = () => installPack(m.id); }
-      } else if (m.state === "ready") { btn.textContent = "Remove"; btn.onclick = () => removeModel(m.id); }
-      else if (m.state === "downloading") { btn.textContent = "Cancel"; btn.onclick = () => cancelModel(m.id); }
-      else if (m.state === "paused") { btn.textContent = "Resume"; btn.onclick = () => downloadModel(m.id); }
-      else { btn.textContent = "Download"; btn.onclick = () => downloadModel(m.id); }
-      row.append(name, size, status, btn);
-      list.append(row);
     }
-    const busy = !!packBusy || rowsToPaint().some((m) => m.state === "downloading" || m.state === "paused");
-    $("modelsSummary").textContent =
-      `${modelRows.length} models · ${gb(onDisk)} GB on this computer`
-      + (busy ? " · attention needed" : "");
-    // Never force it shut -- only open it for the user when something is busy.
-    if (busy) $("modelsFold").open = true;
+    const downloading = !!packBusy || rowsToPaint().some((m) => m.state === "downloading");
+    const busy = downloading || rowsToPaint().some((m) => m.state === "paused");
+    // Said as what is happening: "attention needed" read as an error while a
+    // download was simply under way (Windows G2, 2026-10-07).
+    // One whole line for each case, so each language says it in one piece.
+    const summary = { n: modelRows.length, size: gb(onDisk) };
+    $("modelsSummary").textContent = downloading
+      ? t("{n} models · {size} GB on this computer · downloading", summary)
+      : busy ? t("{n} models · {size} GB on this computer · a download is paused", summary)
+        : t("{n} models · {size} GB on this computer", summary);
+    // The list is a tab of Settings now, always open; this mark is what
+    // makes the sheet open on that tab (ui/src/settingsDialog.mjs).
+    $("modelsFold").dataset.attention = busy ? "1" : "";
   }
 
   // -- the dub-start dialog (dub_start's 409) ------------------------------
@@ -323,9 +383,8 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
     pendingDub = { ids: d.ids, packs: d.packs, models: d.models, downloading: false };
     $("mnTitle").textContent = d.title;
     $("mnLine").textContent = d.line;
-    // The way round it, said and offered: Perso dubbing makes the voices
-    // itself, so nothing here has to download (user, 2026-09-28).
-    $("mnAlt").hidden = !d.perso;
+    // The way round it is the link under the line: Perso dubbing makes the
+    // voices itself, so nothing here has to download (user, 2026-09-28).
     $("mnError").textContent = "";
     $("mnProgress").hidden = true;
     $("mnDownload").hidden = false;
@@ -339,10 +398,9 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
     // painted row (rowsToPaint), the engine's own row has none.
     const pct = overallProgress(rowsToPaint(), pendingDub.ids);
     $("mnBar").style.width = pct + "%";
-    $("mnAlt").hidden = true;
     // One number, where the eye lands. Which file or step it is on is left
     // out: nobody downloading asked (user, 2026-09-28).
-    $("mnTitle").textContent = `Downloading ${pct}%`;
+    $("mnTitle").textContent = t("Downloading {pct}%", { pct });
     $("mnLine").textContent = "";
     if (packBusy) return;
     // A model whose download stopped: paused with its pieces on disk, or --
@@ -351,7 +409,11 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
     // polling at 0% for good.
     const failed = pendingDub.ids.map(modelRow)
       .find((r) => r && (r.state === "paused" || (r.state === "not_downloaded" && r.error)));
-    if (failed) $("mnError").textContent = `${failed.name} stopped${failed.error ? ` (${failed.error})` : ""}. Resume it from the line under its dropdown.`;
+    if (failed) {
+      $("mnError").textContent = failed.error
+        ? t("{name} stopped: {reason} Resume it from the line under its dropdown.", { name: failed.name, reason: failed.error })
+        : t("{name} stopped. Resume it from the line under its dropdown.", { name: failed.name });
+    }
     if (allReady(modelRows, pendingDub.ids)) {
       pendingDub = null;
       $("modelsNeededOverlay").classList.remove("open");
@@ -374,7 +436,6 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
     $("mnSettings").hidden = true;
     $("mnHide").hidden = false;
     $("mnProgress").hidden = false;
-    $("mnAlt").hidden = true;
     (async () => {
       // Packs first, one after another (the desktop app installs one at a
       // time); a pack that fails stops here, with its reason in the dialog

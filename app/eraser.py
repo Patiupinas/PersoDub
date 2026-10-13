@@ -22,7 +22,8 @@ import queue
 import subprocess
 import threading
 
-from app.jobs import JobCancelled
+from app.i18n import both, t
+from app.jobs import JobCancelled, shown_error
 from app.settings_env import current_value
 
 SCRIPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
@@ -82,12 +83,18 @@ QUIET_MARKS = (
 # the search, 50-100 the repainting. Naming the half is the difference between
 # "the eraser broke" and something the user can act on -- a band in the wrong
 # place fails in the first half, a video the decoder chokes on in the second.
-LOOKING = "The subtitle eraser stopped while looking for the subtitles."
-ERASING = "The subtitle eraser stopped while erasing them."
+# Each in English and in the user's language (app/i18n.py both()).
+def _stopped_in(reached):
+    if reached < 50:
+        return both("The subtitle eraser stopped while looking for the subtitles.")
+    return both("The subtitle eraser stopped while erasing them.")
+
+
 # The same sentence the dubbing stages that run on this machine end with
-# (app/pipeline.py's CHECK_FILE): there is no service to ask about work done
+# (app/pipeline.py's _check_file): there is no service to ask about work done
 # here, so the file is the thing to look at.
-CHECK_FILE = "Check the video file."
+def _check_file():
+    return both("Check the video file.")
 
 
 class EraserMissing(RuntimeError):
@@ -143,11 +150,15 @@ def _last_real_line(tail) -> str:
     return ""
 
 
-def _fail(what, tail):
+def _fail(what, tail, shown=None):
     """A RuntimeError carrying the last thing the script said. One sentence for
-    the user, then the line itself -- app/jobs.py shows this under the red bar."""
-    last = _last_real_line(tail)
-    return RuntimeError("%s (%s)" % (what, last[:200] or "no error was printed"))
+    the user, then the line itself -- app/jobs.py shows this under the red bar.
+    `shown`: the sentence in the user's language as well, for a failed job's
+    error_shown (a shown_error then)."""
+    last = _last_real_line(tail)[:200] or "no error was printed"
+    if shown is None:
+        return RuntimeError("%s (%s)" % (what, last))
+    return shown_error("%s (%s)" % (what, last), "%s (%s)" % (shown, last))
 
 
 def run_erase(input_path, out_path, area, *, log, cancel_check,
@@ -228,11 +239,13 @@ def run_erase(input_path, out_path, area, *, log, cancel_check,
         # A band with no writing in it is something the user can fix, and the
         # sentence says how. Every other failure keeps naming what went wrong.
         if any(mark in line for line in tail for mark in NO_SUBTITLES_MARKS):
-            raise RuntimeError(NO_SUBTITLES_MESSAGE)
-        raise _fail(f"{LOOKING if reached < 50 else ERASING} {CHECK_FILE}", tail)
+            raise shown_error(NO_SUBTITLES_MESSAGE,
+                             t("No subtitles were found in that area. Move the box and try again."))
+        stopped, check = _stopped_in(reached), _check_file()
+        raise _fail(f"{stopped[0]} {check[0]}", tail, f"{stopped[1]} {check[1]}")
     if not os.path.exists(out_path):
-        raise _fail(f"The subtitle eraser finished without writing a video. {CHECK_FILE}",
-                    list(errors))
+        wrote, check = both("The subtitle eraser finished without writing a video."), _check_file()
+        raise _fail(f"{wrote[0]} {check[0]}", list(errors), f"{wrote[1]} {check[1]}")
     return checked
 
 
@@ -249,12 +262,12 @@ def suggest_area(input_path, *, python=None, vsr_dir=None) -> dict:
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", env=_child_env(), timeout=SUGGEST_TIMEOUT)
     except subprocess.TimeoutExpired:
-        raise RuntimeError("Looking for the subtitles took too long on this video.")
+        raise RuntimeError(t("Looking for the subtitles took too long on this video."))
     if r.returncode != 0:
-        raise _fail("Could not look for subtitles in this video", (r.stderr or "").splitlines())
+        raise _fail(t("Could not look for subtitles in this video"), (r.stderr or "").splitlines())
     # The last line, not the whole of stdout: the libraries underneath print
     # banners of their own before the answer.
     try:
         return json.loads((r.stdout or "").strip().splitlines()[-1])
     except (ValueError, IndexError):
-        raise _fail("Could not read where the subtitles are", (r.stdout or "").splitlines())
+        raise _fail(t("Could not read where the subtitles are"), (r.stdout or "").splitlines())

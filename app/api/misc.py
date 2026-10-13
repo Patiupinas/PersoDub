@@ -7,8 +7,8 @@ and no state shared with its neighbours, so a file apiece would be five
 docstrings guarding one function each. They are together because none of them
 is big enough to be alone -- not because they are related.
 
-Lifted out of app/main.py unchanged (2026-09-06), with the TTS engine
-registration that /api/tts/* needs. It reads nothing back off main.
+Lifted out of app/main.py unchanged (2026-09-06). It reads nothing back off
+main; the TTS engines /api/tts/* reads are registered by app/engines/__init__.py.
 
 engines_status is imported as a module, not as its five loose functions, on
 purpose: dub_start (app/api/dub.py) and the result routes judge the same
@@ -18,6 +18,7 @@ which every importer sees because there is only ever one module object.
 import json
 import logging
 import os
+import re
 from typing import List, Optional
 
 import httpx
@@ -30,9 +31,8 @@ from app.engines.base import (
     SynthesisRequest,
     get_engine,
     list_engines,
-    register_engine,
 )
-from app.engines.qwen_tts import QwenTTSEngine
+from app.i18n import current_language, t
 from app.perso_client import APP_VERSION
 from app.source_fetch import FetchError
 from app.source_fetch import probe as probe_source
@@ -41,11 +41,6 @@ from app.translate import get_translator
 logger = logging.getLogger("persodub.api.misc")
 
 router = APIRouter()
-
-# Register the installed TTS engine (Qwen3-TTS). Here rather than in
-# app/main.py because this is the module whose routes read the registry back;
-# the registry itself is app/engines/base.py's, one per process.
-register_engine(QwenTTSEngine())
 
 # Translator (selects Ollama/Gemini based on the TRANSLATE_ENGINE setting)
 translator = get_translator()
@@ -87,7 +82,7 @@ def tts_say(body: SayRequest):
     """One line of text → speech (wav). Choose which engine to use via body.engine."""
     engine = get_engine(body.engine)
     if engine is None:
-        raise HTTPException(status_code=404, detail=f"Unknown engine: {body.engine}")
+        raise HTTPException(status_code=404, detail=t("Unknown engine: {engine}", engine=body.engine))
 
     req = SynthesisRequest(
         text=body.text,
@@ -110,7 +105,7 @@ def tts_say(body: SayRequest):
     try:
         result = engine.synthesize(req)
     except FileNotFoundError as e:
-        raise HTTPException(404, "Sample voice file not found. Check the path and try again.") from e
+        raise HTTPException(404, t("Sample voice file not found. Check the path and try again.")) from e
     except ValueError as e:
         # The engine's own written-out sentence (e.g. Qwen's ICL clone needs a
         # transcript). It carries no caller-supplied text, so it can go through.
@@ -118,8 +113,8 @@ def tts_say(body: SayRequest):
     except httpx.HTTPError as e:
         raise HTTPException(
             503,
-            "The local speech engine is not answering. Wait for the app to finish "
-            "starting up, then try again.",
+            t("The local speech engine is not answering. Wait for the app to finish "
+              "starting up, then try again."),
         ) from e
     headers = {"x-engine-id": result.engine_id}
     if result.duration is not None:
@@ -138,6 +133,21 @@ def logo():
                         media_type="image/png")
 
 
+# The interface's own fonts (static/fonts: fonts.css and its woff2 files), so
+# the page looks the same with no network. A name only, never a path.
+_FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "static", "fonts")
+_FONT_NAME = re.compile(r"^[a-z0-9-]+\.(woff2|css)$")
+
+
+@router.get("/fonts/{name}", include_in_schema=False)
+def font(name: str):
+    path = os.path.join(_FONT_DIR, name)
+    if not _FONT_NAME.match(name) or not os.path.isfile(path):
+        raise HTTPException(404, t("No such font"))
+    kind = "text/css" if name.endswith(".css") else "font/woff2"
+    return FileResponse(path, media_type=kind)
+
+
 @router.get("/api/languages")
 def api_languages():
     """The languages each dubbing path offers: local = the model's ten,
@@ -151,12 +161,16 @@ def whats_new():
     """The bundled release notes + the running version. The screen shows them
     once after an update (never on a fresh install) and again on demand from
     Settings; the file ships with each release."""
-    # app/whats_new.json, one folder up from this one.
+    # app/whats_new.json, one folder up from this one: "notes" in English and
+    # "notes_<code>" ("notes_ko") in each language the app speaks. The notes
+    # follow the engine's language (app/i18n.py), so a Korean computer reads
+    # them in Korean; a language with no notes of its own gets the English.
     path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "whats_new.json")
     notes = []
     try:
         with open(path, encoding="utf-8") as f:
-            notes = [str(n) for n in (json.load(f).get("notes") or [])]
+            data = json.load(f)
+        notes = [str(n) for n in (data.get(f"notes_{current_language()}") or data.get("notes") or [])]
     except Exception as e:
         # No notes is fine; the popup simply never shows. Worth a line all the
         # same -- the file ships with the release, so an unreadable one is a
@@ -179,9 +193,16 @@ def engines_status_route():
         "hunyuan_available": engines_status.hunyuan_available(),
         "gemini_available": engines_status.gemini_available(),
         "perso_available": engines_status.perso_available(),
+        # The model behind each voice engine, for the dropdown and the job's
+        # engine line ("Qwen3-TTS 1.7B").
+        "voice_models": engines_status.voice_models(),
         # Not a dubbing engine: the screen reads it to know whether Erase
         # subtitles can be offered at all on this computer.
         "eraser_available": engines_status.eraser_available(),
+        # The two engines the desktop app starts, each {state, message}: one
+        # that failed to start leaves the rest of the app working, and this
+        # is how the page knows which local work is off and why.
+        "local_engines": {w: engines_status.local_engine(w) for w in ("voice", "translation")},
     }
 
 
@@ -201,7 +222,7 @@ def source_probe(body: ProbeRequest):
     try:
         return probe_source(body.url)
     except FetchError as e:
-        raise HTTPException(422, {"reason": e.reason, "message": e.message})
+        raise HTTPException(422, {"reason": e.reason, "message": e.shown})
 
 
 class TranslateRequest(BaseModel):
@@ -225,7 +246,7 @@ def translate_api(body: TranslateRequest):
         logger.warning("Translation failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500,
-            detail=(f"Translation failed ({type(e).__name__}). Check the translation "
-                    f"engine in Settings, or the app log for the details."),
+            detail=t("Translation failed ({kind}). Check the translation "
+                     "engine in Settings, or the app log for the details.", kind=type(e).__name__),
         ) from e
     return {"translations": out}

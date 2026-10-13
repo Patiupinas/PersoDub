@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { STEP_IDS } from "./installSpec.js";
 
 // Usage counts. The decisions live here as pure functions so they can be tested
-// without Electron; main.js and the renderer do the wiring. What a payload is
+// without Electron; usageIpc.js and the renderer do the wiring. What a payload is
 // allowed to contain is fixed by buildPayload below and repeated in the
 // README's "Usage counts" -- the two must not drift.
 
@@ -82,7 +82,7 @@ export function buildPayload({ event, os, version, device, errorCode, step,
   if (FAILURE_EVENTS.has(event)) {
     payload.error_code = ERROR_CODES.has(errorCode) ? errorCode : "unknown";
   }
-  // Which of the ten steps died. Only install failures have one, and only a
+  // Which of the twelve steps died. Only install failures have one, and only a
   // published id travels -- the same rule as error codes, for the same reason.
   // A failure before any step has run (a path or space preflight) carries none.
   if (event === "install_failure" && step !== undefined) {
@@ -136,20 +136,16 @@ export function dubFacts(job) {
  * user's time, and certainly not an error dialog.
  */
 export async function report(payload, { url, timeoutMs = 3000, fetchImpl = fetch }) {
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), timeoutMs);
   try {
     const res = await fetchImpl(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
-      signal: abort.signal,
+      signal: AbortSignal.timeout(timeoutMs),
     });
     return res.ok;
   } catch {
     return false;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

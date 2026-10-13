@@ -39,7 +39,7 @@ function makeEl(id) {
     question gives. The question is the app's own dialog now, handed in like
     every other way this screen reaches out (user, 2026-09-10). */
 function harness({ jobId = "j1", status = "running", confirmAnswer = true,
-                   onCancel = null } = {}) {
+                   onCancel = null, choices = [] } = {}) {
   const els = new Map();
   const $ = (id) => {
     if (!els.has(id)) {
@@ -54,7 +54,8 @@ function harness({ jobId = "j1", status = "running", confirmAnswer = true,
     }
     return els.get(id);
   };
-  const log = { homeNoticeAndLog: 0, cancelled: [], settings: 0, opened: [], warned: [] };
+  const log = { homeNoticeAndLog: 0, cancelled: [], settings: 0, opened: [], warned: [],
+                resumed: [], choicesFor: [] };
 
   const real = { warn: console.warn };
   console.warn = (m) => log.warned.push(m);
@@ -74,6 +75,9 @@ function harness({ jobId = "j1", status = "running", confirmAnswer = true,
     askCancel: async () => { log.asked += 1; return confirmAnswer; },
     onOpenSettings: () => { log.settings += 1; },
     openExternal: (a, url) => { log.opened.push(url); a.href = url; },
+    jobNote: (job) => job.note || "",
+    translatorChoices: async (job) => { log.choicesFor.push(job.id); return choices; },
+    onResumeWith: (id, translator) => { log.resumed.push([id, translator]); },
   });
   return { $, api, log };
 }
@@ -108,6 +112,50 @@ test("the card says which stage the job is on, how far in, and ticks the stages 
   assert.match(steps, /<li class="current">[\s\S]*Translating/);
   assert.match(steps, /<li class="todo">[\s\S]*Dubbing/);
   assert.equal(h.log.homeNoticeAndLog, 1, "the log has to be brought back under this job's steps");
+});
+
+test("the card says what the dub was started with, and nothing when that is not known", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+
+  h.api.paintRunning({ ...TRANSLATING, note: "English → Spanish · Fast mode · ChatGPT" });
+  assert.equal(h.$("runNote").textContent, "English → Spanish · Fast mode · ChatGPT");
+  assert.equal(h.$("runNote").hidden, false);
+
+  h.api.paintRunning(TRANSLATING);
+  assert.equal(h.$("runNote").hidden, true);
+});
+
+test("the original is set once, in the center panel, with the trim under it", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+
+  h.api.paintRunning({ ...TRANSLATING, trim: { start: 2, end: 8 } });
+  assert.equal(h.$("runningVideo").getAttribute("src"), "/api/dub/result/j1/original");
+  assert.equal(h.$("runningTrim").textContent, "Trimmed 2 – 8 · long");
+});
+
+test("a job that stopped keeps its video beside the failure card, and leaves the card alone", (t) => {
+  const h = harness({ status: "error" });
+  t.after(h.log.restore);
+
+  h.api.paintStopped({ id: "j9", status: "error", logs: ["1/6 x"], trim: { start: 0, end: 4 } });
+  assert.equal(h.$("runningVideo").getAttribute("src"), "/api/dub/result/j9/original");
+  assert.equal(h.$("runningTrim").textContent, "Trimmed 0 – 4 · long");
+  // The log and the notice were borrowed by the failure card: they stay there.
+  assert.equal(h.log.homeNoticeAndLog, 0);
+  assert.equal(h.$("progressTitle").textContent, "");
+});
+
+test("the card never promises a time", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+
+  h.api.paintRunning({ id: "j1", status: "running", logs: [
+    "1/6 x", "2/6 x", "3/6 x", "4/6 x", "5 dialogue lines prepared", "line 1: chose take 2"] });
+  const said = [h.$("progressTitle").textContent, h.$("progressPct").textContent,
+                h.$("progressSteps").innerHTML, h.$("runNote").textContent].join(" ");
+  assert.doesNotMatch(said, /left|remaining|\bmin\b|about/i);
 });
 
 test("the voice counter appears only once lines are being spoken", (t) => {
@@ -162,6 +210,22 @@ test("a failed job's reason is written into both screens, in plain words", (t) =
   }
 });
 
+test("a failed job shows the engine's sentence in the page's language, error_shown, over the English error", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+
+  h.api.paintNotices({ id: "j1", status: "error", error: "No dialogue lines were found in this video.",
+                       error_shown: "이 영상에서 대사를 찾지 못했어요." });
+  for (const id of ["jobNotice", "doneNotice"]) assert.equal(h.$(id).innerHTML, "이 영상에서 대사를 찾지 못했어요.");
+  // A job saved before there was a twin still reads its English.
+  h.api.paintNotices({ id: "j1", status: "error", error: "No dialogue lines were found in this video." });
+  assert.equal(h.$("jobNotice").innerHTML, "No dialogue lines were found in this video.");
+  // A notice's twin likewise, on a job still running.
+  h.api.paintNotices({ id: "j1", status: "running",
+                       notices: [{ type: "info", message: "Back on track", message_shown: "다시 진행 중" }] });
+  assert.equal(h.$("jobNotice").innerHTML, "다시 진행 중");
+});
+
 test("no notice and no failure means no line at all", (t) => {
   const h = harness();
   t.after(h.log.restore);
@@ -204,8 +268,7 @@ test("a credit-exhausted notice draws the line AND pops the popup once, with the
   assert.equal(h.$("jobNotice").innerHTML,
     'Perso credits are used up. <a href="https://perso.example/recharge" target="_blank" rel="noopener">Recharge</a>');
   assert.equal(h.$("creditTitle").textContent, "Out of credits");
-  assert.equal(h.$("creditMessage").textContent,
-    "Perso credits are used up. Recharge, then run this job again.");
+  assert.equal(h.$("creditMessage").textContent, "Recharge, then try again.");
   assert.equal(h.$("creditRechargeBtn").textContent, "Recharge");
   assert.deepEqual(h.log.opened, ["https://perso.example/recharge"],
     "the Recharge button is armed to open the link the server sent");
@@ -261,6 +324,107 @@ test("the popup closes on the X, on Close, and on a click outside it", async (t)
   assert.ok(!overlay.classList.contains("open"));
 });
 
+// -- ChatGPT stopped the dubbing: the user picks what happens next ----------
+
+const LIMITED = {
+  id: "j1", status: "error", translator: "chatgpt",
+  notices: [{ type: "chatgpt_limit",
+              message: "ChatGPT usage limit reached. Resets Oct 24, 1:07 PM. "
+                + "Resume then, or continue with another translator." }],
+};
+const HUNYUAN_AND_GEMMA = [
+  { id: "hunyuan", label: "Continue with Hunyuan" },
+  { id: "gemma", label: "Continue with Gemma (7.6 GB)" },
+];
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+test("the ChatGPT limit popup says when it resets and offers one button per translator", async (t) => {
+  const h = harness({ status: "error", choices: HUNYUAN_AND_GEMMA });
+  t.after(h.log.restore);
+
+  h.api.paintNotices(LIMITED);
+  await settle();
+
+  assert.equal(h.$("creditTitle").textContent, "ChatGPT usage limit");
+  assert.equal(h.$("creditMessage").textContent, "Resets Oct 24, 1:07 PM. Resume then, or pick another translator.");
+  assert.deepEqual(h.log.choicesFor, ["j1"]);
+  assert.equal(h.$("creditChoices").hidden, false);
+  assert.equal(h.$("creditChoices").innerHTML,
+    '<button class="btn btn-secondary" type="button" data-translator="hunyuan">Continue with Hunyuan</button>'
+    + '<button class="btn btn-secondary" type="button" data-translator="gemma">Continue with Gemma (7.6 GB)</button>');
+  assert.equal(h.$("creditRechargeBtn").style.display, "none", "nowhere to send anyone: waiting is Close");
+});
+
+test("a translator button resumes the job with that translator and closes the popup", async (t) => {
+  const h = harness({ status: "error", choices: HUNYUAN_AND_GEMMA });
+  t.after(h.log.restore);
+  h.api.paintNotices(LIMITED);
+  await settle();
+
+  await h.$("creditChoices").fire("click", { target: { dataset: { translator: "gemma" } } });
+  assert.deepEqual(h.log.resumed, [["j1", "gemma"]]);
+  assert.ok(!h.$("creditOverlay").classList.contains("open"));
+  // A click between the buttons is no choice.
+  await h.$("creditChoices").fire("click", { target: { dataset: {} } });
+  assert.equal(h.log.resumed.length, 1);
+});
+
+test("with nothing to switch to the popup only says to wait, and Close is the way out", async (t) => {
+  const h = harness({ status: "error", choices: [] });
+  t.after(h.log.restore);
+  h.api.showCreditModal({ type: "chatgpt_limit", message: "ChatGPT usage limit reached for now." }, LIMITED);
+  await settle();
+  assert.equal(h.$("creditMessage").textContent, "Wait for it to reset, then Resume.");
+  assert.equal(h.$("creditChoices").hidden, true);
+  await h.$("creditCloseBtn").fire("click", {});
+  assert.ok(!h.$("creditOverlay").classList.contains("open"));
+  assert.deepEqual(h.log.resumed, []);
+});
+
+test("signed out of ChatGPT keeps Open Settings beside the translators", async (t) => {
+  const h = harness({ status: "error", choices: HUNYUAN_AND_GEMMA.slice(0, 1) });
+  t.after(h.log.restore);
+  h.api.showCreditModal({ type: "chatgpt_signed_out", message: "ChatGPT is not signed in." }, LIMITED);
+  await settle();
+  assert.equal(h.$("creditTitle").textContent, "Sign in with ChatGPT");
+  assert.equal(h.$("creditMessage").textContent, "Sign in from Settings, then Resume, or pick another translator.");
+  assert.equal(h.$("creditRechargeBtn").textContent, "Open Settings");
+  assert.match(h.$("creditChoices").innerHTML, /data-translator="hunyuan">Continue with Hunyuan</);
+});
+
+test("Translate again's ChatGPT popup hands the pick back instead of resuming", async (t) => {
+  // The script pane's Translate again (Windows H14): same popup, same
+  // translators, but a pick translates those lines; there is no dubbing to resume.
+  const h = harness({ status: "done", choices: HUNYUAN_AND_GEMMA });
+  t.after(h.log.restore);
+  const picked = [];
+  h.api.showCreditModal({ type: "chatgpt_limit", message: "ChatGPT usage limit reached. Resets Oct 24, 1:07 PM." },
+    { id: "j1", translator: "chatgpt" }, (translator) => picked.push(translator));
+  await settle();
+  assert.equal(h.$("creditMessage").textContent, "Resets Oct 24, 1:07 PM. Translate again then, or pick another translator.");
+  await h.$("creditChoices").fire("click", { target: { dataset: { translator: "gemma" } } });
+  assert.deepEqual(picked, ["gemma"]);
+  assert.deepEqual(h.log.resumed, []);
+  assert.ok(!h.$("creditOverlay").classList.contains("open"));
+
+  // The next dubbing popup resumes again.
+  h.api.showCreditModal({ type: "chatgpt_signed_out", message: "" }, LIMITED);
+  await settle();
+  assert.equal(h.$("creditMessage").textContent, "Sign in from Settings, then Resume, or pick another translator.");
+  await h.$("creditChoices").fire("click", { target: { dataset: { translator: "hunyuan" } } });
+  assert.deepEqual(h.log.resumed, [["j1", "hunyuan"]]);
+  assert.deepEqual(picked, ["gemma"]);
+});
+
+test("other popups offer no translators", async (t) => {
+  const h = harness({ choices: HUNYUAN_AND_GEMMA });
+  t.after(h.log.restore);
+  h.api.paintNotices(EXHAUSTED);
+  await settle();
+  assert.deepEqual(h.log.choicesFor, []);
+  assert.equal(h.$("creditChoices").hidden, true);
+});
+
 // -- the Cancel button ------------------------------------------------------
 
 test("Cancel is offered while a job is alive and gone once it is over", (t) => {
@@ -280,7 +444,7 @@ test("a job already on its way out says so, and cannot be asked twice", (t) => {
 
   h.api.paintCancel();
   // The word lives in its own element beside the stop square (2026-09-09).
-  assert.equal(h.$("cancelLabel").textContent, "Cancelling…");
+  assert.equal(h.$("cancelLabel").textContent, "Stopping…");
   assert.equal(h.$("cancelBtn").disabled, true);
 });
 
@@ -292,7 +456,7 @@ test("pressing Cancel asks once, then disables itself while the server answers",
   await btn.fire("click", {});
   assert.deepEqual(h.log.cancelled, ["j1"]);
   assert.equal(btn.disabled, true);
-  assert.equal(h.$("cancelLabel").textContent, "Cancelling…");
+  assert.equal(h.$("cancelLabel").textContent, "Stopping…");
 });
 
 test("answering no to the question stops nothing", async (t) => {
@@ -307,11 +471,12 @@ test("answering no to the question stops nothing", async (t) => {
 test("a job that finished between the question and the call puts the button back", async (t) => {
   // The server says 409 -- and the poll loop may already have given up, so
   // nothing else would ever repaint this button.
-  const h = harness({ status: "done", onCancel: async () => { throw new Error("already done"); } });
+  const h = harness({ status: "done",
+    onCancel: async () => { throw Object.assign(new Error("already done"), { status: 409 }); } });
   t.after(h.log.restore);
 
   await h.$("cancelBtn").fire("click", {});
-  assert.deepEqual(h.log.warned, ["already done"]);
+  assert.equal(h.$("jobNotice").textContent, "", "too late is not a failure, so no red line");
   assert.equal(h.$("cancelBtn").hidden, true, "the button is repainted from the job's real state");
   assert.equal(h.$("cancelBtn").disabled, false);
 });
@@ -347,4 +512,50 @@ test("a stopped job wears a mark: a stop square cancelled, an exclamation failed
   // Anything the server did not call cancelled has failed.
   assert.equal(stoppedMark("interrupted"), failed);
   assert.equal(stoppedMark(undefined), failed);
+});
+
+// -- a new dubbing, before its first answer -----------------------------------
+
+test("a dubbing just started shows none of the last one: no progress, no video, no note, no reason", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+  h.$("runningVideo").load = () => { h.log.loaded = (h.log.loaded || 0) + 1; };
+  h.api.paintRunning({ ...TRANSLATING, note: "English → Spanish", trim: { start: 1, end: 5 } });
+  h.api.showNoticeError("PersoDub is not answering. Still trying.");
+
+  h.api.starting();
+
+  assert.equal(h.$("progressPct").textContent, "0%");
+  assert.equal(h.$("progressFill").style.width, "0%");
+  assert.doesNotMatch(h.$("progressSteps").innerHTML, /step-done|current/);
+  assert.equal(h.$("runningVideo").getAttribute("src"), null, "the last dubbing's video is let go");
+  assert.equal(h.log.loaded, 1);
+  assert.equal(h.$("runNote").hidden, true);
+  assert.equal(h.$("runningTrim").textContent, "");
+  assert.equal(h.$("jobNotice").hidden, true);
+});
+
+test("a stop the server could not do says so; one that came too late does not", async (t) => {
+  const failing = harness({ onCancel: async () => { throw Object.assign(new Error("boom"), { status: 500 }); } });
+  t.after(failing.log.restore);
+  await failing.$("cancelBtn").fire("click", {});
+  assert.equal(failing.$("jobNotice").textContent, "Could not stop the dubbing. Try again.");
+  assert.equal(failing.$("jobNotice").hidden, false);
+  assert.equal(failing.$("cancelLabel").textContent, "Stop", "and the button is back");
+
+  const late = harness({ onCancel: async () => { throw Object.assign(new Error("over"), { status: 409 }); } });
+  t.after(late.log.restore);
+  await late.$("cancelBtn").fire("click", {});
+  assert.notEqual(late.$("jobNotice").textContent, "Could not stop the dubbing. Try again.");
+});
+
+test("a failed dub shows a plain sentence, never what the program said when it broke", (t) => {
+  const h = harness({ status: "error" });
+  t.after(h.log.restore);
+  h.api.paintNotices({ id: "j1", status: "error", error: "No dialogue lines were found in this video." });
+  assert.equal(h.$("doneNotice").innerHTML, "No dialogue lines were found in this video.");
+  h.api.paintNotices({ id: "j1", status: "error", error: "KeyError: 'segments'", logs: [] });
+  assert.equal(h.$("doneNotice").innerHTML, "Something went wrong. Try again, or use a shorter clip.");
+  h.api.paintNotices({ id: "j1", status: "error", error: "local STT reported an error ([Errno 2] No such file)" });
+  assert.equal(h.$("doneNotice").innerHTML, "Local STT reported an error.");
 });

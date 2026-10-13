@@ -164,8 +164,8 @@ def test_speech_text_turns_dashes_into_commas():
 
 
 def test_translation_prompts_ask_for_no_dashes():
+    from app.text.dub_prompt import build_dub_prompt
     from app.text.length_fit import build_budget_prompt
-    from app.translate import build_dub_prompt
 
     assert "no dashes" in build_dub_prompt(["안녕"], "English", "Korean", [1.0])
     assert "no dashes" in build_budget_prompt(["안녕"], "English", "Korean", [10])

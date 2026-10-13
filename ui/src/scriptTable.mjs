@@ -24,12 +24,16 @@
 // bars by the same rule, and one rule for "too long" said in two places is how
 // the two would come to disagree.
 //
-// The elements this file touches: #scriptBox, #scriptSaving and #scriptCount --
-// the count beside the pane's own name -- all three inside the script pane. It
-// never reaches the top bar, the timeline or `state`.
+// The elements this file touches: #scriptBox, #scriptSaving, #scriptCount --
+// the count beside the pane's own name -- and the pane head's three buttons
+// (Translate again, Remake voices, All at once) with the strip under them
+// (#scriptChanged), all inside the script pane. It never reaches the top bar,
+// the timeline or `state`.
 import { escapeHtml, fmtClockTenths, errorText } from "./format.mjs";
-import { CHECK_ICON, REMAKE_ICON } from "./icons.mjs";
+import { lucide } from "./icons.mjs";
 import { numberSpeakers, speakerLetter } from "./speakers.mjs";
+import { translatorName } from "./translatorChoice.mjs";
+import { t } from "./i18n.mjs";
 
 // A hair over the slot is not "too long" -- the assembly step lets a line spill
 // that much into the silence after it.
@@ -51,13 +55,13 @@ export function lineOverBy(l) {
   return over > OVER_TOLERANCE ? over : 0;
 }
 
-// Sized by the stylesheet, not here: the narrow table takes both buttons down
-// a size, and an inline width would be the one thing it could not reach.
-// A triangle has two centres and they are 1.75 units apart in a box this size: the middle of its box (6.75) and the middle of its weight (8.5). Neither alone looks right -- box-centred it leans left, weight-centred it leans right -- so it is drawn halfway between them, which is where it always was. What was wrong was the margin-left beside it, worth another 3.2 units at this size and pushing it well past both (user, 2026-09-11).
-const PLAY_ICON = '<svg viewBox="0 0 24 24" style="fill:currentColor;stroke:currentColor;stroke-width:3;stroke-linejoin:round"><path d="M7.5 5.5v13l10.5-6.5z"/></svg>';
-// The "revert" arrow beside an edited line (renderScript): a curled-back
-// arrow, drawn like the rest of the app's icons.
-const UNDO_ICON = '<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>';
+// The row's three buttons, all Lucide now (script-same.html mockup,
+// 2026-09-29): a solid play triangle to listen, a turning arrow to remake a
+// voice (coloured by CSS, never a different glyph), and a curled-back arrow
+// to revert an edited line. Sized by the stylesheet, not here.
+const PLAY_ICON = lucide("play", 14, true);
+const WAVE_ICON = lucide("refresh-cw", 14);
+const UNDO_ICON = lucide("undo-2", 14);
 
 /**
  * Wire the script table to a page.
@@ -83,11 +87,25 @@ const UNDO_ICON = '<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="tr
  *        the page's shared "play only this much and stop" helper
  * @param {() => void} deps.reloadVideo  the finished video changed under the
  *        player (a line was re-spoken), so fetch it afresh
+ * @param {() => object} [deps.getJob]  the open job's own status object (the
+ *        page's `state.job`), read only for `result.clipped` /
+ *        `result.clipped_count` -- the lines the assembly step cut short
+ *        (point 3, user 2026-09-29). Absent on a job finished before this was
+ *        added, so its absence means "unknown", not "nothing was cut".
+ * @param {number} [deps.persoPollMs]  how often a Perso proofread under way is
+ *        asked after; the tests make it 0
+ * @param {(notice: object, pick: (translator: string) => any) => void} [deps.askTranslator]
+ *        ChatGPT stopped Translate again (its limit, or signed out): the
+ *        dubbing's own popup, whose translator buttons call pick
+ * @param {(detail: object, retry: () => any) => void} [deps.needModels]  the
+ *        translator's model is not downloaded: the download dialog, then retry
  * @returns the operations the rest of the page calls.
  */
 export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeline,
                                     paintPlayhead, getVideo, showVideoSource,
-                                    playRange, reloadVideo }) {
+                                    playRange, reloadVideo, getJob = () => null,
+                                    persoPollMs = 5000, askTranslator = () => {},
+                                    needModels = () => {} }) {
   // Which job's script is on screen. The page reads it back (getJobId) because
   // the assistant's events arrive with no job attached to them.
   let scriptJobId = null;
@@ -97,21 +115,67 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
   const freshLines = new Set();
   // The lines ticked for Translate again, on the job on screen.
   const picked = new Set();
+  // What the script said about editing this job through Perso (its
+  // perso_edit): null on a job Perso never dubbed. While it is available a
+  // line's voice is remade by Perso, in the voice Perso dubbed with.
+  let persoEdit = null;
+  // A project whose voices are Perso's: its lines have no voice button of
+  // their own, and Remake voices sends every changed line to Perso at once.
+  // Not one a voice was made for on this computer: that one is edited here.
+  const viaPerso = () => !!persoEdit
+    && (persoEdit.available || !!persoEdit.working || persoEdit.unfetched);
+  // Whether Perso's voice is one that cannot remake a single line
+  // (NIGHTINGALE), as last heard; null until Perso has said.
+  let nightingale = null;
+  // The lines on screen, as the script last gave them.
+  let shown = [];
+  // The script's stamp when it was last drawn: ui/src/scriptWatch.mjs draws
+  // again when the server's moves on (the agent or another window).
+  let drawnStamp = null;
+  // Lines whose words came from Translate again in this sitting, keyed
+  // `job:line`: translating those again overwrites nothing written by hand.
+  const translated = new Set();
+  // A press that spends Perso credits is pressed twice: the first says what
+  // it costs, the second, within ten seconds, goes ahead. Not a dialog:
+  // window.confirm() freezes every event in the Electron shell.
+  let armed = null;
+  function pressedTwice(what) {
+    const yes = !!armed && armed.what === what && Date.now() - armed.at < 10000;
+    armed = yes ? null : { what, at: Date.now() };
+    return yes;
+  }
+  const CONFIRMED = {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: true }),
+  };
 
-  function scriptRow(l, speakers) {
+  function scriptRow(l, speakers, clippedMap) {
     const n = speakers.get(l.speaker);
     // The name is a title as well as words, so a chip the narrow table has
     // squeezed still says who is speaking on hover.
-    const chip = n
-      ? `<span class="spk-chip" title="Speaker ${n}" aria-label="Speaker ${n}"><b>${speakerLetter(n)}</b></span>` : "";
+    // On a Perso dub the chip is also the way to give the line a new speaker
+    // (point 4, user 2026-09-29): Perso's own change, so it runs only there --
+    // a local dub's chip stays a plain span.
+    // Not on a NIGHTINGALE dub: Perso makes none of its lines' voices alone.
+    const chip = !n ? "" : isPersoJob() && !nightingale
+      ? `<button type="button" class="spk-chip" data-speaker="${l.line}"
+         title="${t("Speaker {n}. Perso can give this line a new voice.", { n })}"
+         aria-label="${t("Speaker {n}. Give this line a new voice", { n })}"><b>${speakerLetter(n)}</b></button>`
+      : `<span class="spk-chip" title="${t("Speaker {n}", { n })}" aria-label="${t("Speaker {n}", { n })}"><b>${speakerLetter(n)}</b></span>`;
     const over = lineOverBy(l);
     // "1.6s / 0.2s · +1.4s": how long the voice is, how long the slot is, and
     // the difference in one glance -- red when it runs over, grey when it is
     // well short, green "fits" otherwise (user decision 2026-08-28).
     const under = l.slot - lineLength(l);
-    const verdict = over ? `<span class="sc-over">+${over.toFixed(1)}s</span>`
-      : under > 0.3 ? `<span class="sc-under">−${under.toFixed(1)}s</span>`
-      : `<span class="sc-fit">fits</span>`;
+    // A line the assembly step cut short (job.result.clipped, point 3) is
+    // marked red whatever its own verdict says -- the true story is not "it
+    // fits", it is "it was made to fit by force".
+    const cutS = clippedMap && clippedMap.get(l.line);
+    const verdictClass = cutS != null ? "sc-over" : over ? "sc-over" : under > 0.3 ? "sc-under" : "sc-fit";
+    const verdictText = cutS != null ? t("cut {s}s", { s: cutS.toFixed(1) })
+      : over ? `+${t("{s}s", { s: over.toFixed(1) })}` : under > 0.3 ? `−${t("{s}s", { s: under.toFixed(1) })}` : t("fits");
+    const verdictTitle = cutS != null ? ` title="${t("Cut off by {s}s", { s: cutS.toFixed(1) })}"` : "";
+    const verdict = `<span class="${verdictClass}"${verdictTitle}>${verdictText}</span>`;
     // The verdict is the answer; the two numbers behind it are the working.
     // A narrow table drops the working (the stylesheet hides .sc-num) and keeps
     // the answer, so the row still says whether the line fits.
@@ -125,10 +189,10 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
     // refused (user decision 2026-09-18).
     const untr = !!l.untranslated;
     const lengthCell = untr ? ""
-      : `<span class="sc-num"><b>${lineLength(l).toFixed(1)}s</b> / ${l.slot.toFixed(1)}s · </span>${verdict}`;
+      : `<span class="sc-num"><b>${t("{s}s", { s: lineLength(l).toFixed(1) })}</b> / ${t("{s}s", { s: l.slot.toFixed(1) })} · </span>${verdict}`;
     const off = untr ? " sc-off" : "";
     const offAttr = untr ? " disabled" : "";
-    const WRITE_FIRST = "Write the translation first";
+    const WRITE_FIRST = t("Write the translation first");
     // Filled means "the voice does not say these words". The app decides that
     // per line now (app/dub_script.py), so it is taken as said: a line edited,
     // remade and put back is NOT edited, and its voice still says the edit.
@@ -143,21 +207,29 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
     // the one row that has been edited (user, 2026-09-11).
     const undo = l.edited
       ? `<button class="sc-undo" data-undo="${l.line}" type="button"
-         title="Revert to the original translation" aria-label="Revert to the original translation">${UNDO_ICON}</button>` : "<span></span>";
+         title="${t("Revert to the original translation")}" aria-label="${t("Revert to the original translation")}">${UNDO_ICON}</button>` : "<span></span>";
+    // A Perso project has no voice button on its lines: revert takes its place
+    // at the row's end, and Remake voices in the pane's head does them all.
+    const wave = `<button class="sc-wave${stale ? " stale" : fresh ? " fresh" : ""}${off}" data-voice="${l.line}"
+        type="button"${offAttr} title="${untr ? WRITE_FIRST : stale ? t("The words changed - make the voice again") : fresh ? t("Voice made - press to make it again") : t("Make this line's voice again")}">${WAVE_ICON}</button>`;
+    // Perso put its own words in place of the user's when it made the voice
+    // (app/perso_edit.py mark_reworded): said under the line, with the
+    // user's words on hover. Revert is the way back.
+    const reworded = l.reworded
+      ? ` data-note="${t("Perso reworded this line.")}" title="${t("You wrote: {words}", { words: escapeHtml(l.reworded) })}"` : "";
     const tick = picked.has(l.line);
-    return `<div class="sc-row${tick ? " sc-picked" : ""}" data-start="${l.start}" data-end="${l.end}">
+    return `<div class="sc-row${tick ? " sc-picked" : ""}" data-line="${l.line}" data-start="${l.start}" data-end="${l.end}">
     <label class="sc-n"><input class="sc-pick" type="checkbox" data-pick="${l.line}"${tick ? " checked" : ""}
-      aria-label="Choose line ${l.line}"><span>${l.line}</span></label>
+      aria-label="${t("Choose line {n}", { n: l.line })}"><span>${l.line}</span></label>
     <div>${chip}</div>
     <div class="sc-time"><span class="sc-t-a">${escapeHtml(fmtClockTenths(l.start))}</span><span
       class="sc-t-b"> – ${escapeHtml(fmtClockTenths(l.end))}</span></div>
-    <div class="sc-src">${escapeHtml(l.source || "—")}</div>
+    <div class="sc-src">${escapeHtml(l.source || "")}</div>
     <button class="sc-listen${off}" data-play="${l.line}" type="button"${offAttr}
-      title="${untr ? WRITE_FIRST : "Play this line in the video"}">${PLAY_ICON}</button>
+      title="${untr ? WRITE_FIRST : t("Play this line in the video")}">${PLAY_ICON}</button>
     <div class="sc-dst" contenteditable="plaintext-only" spellcheck="false"
-      data-line="${l.line}"${untr ? ' data-empty="Not translated"' : ""}>${escapeHtml(l.text)}</div>
-    <div class="sc-tools"><span class="sc-len">${lengthCell}</span>${undo}<button class="sc-wave${stale ? " stale" : fresh ? " fresh" : ""}${off}" data-voice="${l.line}"
-        type="button"${offAttr} title="${untr ? WRITE_FIRST : stale ? "The words changed - make the voice again" : fresh ? "Voice made - press to make it again" : "Make this line's voice again"}">${fresh && !stale ? CHECK_ICON : REMAKE_ICON}</button></div>
+      data-line="${l.line}"${untr ? ` data-empty="${t("Not translated")}"` : ""}${stale && !untr ? ` data-note="${t("Words changed")}"` : reworded}>${escapeHtml(l.text)}</div>
+    <div class="sc-tools"><span class="sc-len">${lengthCell}</span>${viaPerso() ? `<span></span>${undo}` : `${undo}${wave}`}</div>
   </div>`;
   }
 
@@ -173,10 +245,20 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
   // here covers the press that slid off the button and never became a click.
   document.addEventListener("mouseup", () => { revertPressedLine = null; });
 
+  // An answer that lands after another project was opened (or this one was
+  // left for Home) is not this screen's to draw: every late writer asks first.
+  const left = (jobId) => scriptJobId !== jobId;
+
   async function renderScript(jobId) {
     const box = $("scriptBox");
     if (!box) return;
-    if (scriptJobId !== jobId) picked.clear();
+    if (scriptJobId !== jobId) {
+      picked.clear();
+      // The project left may still be waiting on its Translate again; this
+      // one's button is its own.
+      $("retranslateBtn").disabled = false;
+      nightingale = null;
+    }
     scriptJobId = jobId;
     const data = await fetch(`/api/dub/jobs/${jobId}/script`)
       .then((r) => (r.ok ? r.json() : null))
@@ -185,31 +267,46 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
     // answer (a Perso job's took seconds) emptied the table and the timeline
     // of the job on screen (Windows, 2026-09-29).
     if (scriptJobId !== jobId) return;
+    persoEdit = (data && data.perso_edit) || null;
+    if (persoEdit && typeof persoEdit.nightingale === "boolean") nightingale = persoEdit.nightingale;
+    shown = (data && data.lines) || [];
+    drawnStamp = (data && data.stamp) || null;
     // Beside the pane's name: how much script there is. Empty when there is
     // none, so the label reads as "Script" alone.
     const count = $("scriptCount");
     if (count) count.textContent = data && data.lines && data.lines.length
-      ? `${data.lines.length} lines` : "";
+      ? t("{n} lines", { n: data.lines.length }) : "";
     if (!data || !data.lines || !data.lines.length) {
       const perso = isPersoJob();
       box.innerHTML = `<div class="script-empty">${perso
-        ? "Perso dubbing arrives as a finished video, so this job has no script."
-        : "No script was recorded for this job."}</div>`;
+        ? t("Perso dubbing arrives as a finished video, so this project has no script.")
+        : t("No script was recorded for this project.")}</div>`;
       renderTimeline([], 0);
+      wirePicks(box, 0, false);
       return;
     }
 
+    // English words ("Original", "Translated"), said in the page's language where drawn.
     const { source: sourceName, target: targetName } = scriptLangNames();
     const speakers = numberSpeakers(data.lines);
+    // The lines the assembly step had to cut short, keyed by line number (a
+    // finished job before this version carries no `clipped` at all -- absent
+    // means unknown, not "nothing was cut", so job/result stay optional).
+    const job = getJob();
+    // The script's own list wins: a remade line changed it after the job
+    // record was written.
+    const clipped = data.clipped
+      || (job && job.id === jobId && job.result && job.result.clipped) || [];
+    const clippedMap = new Map(clipped.map((c) => [c.line, c.cut_s]));
     // Same rule as scriptRow: what follows the backtick is output, so it keeps
     // the column it had inline rather than stepping in with this file.
     box.innerHTML = `
     <div class="sc-row head">
-      <label class="sc-h-n"><input class="sc-pick" type="checkbox" data-pick="all" aria-label="Choose every line">#</label><div class="sc-h-spk">Who</div><div class="sc-h-t">Time</div><div class="sc-h-src">${escapeHtml(sourceName)}</div>
-      <div class="sc-h-dst">${escapeHtml(targetName)}</div>
-      <div class="sc-tools"><span>Length</span><span></span><span class="sc-h-voice">Voice</span></div>
+      <label class="sc-h-n"><input class="sc-pick" type="checkbox" data-pick="all" aria-label="${t("Choose every line")}">#</label><div class="sc-h-spk">${t("Who")}</div><div class="sc-h-t">${t("Time")}</div><div class="sc-h-src">${escapeHtml(t(sourceName))}</div>
+      <div class="sc-h-dst">${escapeHtml(t(targetName))}</div>
+      <div class="sc-tools"><span>${t("Length")}</span><span></span>${viaPerso() ? "<span></span>" : `<span class="sc-h-voice">${t("Voice")}</span>`}</div>
     </div>
-    ${data.lines.map((l) => scriptRow(l, speakers)).join("")}`;
+    ${data.lines.map((l) => scriptRow(l, speakers, clippedMap)).join("")}`;
     // The timeline draws the same lines, under the table, to the video's real
     // length -- or to the last line's end until the browser has the metadata,
     // which paintPlayhead redraws for the moment it lands.
@@ -230,31 +327,23 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
       // gets crushed into the first one and looks like nothing happened.
       bar.style.gridColumn = "1 / -1";
       const note = document.createElement("span");
-      note.textContent = "This Perso dubbing is read-only. ";
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "keys-link";
-      btn.textContent = "Make it editable";
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        note.textContent = "Fetching from Perso… ";
-        try {
-          const r = await fetch(`/api/dub/jobs/${jobId}/perso/materialize`, { method: "POST" });
-          if (!r.ok) {
-            const d = await r.json().catch(() => ({}));
-            note.textContent = String(d.detail || "Could not fetch it. ");
-            btn.disabled = false;
-            return;
-          }
-          await renderScript(jobId);
-        } catch {
-          note.textContent = "Could not fetch it. Is the engine running? ";
-          btn.disabled = false;
-        }
-      });
-      bar.append(note, btn);
+      note.textContent = t("This Perso dubbing is read-only.") + " ";
+      // NIGHTINGALE: Perso cannot remake one of its lines, and fetching it for
+      // editing ended in Perso's HTTP 500 every time (Windows, 2026-10-06).
+      if (nightingale) {
+        note.textContent = t("Nightingale dubbings cannot be edited line by line.");
+        bar.append(note);
+      } else {
+        bar.append(note, editableButton(jobId, note));
+      }
       box.prepend(bar);
+    } else {
+      paintActs(jobId);
     }
+    // Above everything else (prepended last, so it lands first): the lines cut
+    // short by assembly, point 3. One line, not one per row -- the red pill on
+    // each row's own verdict is already the per-line mark.
+    if (clipped.length) clippedNotice(box, clipped);
     box.querySelectorAll(".sc-dst[contenteditable]").forEach((cell) => {
       const before = cell.textContent;
       // Enter commits rather than opening a second line: a script line has one
@@ -298,25 +387,294 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
     box.querySelectorAll("[data-voice]").forEach((b) => {
       b.addEventListener("click", () => remakeLine(jobId, b.dataset.voice, b));
     });
+
+    // The speaker chip, on a Perso dub only (point 4): press it to give that
+    // one line a new voice, on Perso's own side.
+    box.querySelectorAll("[data-speaker]").forEach((b) => {
+      b.addEventListener("click", () => changeSpeaker(jobId, b.dataset.speaker, b));
+    });
   }
 
-  // Translate again (user, 2026-09-28). The boxes pick lines; the button's
-  // menu sends the picked ones, or every line, through ChatGPT once more, and
-  // the server speaks each changed line again before it answers.
+  // The read-only bar's button: fetch the Perso dub's parts and draw it again.
+  function editableButton(jobId, note) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "keys-link";
+    btn.textContent = t("Make it editable");
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      note.textContent = t("Fetching from Perso…") + " ";
+      try {
+        const r = await fetch(`/api/dub/jobs/${jobId}/perso/materialize`, { method: "POST" });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          note.textContent = String(d.detail || t("Could not fetch it.") + " ");
+          btn.disabled = false;
+          return;
+        }
+        await renderScript(jobId);
+      } catch {
+        note.textContent = t("Could not fetch it. Is PersoDub running?") + " ";
+        btn.disabled = false;
+      }
+    });
+    return btn;
+  }
+
+  // One line above the table: how many lines the assembly step had to cut
+  // short, and a way to jump to the first of them. `cut` is job.result.clipped
+  // -- {line, cut_s} -- never empty here (renderScript only calls this when it
+  // is not).
+  function clippedNotice(box, cut) {
+    const bar = document.createElement("div");
+    bar.className = "sc-clipped";
+    bar.style.gridColumn = "1 / -1";
+    bar.tabIndex = 0;
+    const n = cut.length;
+    bar.innerHTML = `${lucide("triangle-alert", 14)}<span>${n === 1
+      ? t("1 line is cut off before it ends. Shorten it, then remake the voice.")
+      : t("{n} lines are cut off before they end. Shorten them, then remake the voice.", { n })}</span>`;
+    const jump = () => {
+      const row = box.querySelector(`.sc-row[data-line="${cut[0].line}"]`);
+      row?.scrollIntoView?.({ block: "center" });
+    };
+    bar.addEventListener("click", jump);
+    bar.addEventListener("keydown", (e) => { if (e.key === "Enter") jump(); });
+    box.prepend(bar);
+  }
+
+  // Lines whose words were rewritten and not voiced since: the ones Remake
+  // voices does. Except on a NIGHTINGALE dub (whose new words ride along with
+  // All at once), Perso does not know those words yet, so All at once would
+  // throw them away: Remake voices sends them first.
+  function unvoiced(lines) {
+    return lines.filter((l) => l.voice_stale && (l.text || "").trim()).map((l) => l.line);
+  }
+
+  // The pane head's three buttons and the strip under them, for the script
+  // just drawn: Remake voices counts the changed lines and rests at none, All
+  // at once is a Perso project's alone.
+  function paintActs(jobId) {
+    const waiting = unvoiced(shown);
+    const n = waiting.length;
+    const perso = viaPerso();
+    const remake = $("remakeVoicesBtn");
+    remake.disabled = !n;
+    remake.classList.remove(n ? "btn-outline" : "btn-primary");
+    remake.classList.add(n ? "btn-primary" : "btn-outline");
+    $("remakeVoicesCount").textContent = n ? ` (${n})` : "";
+    const all = $("allAtOnceBtn");
+    all.disabled = !perso || !!persoEdit.working;
+    all.title = perso ? t("Translation and voices.") : t("Perso dubbing only.");
+    const strip = $("scriptChanged");
+    strip.hidden = !n;
+    strip.innerHTML = !n ? "" : `<b>${n === 1 ? t("1 line changed.") : t("{n} lines changed.", { n })}</b> ${perso
+      ? t("Remake voices when you are done.")
+      : n === 1 ? t("Remake its voice to hear it.") : t("Remake their voices to hear them.")}`;
+    if (!perso) return;
+    if (persoEdit.working === "proofread") watchAll(jobId);
+    else if (persoEdit.unfetched) scriptSaving(persoEdit.reason);
+    // Whether Perso has anything to redo, asked behind the drawn table.
+    else if (persoEdit.available) askAhead(jobId, waiting);
+  }
+
+  // Remake voices: every changed line's voice, in one press. On this computer
+  // the app speaks them and rebuilds the video once; on a Perso project each
+  // goes to Perso in turn, which is also what sends Perso the new words --
+  // pressed twice there, it may spend credits. Perso names no price for a
+  // line's voice, so none is said.
+  async function remakeVoices(jobId) {
+    const waiting = unvoiced(shown);
+    if (!jobId || left(jobId) || !waiting.length) return;
+    const perso = viaPerso();
+    const n = waiting.length;
+    if (perso && nightingale) {
+      scriptSaving(t("This Perso voice remakes every line together. Use All at once."));
+      return;
+    }
+    if (perso && !pressedTwice(`voices:${jobId}`)) {
+      scriptSaving(n === 1 ? t("Perso remakes 1 line. Press again.") : t("Perso remakes {n} lines. Press again.", { n }));
+      return;
+    }
+    const btn = $("remakeVoicesBtn");
+    btn.disabled = true;
+    let made = 0;
+    let credits = 0;
+    try {
+      if (perso) {
+        for (const line of waiting) {
+          scriptSaving(t("Remaking line {line} ({i} of {total})…", { line, i: made + 1, total: waiting.length }));
+          const r = await fetch(`/api/dub/jobs/${jobId}/perso/script/${line}/voice`, {
+            ...CONFIRMED, body: JSON.stringify({ confirm: true, changed_only: true }) });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data.detail || t("Could not remake line {line}.", { line }));
+          freshLines.add(`${jobId}:${line}`);
+          credits += data.credits || 0;
+          made += 1;
+        }
+      } else {
+        scriptSaving(n === 1 ? t("Remaking 1 line…") : t("Remaking {n} lines…", { n }));
+        const r = await fetch(`/api/dub/jobs/${jobId}/voices/stale`, { method: "POST" });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || t("Could not remake the voices."));
+        (data.remade || []).forEach((line) => freshLines.add(`${jobId}:${line}`));
+        made = waiting.length;
+      }
+      if (left(jobId)) return;
+      scriptSaving(credits
+        ? (n === 1 ? t("1 line remade. {credits} credits used.", { credits }) : t("{n} lines remade. {credits} credits used.", { n, credits }))
+        : (n === 1 ? t("1 line remade") : t("{n} lines remade", { n })));
+      await refreshAfterVoices(jobId);
+      setTimeout(() => scriptSaving(""), 2000);
+    } catch (e) {
+      if (left(jobId)) return;
+      // The lines Perso did voice before it stopped are drawn as made.
+      if (made) await refreshAfterVoices(jobId);
+      else btn.disabled = false;
+      scriptSaving(errorText(e));
+    }
+  }
+
+  // What Perso said when this project's script was opened, kept a few
+  // minutes so a table drawn again does not ask again. Two free reads and
+  // the price. A line edited, remade or reverted forgets it (forgetLive).
+  const LIVE_KEEP_MS = 3 * 60 * 1000;
+  const liveKnown = new Map();   // jobId -> { at, asked: Promise<live or null> }
+  const livePrice = new Map();   // jobId -> credits All at once takes
+  function forgetLive(jobId) {
+    liveKnown.delete(jobId);
+    livePrice.delete(jobId);
+  }
+  // "Free." or "Uses N credits." when Perso named the price, else as before.
+  function priceText(jobId) {
+    const n = livePrice.get(jobId);
+    if (typeof n !== "number") return t("Uses credits.");
+    if (n === 0) return t("Free.");
+    const shown = Math.round(n * 10) / 10;
+    return shown === 1 ? t("Uses 1 credit.") : t("Uses {n} credits.", { n: shown });
+  }
+  // Never in the way of the table: it is drawn first, and an answer that
+  // does not come leaves the button as it was (the press still checks).
+  function askAhead(jobId, waiting) {
+    let known = liveKnown.get(jobId);
+    if (!known || Date.now() - known.at > LIVE_KEEP_MS) {
+      known = { at: Date.now(), asked: fetch(`/api/dub/jobs/${jobId}/perso/edit?price=1`)
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null) };
+      liveKnown.set(jobId, known);
+    }
+    known.asked.then((live) => {
+      // A failed ask is not kept: the next drawing asks once more.
+      if (!live) { if (liveKnown.get(jobId) === known) liveKnown.delete(jobId); return; }
+      if (liveKnown.get(jobId) !== known) return;
+      if (typeof live.proofread_price === "number") livePrice.set(jobId, live.proofread_price);
+      if (left(jobId)) return;
+      if (typeof live.nightingale === "boolean") nightingale = live.nightingale;
+      // Only the button as it was drawn: not one a press has since taken over.
+      const btn = $("allAtOnceBtn");
+      if (btn.disabled || live.working || live.unfetched || !live.available) return;
+      // Perso has nothing to redo: the button rests.
+      if (!live.retranslate_available && !(live.nightingale && waiting.length)) btn.disabled = true;
+    });
+  }
+
+  async function persoLive(jobId) {
+    const r = await fetch(`/api/dub/jobs/${jobId}/perso/edit`);
+    const live = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(live.detail || t("Could not reach Perso."));
+    return live;
+  }
+
+  // All at once: Perso translates every line again and remakes every voice.
+  async function allAtOnce(jobId) {
+    if (!jobId || left(jobId)) return;
+    const btn = $("allAtOnceBtn");
+    const waiting = unvoiced(shown);
+    btn.disabled = true;
+    try {
+      const live = await persoLive(jobId);
+      if (left(jobId)) return;
+      if (!live.working) {
+        // One that was asked for and never fetched costs nothing to fetch.
+        if (!live.unfetched) {
+          // Rewritten lines Perso has not voiced: it would refuse (or lose
+          // them), so the press says what to do first.
+          if (waiting.length && !live.nightingale) {
+            scriptSaving(waiting.length === 1 ? t("1 line changed. Remake voices first.")
+              : t("{n} lines changed. Remake voices first.", { n: waiting.length }));
+            btn.disabled = false;
+            return;
+          }
+          // A NIGHTINGALE dub's new words go along, so whether Perso takes
+          // it is only known once it is asked.
+          if (!live.retranslate_available && !live.nightingale) {
+            scriptSaving(t("Perso has nothing to redo yet."));
+            btn.disabled = false;
+            return;
+          }
+          if (!pressedTwice(`all:${jobId}`)) {
+            const known = typeof livePrice.get(jobId) === "number";
+            scriptSaving(live.nightingale && !known
+              ? t("Perso redoes every line. The first time is free. Press again.")
+              : t("Perso redoes every line. {price} Press again.", { price: priceText(jobId) }));
+            btn.disabled = false;
+            return;
+          }
+        }
+        const r = await fetch(`/api/dub/jobs/${jobId}/perso/proofread`, CONFIRMED);
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || t("Could not start it."));
+      }
+      await watchAll(jobId);
+    } catch (e) {
+      if (left(jobId)) return;
+      scriptSaving(errorText(e));
+      btn.disabled = false;
+    }
+  }
+
+  // Ask until Perso is done and its version is home, then draw it. Stops
+  // asking when another job is opened: that one's screen is not this one's.
+  // And when the table is drawn again meanwhile: that drawing starts its own
+  // watch, and two of them would draw the result twice.
+  let watch = 0;
+  async function watchAll(jobId) {
+    const mine = ++watch;
+    const btn = $("allAtOnceBtn");
+    btn.disabled = true;
+    scriptSaving(t("Perso is redoing every line…"));
+    try {
+      for (;;) {
+        await new Promise((done) => setTimeout(done, persoPollMs));
+        if (scriptJobId !== jobId || mine !== watch) return;
+        const live = await persoLive(jobId);
+        if (live.working) continue;
+        if (live.error) throw new Error(live.error);
+        break;
+      }
+      scriptSaving("");
+      await refreshAfterVoices(jobId);
+    } catch (e) {
+      if (left(jobId)) return;
+      scriptSaving(errorText(e));
+      btn.disabled = false;
+    }
+  }
+
+  // Translate again: the ticked lines, or every line when none is ticked,
+  // translated once more -- by Perso on a Perso project, on any other by the
+  // translator it was dubbed with, or the one picked when ChatGPT stopped it.
+  // Words only: the voices wait for Remake voices.
   let lineCount = 0;
   function paintPicks() {
     const n = picked.size;
-    $("scriptPickCount").textContent = n ? `${n} selected` : "";
-    const one = $("retranslateMenu").querySelector('[data-retr="picked"]');
-    one.textContent = `Selected lines (${n})`;
-    one.disabled = !n;
-    $("retranslateMenu").querySelector('[data-retr="all"]').textContent = `All lines (${lineCount})`;
+    $("scriptPickCount").textContent = n ? t("{n} selected", { n }) : "";
     const all = $("scriptBox").querySelector('[data-pick="all"]');
     if (all) all.checked = n > 0 && n === lineCount;
   }
   function wirePicks(box, count, editable) {
     lineCount = count;
-    $("retranslateWrap").hidden = !editable;
+    $("scriptActs").hidden = !editable;
+    if (!editable) $("scriptChanged").hidden = true;
     box.querySelectorAll(".sc-pick").forEach((b) => { b.hidden = !editable; });
     if (!editable) { picked.clear(); $("scriptPickCount").textContent = ""; return; }
     box.querySelectorAll(".sc-pick").forEach((b) => b.addEventListener("change", () => {
@@ -336,52 +694,69 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
     }));
     paintPicks();
   }
-  function openMenu(open) {
-    $("retranslateMenu").hidden = !open;
-    $("retranslateBtn").setAttribute("aria-expanded", String(open));
-  }
-  $("retranslateBtn").addEventListener("click", (e) => {
-    e.stopPropagation();
-    openMenu($("retranslateMenu").hidden);
-  });
-  document.addEventListener("click", (e) => {
-    if (!e.target.closest || !e.target.closest("#retranslateWrap")) openMenu(false);
-  });
-  $("retranslateMenu").querySelectorAll("[data-retr]").forEach((item) => {
-    item.addEventListener("click", () => {
-      openMenu(false);
-      retranslate(scriptJobId, item.dataset.retr === "all" ? null : [...picked].sort((a, b) => a - b));
-    });
-  });
-  async function retranslate(jobId, lines) {
-    if (!jobId) return;
+  $("retranslateBtn").addEventListener("click", () => retranslate(
+    scriptJobId, picked.size ? [...picked].sort((a, b) => a - b) : null));
+  $("remakeVoicesBtn").addEventListener("click", () => remakeVoices(scriptJobId));
+  $("allAtOnceBtn").addEventListener("click", () => allAtOnce(scriptJobId));
+  // `asked`: the same press carried on from a popup or the download dialog,
+  // whose hand-edited lines were already asked about.
+  async function retranslate(jobId, lines, translator = null, asked = false) {
+    if (!jobId || left(jobId)) return;
+    // Words somebody wrote by hand are not written over without a second press.
+    const byHand = shown.filter((l) => l.edited && (!lines || lines.includes(l.line))
+      && !translated.has(`${jobId}:${l.line}`)).length;
+    if (byHand && !asked && !pressedTwice(`retranslate:${jobId}`)) {
+      scriptSaving(byHand === 1 ? t("1 edited line is replaced. Press again.")
+        : t("{n} edited lines are replaced. Press again.", { n: byHand }));
+      return;
+    }
     const btn = $("retranslateBtn");
     btn.disabled = true;
-    scriptSaving(`Translating ${lines ? lines.length : "all"} line${lines && lines.length === 1 ? "" : "s"} with ChatGPT, then making the voices…`);
+    const job = getJob();
+    const name = viaPerso() ? t("Perso")
+      : translatorName(translator || (job && job.id === jobId && job.translator));
+    const many = lines ? lines.length : 0;
+    scriptSaving(name
+      ? (!lines ? t("Translating all lines with {name}…", { name }) : many === 1 ? t("Translating 1 line with {name}…", { name })
+        : t("Translating {n} lines with {name}…", { n: many, name }))
+      : (!lines ? t("Translating all lines…") : many === 1 ? t("Translating 1 line…") : t("Translating {n} lines…", { n: many })));
     try {
       const r = await fetch(`/api/dub/jobs/${jobId}/retranslate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lines }),
+        body: JSON.stringify(translator ? { lines, translator } : { lines }),
       });
       const data = await r.json().catch(() => ({}));
-      // Not signed in to ChatGPT: the same sign-in window as a first dub,
-      // and this translation goes on once it lands.
-      if (r.status === 422 && /Sign in to ChatGPT/.test(data.detail || "") && typeof window !== "undefined") {
+      // Another project was opened meanwhile: the new words are on the
+      // server, and this screen is no longer the one to draw them on.
+      if (left(jobId)) return;
+      // ChatGPT stopped it (its limit, or signed out): the dubbing's own
+      // popup, and a translator picked there translates these same lines.
+      const signedOut = r.status === 422 && /Sign in to ChatGPT/.test(data.detail || "");
+      if (r.status === 429 || signedOut) {
         scriptSaving("");
-        window.dispatchEvent(new CustomEvent("persodub:chatgpt-signin", { detail: () => retranslate(jobId, lines) }));
+        askTranslator({ type: signedOut ? "chatgpt_signed_out" : "chatgpt_limit", message: data.detail || "" },
+                      (picked) => retranslate(jobId, lines, picked, true));
         return;
       }
-      if (!r.ok) throw new Error(data.detail || "Could not translate those lines again.");
+      // The translator's model is not downloaded: the same dialog a dub
+      // start opens, and this translation goes on once it is.
+      if (r.status === 409 && data.detail && data.detail.missing) {
+        scriptSaving("");
+        needModels(data.detail, () => retranslate(jobId, lines, translator, true));
+        return;
+      }
+      if (!r.ok) throw new Error(data.detail || t("Could not translate those lines again."));
       const changed = data.changed || [];
-      changed.forEach((c) => freshLines.add(`${jobId}:${c.line}`));
+      changed.forEach((c) => translated.add(`${jobId}:${c.line}`));
       picked.clear();
-      scriptSaving(changed.length
-        ? `${changed.length} line${changed.length === 1 ? "" : "s"} translated again`
-        : "ChatGPT gave the same words. Nothing changed.");
-      await refreshAfterVoices(jobId);
+      scriptSaving(!changed.length ? t("Same words. Nothing changed.")
+        : changed.length === 1 ? t("1 line translated again")
+        : t("{n} lines translated again", { n: changed.length }));
+      forgetLive(jobId);
+      await renderScript(jobId);
       setTimeout(() => scriptSaving(""), 4000);
     } catch (e) {
-      scriptSaving(errorText(e));
+      if (!left(jobId)) scriptSaving(errorText(e));
     } finally {
       btn.disabled = false;
     }
@@ -394,18 +769,21 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
 
   async function saveLine(jobId, line, text) {
     freshLines.delete(`${jobId}:${line}`);
-    scriptSaving("Saving…");
+    translated.delete(`${jobId}:${line}`);
+    forgetLive(jobId);
+    scriptSaving(t("Saving…"));
     try {
       const r = await fetch(`/api/dub/jobs/${jobId}/script/${line}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "Could not save");
-      scriptSaving("Saved");
+      if (left(jobId)) return;
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || t("Could not save"));
+      scriptSaving(t("Saved"));
       await renderScript(jobId); // the slot check has to be recomputed
       setTimeout(() => scriptSaving(""), 1500);
     } catch (e) {
-      scriptSaving(String(e.message || e));
+      if (!left(jobId)) scriptSaving(errorText(e));
     }
   }
 
@@ -416,12 +794,15 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
   // from the server's script, which is also what takes the filled "stale" marks
   // off the lines that were re-spoken (`voice_stale` comes back false for them).
   async function refreshAfterVoices(jobId) {
+    forgetLive(jobId);
+    if (left(jobId)) return;
     reloadVideo();
     // The new voice has its own length, and the button its own look.
     await renderScript(jobId);
   }
 
-  // Re-speak one line and rebuild the video around it. Everything else -- the
+  // Re-speak one line and rebuild the video around it (the row's own button:
+  // a Perso project has none, see remakeVoices). Everything else -- the
   // other lines' audio, the background, the cloned voice -- is reused, so this
   // costs seconds where a whole remake costs minutes.
   async function remakeLine(jobId, line, btn) {
@@ -430,29 +811,62 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
     // made, the red ring of changed words), while the voice is being made it
     // is the arrow that turns -- a spinning tick read as an error.
     btn.classList.remove("fresh", "stale");
-    btn.innerHTML = REMAKE_ICON;
-    scriptSaving(`Remaking line ${line}…`);
+    btn.innerHTML = WAVE_ICON;
+    scriptSaving(t("Remaking line {line}…", { line }));
     try {
       const r = await fetch(`/api/dub/jobs/${jobId}/script/${line}/voice`, { method: "POST" });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.detail || "Could not remake that line.");
-      scriptSaving(`Line ${line} done`);
+      if (left(jobId)) return;
+      if (!r.ok) throw new Error(data.detail || t("Could not remake that line."));
+      scriptSaving(t("Line {line} done", { line }));
       freshLines.add(`${jobId}:${line}`);
       await refreshAfterVoices(jobId);
       setTimeout(() => scriptSaving(""), 2000);
     } catch (e) {
-      scriptSaving(errorText(e));
+      if (!left(jobId)) scriptSaving(errorText(e));
       btn.disabled = false;
     }
   }
 
   async function revertLine(jobId, line) {
     freshLines.delete(`${jobId}:${line}`);
-    scriptSaving("Reverting…");
-    await fetch(`/api/dub/jobs/${jobId}/script/${line}/revert`, { method: "POST" })
+    forgetLive(jobId);
+    scriptSaving(t("Reverting…"));
+    const r = await fetch(`/api/dub/jobs/${jobId}/script/${line}/revert`, { method: "POST" })
       .catch(() => null);
-    scriptSaving("");
+    if (left(jobId)) return;
+    // A revert that did not happen says so; the table is drawn again either
+    // way, so the words on screen are the ones the server has.
+    scriptSaving(r && r.ok ? "" : t("Could not revert line {line}. Try again.", { line }));
     await renderScript(jobId);
+  }
+
+  // Give one line of a Perso dub a new speaker, on Perso's own side (point 4,
+  // user 2026-09-29): the same route the agent's change_speaker tool calls
+  // (app/api/script.py POST .../perso/speaker), behind the same two-press
+  // confirmation the rest of this file uses for Perso spending.
+  async function changeSpeaker(jobId, line, btn) {
+    if (!pressedTwice(`speaker:${jobId}:${line}`)) {
+      scriptSaving(t("Perso gives line {line} a new voice. Uses credits. Press again.", { line }));
+      return;
+    }
+    btn.disabled = true;
+    scriptSaving(t("Changing line {line}'s speaker…", { line }));
+    try {
+      const r = await fetch(`/api/dub/jobs/${jobId}/perso/speaker`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ line: +line }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (left(jobId)) return;
+      if (!r.ok) throw new Error(data.detail || t("Could not change that line's speaker."));
+      scriptSaving(t("Line {line} done", { line }));
+      await refreshAfterVoices(jobId);
+      setTimeout(() => scriptSaving(""), 2000);
+    } catch (e) {
+      if (!left(jobId)) scriptSaving(errorText(e));
+      btn.disabled = false;
+    }
   }
 
   // Starting a fresh job: the table is emptied, its status line goes quiet and
@@ -463,19 +877,26 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
     $("scriptBox").innerHTML = "";
     scriptSaving("");
     scriptJobId = null;
+    persoEdit = null;
+    nightingale = null;
+    shown = [];
+    armed = null;
     picked.clear();
     $("scriptPickCount").textContent = "";
-    $("retranslateWrap").hidden = true;
+    if ($("scriptCount")) $("scriptCount").textContent = "";
+    $("scriptActs").hidden = true;
+    $("scriptChanged").hidden = true;
   }
 
-  // How many lines are still wearing the filled "the words changed" mark. The
+  // How many lines are still wearing the "Words changed" mark. The
   // assistant's remake counts them before and after its redraw: the marks that
   // are gone are the lines it re-spoke, and there is no second way of telling.
   function countStale() {
-    return $("scriptBox").querySelectorAll(".sc-wave.stale").length;
+    // The mark as the rows wrote it, in the language they were drawn in.
+    return $("scriptBox").querySelectorAll(`.sc-dst[data-note="${t("Words changed")}"]`).length;
   }
 
-  // retranslate: reached from the menu above; returned for the tests.
+  // retranslate: reached from its button above; returned for the tests.
   return { renderScript, refreshAfterVoices, setSaving: scriptSaving, reset, retranslate,
-           getJobId: () => scriptJobId, countStale };
+           getJobId: () => scriptJobId, countStale, getStamp: () => drawnStamp };
 }

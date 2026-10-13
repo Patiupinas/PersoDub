@@ -2,7 +2,7 @@
 // to read. Kept pure so it tests without Electron.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveUpdateMode, resolveFeed } from "./updater.js";
+import { resolveUpdateMode, resolveFeed, INSTALL_ON_QUIT } from "./updater.js";
 
 test("packaged app with no overrides updates automatically", () => {
   assert.equal(resolveUpdateMode({ isPackaged: true, env: {} }), "auto");
@@ -23,14 +23,17 @@ test("dev / from-source runs never update themselves", () => {
   assert.equal(resolveUpdateMode({ isPackaged: false, env: {} }), "off");
 });
 
-test("default feed is the app's bundled config (null override)", () => {
-  assert.equal(resolveFeed({}), null);
+test("the default feed is the edition's own GitHub Releases", () => {
+  // The bundled app-update.yml names one repository for both editions, so the
+  // feed is always set from the edition (edition.js).
+  assert.deepEqual(resolveFeed({}, "production"), { provider: "github", owner: "stronghamjji", repo: "PersoDub" });
+  assert.deepEqual(resolveFeed({}, "opensource"), { provider: "github", owner: "stronghamjji", repo: "PersoDub" });
 });
 
-test("PERSODUB_UPDATE_URL points the updater at a test feed", () => {
+test("PERSODUB_UPDATE_URL points the updater at a test feed, whatever the edition", () => {
   // End-to-end testing serves latest-mac.yml + zip from a local HTTP server,
   // so the flow is provable without publishing anything to GitHub.
-  assert.deepEqual(resolveFeed({ PERSODUB_UPDATE_URL: "http://127.0.0.1:8099" }), {
+  assert.deepEqual(resolveFeed({ PERSODUB_UPDATE_URL: "http://127.0.0.1:8099" }, "production"), {
     provider: "generic",
     url: "http://127.0.0.1:8099",
   });
@@ -68,4 +71,23 @@ test("unknown events and a missing version leave the state alone", () => {
 test("progress that rounds to the same percent is not a new state", () => {
   const prev = { version: "0.5.2", phase: "downloading", pct: 42 };
   assert.equal(nextUpdateState(prev, "download-progress", { percent: 42.4 }), prev);
+});
+
+test("the release's date and notes ride along for the update window", () => {
+  const info = { version: "0.7.1", releaseDate: "2026-09-30T12:00:00.000Z", releaseNotes: "<p>New</p>" };
+  const found = nextUpdateState(null, "update-available", info);
+  assert.deepEqual(found, { version: "0.7.1", phase: "downloading", pct: 0,
+    releaseDate: "2026-09-30T12:00:00.000Z", releaseNotes: "<p>New</p>" });
+  const moved = nextUpdateState(found, "download-progress", { percent: 50 });
+  assert.equal(moved.releaseNotes, "<p>New</p>");
+  // "update-downloaded" without the notes keeps the ones already known.
+  const ready = nextUpdateState(moved, "update-downloaded", { version: "0.7.1" });
+  assert.deepEqual(ready, { version: "0.7.1", phase: "ready", pct: 100,
+    releaseDate: "2026-09-30T12:00:00.000Z", releaseNotes: "<p>New</p>" });
+});
+
+test("a downloaded update waits for Restart to update on every platform, quitting does not install it", () => {
+  // The owner's rule (2026-10-06): the user chooses when the app changes. Mac
+  // used to install on a plain quit while Windows waited for the button.
+  assert.equal(INSTALL_ON_QUIT, false);
 });

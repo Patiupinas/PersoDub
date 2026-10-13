@@ -427,3 +427,46 @@ def test_local_stt_is_never_told_to_decode_in_the_target_language(monkeypatch, t
         "local STT was told to decode as %r -- that is the target language"
         % captured["language"]
     )
+
+
+def _saved_transcript(out):
+    import json
+    with open(os.path.join(os.path.dirname(out), pipeline.TRANSCRIPT_NAME), encoding="utf-8") as f:
+        return json.load(f)["cues"]
+
+
+def test_local_stt_hears_the_vocals_and_the_video_length(monkeypatch, tmp_path):
+    # Whisper's made-up lines are told apart on the vocals track, and a
+    # trimmed clip's lines end where the clip does (Windows B5/D14, 2026-10-06).
+    _stub_common(monkeypatch)
+    seen = {}
+
+    def fake_transcribe_local(audio_path, language=None, **k):
+        seen.update(k)
+        return [{"start": 0.0, "end": 2.0, "text": "hi there"}]
+
+    monkeypatch.setattr(pipeline, "transcribe_local", fake_transcribe_local)
+    monkeypatch.setattr(pipeline, "diarize", lambda path, cues, num_speakers=None, video_duration=None: cues)
+    video, out, srt = _write_inputs(tmp_path)
+    pipeline.run_dub(video_path=video, out_path=out, srt_path=srt,
+                     language="Korean", language_code="ko", log=[].append)
+    assert seen["vocals_path"] == "/local/vocals.wav"
+    assert seen["video_duration"] == 2.0
+
+
+def test_perso_lines_end_where_the_video_ends(monkeypatch, tmp_path):
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(pipeline, "diarize", lambda *a, **k: [])
+
+    class _Long(_FakePerso):
+        def transcribe(self, video_path, space_seq=None):
+            return [{"text_original": "hello there", "speaker_name": "SPK0",
+                     "words": [[{"start": 0.5, "end": 29.98}]]},
+                    {"text_original": "after the end", "speaker_name": "SPK0",
+                     "words": [[{"start": 2.0, "end": 3.0}]]}]
+
+    video, out, srt = _write_inputs(tmp_path)
+    pipeline.run_dub(video_path=video, out_path=out, srt_path=srt,
+                     language="Korean", language_code="ko", stt_engine="perso",
+                     perso_client=_Long(), log=[].append)
+    assert [(c["start"], c["end"], c["text"]) for c in _saved_transcript(out)] == [(0.5, 2.0, "hello there")]

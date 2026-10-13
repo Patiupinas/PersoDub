@@ -52,18 +52,28 @@ def parse_srt(text: str) -> List[Cue]:
     return cues
 
 
-# Approximate syllables per second by language -- based on natural speaking pace (VideoLingo approach)
-# ko/en: 2026-07-30 measured Qwen3-TTS rates (47 ko lines / 25 en lines, real wav durations vs.
-# translated.srt text) -- ko median 4.38 (avg 4.29), en median 4.46 (avg 4.35). The old values
-# (ko 7.0, en 4.8) assumed Korean is spoken ~46% faster than English; our TTS voice actually
-# speaks both at nearly the same rate, so budgets built on the old numbers ran ~1.4x-1.6x too
-# generous and lines overflowed their slots (speech-rate budget revision, 2026-07-30).
+# Syllables per second of Qwen3-TTS speech by language, as _count_syllables counts them (one
+# character for ko/ja/zh, one vowel group for Latin scripts -- Cyrillic has none, so for ru it is
+# words). Measured 2026-10-02 for every language the local voice speaks: 20 natural sentences of
+# mixed length each, voiced through the app's own engine call in a neutral cloned voice (Fast
+# mode seeds), lead/tail silence trimmed as the assembly does, renders the Fast check would remake
+# left out, median rate. The guesses before (ko 4.4, ja 7.5, es 6.5, ru 5.0 by default) sized the
+# first translation of a Korean line about a quarter too short and a Russian one over twice too long.
+# en and ko were measured again on 2026-10-07 off finished dubs (two clips, 17 lines, the engine's
+# actual lines in the cloned voices): 4.2 and 6.2. With the 2026-10-02 figures the first English
+# translation came out long and was asked again up to three times (251 s of translation on a
+# one-minute clip, 126 s with these), and the Korean one short (half the empty time with these).
 _SYL_PER_SEC = {
-    "en": 4.45, "english": 4.45,
-    "es": 6.5, "spanish": 6.5,
-    "ko": 4.4, "korean": 4.4,
-    "ja": 7.5, "japanese": 7.5,
-    "zh": 5.2, "chinese": 5.2,
+    "en": 4.2, "english": 4.2,
+    "ko": 6.2, "korean": 6.2,
+    "ja": 6.13, "japanese": 6.13,
+    "zh": 5.23, "chinese": 5.23,
+    "es": 4.83, "spanish": 4.83,
+    "fr": 5.15, "french": 5.15,
+    "de": 4.96, "german": 4.96,
+    "it": 4.83, "italian": 4.83,
+    "pt": 5.18, "portuguese": 5.18,
+    "ru": 2.19, "russian": 2.19,
 }
 
 _VOWEL_GROUP = re.compile(r"[aeiouyAEIOUY]+")
@@ -94,18 +104,92 @@ def estimate_seconds(text: str, lang: str) -> float:
 
 _SENT_SPLIT = re.compile(r"(?<=[.!?。！？])\s+")
 MIN_SENT_DUR = 0.8  # sentence fragments shorter than this get merged into a neighbor (avoids ultra-short cues)
+# A dubbed line is cut where the speaker really pauses, not at every full stop:
+# sentences said without a pause of PAUSE_SEC are voiced as one line, up to
+# MAX_LINE_SEC (owner decision 2026-10-01). Short lines left no room for a
+# slightly long translation and were voiced one by one with no flow between them.
+PAUSE_SEC = 0.5
+MAX_LINE_SEC = 10.0
+# A line ends where a sentence ends, when the transcript shows sentence ends at
+# all: Whisper's own blocks and a speaker's pauses fall inside sentences half the
+# time (brown: 6 of 9 lines ended mid-sentence, 2026-10-07), and a line cut there
+# is translated as a fragment ("그런데 그는...").
+_SENTENCE_END = re.compile(r"[.!?…。！？]['\"”’)]*\s*$")
+
+
+def ends_sentence(text: str) -> bool:
+    return bool(_SENTENCE_END.search(text or ""))
+
+
+def split_at_sentence_ends(cues: List[Cue]) -> List[Cue]:
+    """Each cue cut into its sentences, timed from its words (whisper_transcribe
+    --word-timestamps); a cue without words, or with one sentence, is kept."""
+    out: List[Cue] = []
+    for c in cues:
+        words = c.get("words") or []
+        if not words:
+            out.append(c)
+            continue
+        groups: List[list] = [[]]
+        for w in words:
+            groups[-1].append(w)
+            if ends_sentence(w["word"]):
+                groups.append([])
+        groups = [g for g in groups if g]
+        if len(groups) <= 1:
+            out.append(c)
+            continue
+        for i, g in enumerate(groups):
+            start = c["start"] if i == 0 else g[0]["start"]
+            end = c["end"] if i == len(groups) - 1 else g[-1]["end"]
+            out.append(dict(c, start=start, end=end, text="".join(w["word"] for w in g).strip(), words=g))
+    return out
+
+
+def clamp_cues(cues: List[Cue], duration) -> List[Cue]:
+    """Cues cut to end where the video does; one that starts there or later is
+    dropped. Whisper put a line at 0-29.98 s on a 10 s clip (its 30 s window,
+    Windows B5/D14 2026-10-06). An unknown duration leaves them as they are."""
+    if not duration:
+        return cues
+    return [dict(c, end=min(c["end"], duration)) for c in cues if c["start"] < duration]
+
+
+def merge_by_pause(cues: List[Cue]) -> List[Cue]:
+    """Join each cue onto the previous one when the same speaker goes on with
+    less than PAUSE_SEC of silence, or mid-sentence however long the pause (in a
+    transcript that marks sentence ends), and the joined line stays within
+    MAX_LINE_SEC. An empty cue is never joined (it is a line still to be filled in)."""
+    punctuated = any(ends_sentence(c["text"]) for c in cues)
+    out: List[Cue] = []
+    for c in cues:
+        p = out[-1] if out else None
+        goes_on = p is not None and (c["start"] - p["end"] < PAUSE_SEC
+                                     or (punctuated and not ends_sentence(p["text"])))
+        if (p and c.get("speaker_id") == p.get("speaker_id")
+                and goes_on and c["end"] - p["start"] <= MAX_LINE_SEC
+                and c["text"].strip() and p["text"].strip()):
+            joined = dict(p, end=c["end"], text=p["text"].rstrip() + " " + c["text"].lstrip())
+            if "words" in p or "words" in c:
+                joined["words"] = p.get("words", []) + c.get("words", [])
+            out[-1] = joined
+        else:
+            out.append(dict(c))
+    return out
 
 
 def split_cues_into_sentences(cues: List[Cue]) -> List[Cue]:
-    """Split coarse subtitle cues into sentences (.?!), dividing time in proportion to character count.
+    """Split a cue longer than MAX_LINE_SEC into sentences (.?!), dividing time in proportion to character
+    count, then join the sentences back into lines of at most MAX_LINE_SEC.
 
-    When Whisper lumps several sentences into one block, this spreads them out per sentence to align dubbing timing.
+    When Whisper lumps several sentences into one long block, this spreads them out to keep each dubbed line
+    short enough to voice. A cue within MAX_LINE_SEC is kept whole, however many sentences it holds.
     Fragments that are too short (< MIN_SENT_DUR) are merged into a neighboring sentence to prevent ultra-short cues.
     """
     out: List[Cue] = []
     for c in cues:
         parts = [p.strip() for p in _SENT_SPLIT.split(c["text"].strip()) if p.strip()]
-        if len(parts) <= 1:
+        if len(parts) <= 1 or c["end"] - c["start"] <= MAX_LINE_SEC:
             out.append(c)
             continue
         total = sum(len(p) for p in parts) or 1
@@ -120,7 +204,7 @@ def split_cues_into_sentences(cues: List[Cue]) -> List[Cue]:
             # label-less cue silently defeated that guard.
             pieces.append(dict(c, start=round(t, 3), end=end, text=p))
             t = end
-        out.extend(_merge_short_pieces(pieces))
+        out.extend(merge_by_pause(_merge_short_pieces(pieces)))
     return out
 
 

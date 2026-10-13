@@ -477,3 +477,11 @@ def test_models_that_cannot_be_judged_are_not_asked_on_every_look(monkeypatch, t
 
     assert asked == ["m1"]
     c.forget_models()
+
+
+def test_a_usage_limit_in_a_connection_complaint_ends_the_turn_instead_of_reconnecting():
+    # The CLI retried five times over minutes while the panel said
+    # "Reconnecting…" (Windows H18, 2026-10-07): a limit is not a connection to retry.
+    out = ev('{"type":"error","message":"Reconnecting... 2/5 (usage limit reached, try again later)"}')
+    assert out[0]["kind"] == "error" and out[0]["stop"] is True
+    assert "Usage limit" in out[0]["message"]

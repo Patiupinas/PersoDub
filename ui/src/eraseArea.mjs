@@ -10,6 +10,8 @@
 // afresh from the picture's rectangle every time the window changes size.
 import { pictureRect } from "./subtitleLayout.mjs";
 import { gb } from "./modelsUi.mjs";
+import { fmtClockTenths, fmtLength } from "./format.mjs";
+import { t } from "./i18n.mjs";
 
 // The smallest box worth erasing, in the video's own pixels: under this it
 // holds no line of writing, and the erase would take the same minutes finding
@@ -114,6 +116,16 @@ export function defaultArea(videoW, videoH) {
   return clampArea([bottom - boxH, bottom, x0, x0 + boxW], videoW, videoH);
 }
 
+// What the Area card says before the erase starts, always (owner,
+// 2026-09-30): people drew a huge box and waited without knowing why, and did
+// not know the box has to be placed on a frame that shows subtitles.
+// English, compared by the tests: eraseScreen draws each through t(), and
+// both keys are added to the tables by hand.
+export const AREA_TIPS = [
+  "Fit the box to the subtitles. A bigger box takes longer.",
+  "Go to a frame with subtitles, then place the box.",
+];
+
 /**
  * The line beside the minutes when the box has grown past half the frame.
  * The estimate hardly follows the box's size -- only the whole frame costs
@@ -124,7 +136,7 @@ export function bigBoxNote(area, videoW, videoH) {
   if (!area || !videoW || !videoH) return "";
   const [y0, y1, x0, x1] = area;
   const share = ((y1 - y0) * (x1 - x0)) / (videoW * videoH);
-  return share >= 0.5 ? "Larger area, longer wait." : "";
+  return share >= 0.5 ? t("Larger area, longer wait.") : "";
 }
 
 /** Is this box the whole frame? (Which costs more -- see WHOLE_EXTRA.) */
@@ -134,28 +146,40 @@ export function isWhole(area, videoW, videoH) {
 }
 
 /**
- * How much of the video an erase will actually work through: the part the trim
- * handles kept, or all of it. Everything the screen promises -- the estimate,
- * the countdown -- is made from this, because a 10-second cut of a 60-second
- * video takes a sixth of the minutes.
+ * How much of the video an erase will actually work through: the parts the
+ * timeline's cuts kept (`ranges`, [[start, end], ...] in seconds), or all of
+ * it. Everything the screen promises -- the estimate, the countdown -- is made
+ * from this, because a 10-second cut of a 60-second video takes a sixth of the
+ * minutes.
  */
 export function workLength(source) {
   if (!source) return 0;
-  const t = source.trim;
   const whole = Number.isFinite(source.duration) ? source.duration : 0;
-  if (!t || !Number.isFinite(t.start) || !Number.isFinite(t.end)) return whole;
-  return Math.max(0, t.end - t.start);
+  const kept = source.ranges;
+  if (!Array.isArray(kept) || !kept.length) return whole;
+  return kept.reduce((sum, [a, b]) => sum + Math.max(0, b - a), 0);
 }
 
 /**
- * "15s of 60s" -- said on screen wherever a trim came in, because without it
- * the user has every reason to think the whole video is being erased. "" when
- * nothing was trimmed, or when the length is not known.
+ * "15s of 60s" -- said on screen wherever something was cut away, because
+ * without it the user has every reason to think the whole video is being
+ * erased. "" when nothing was cut, or when the length is not known.
  */
 export function trimNote(source) {
-  const t = source && source.trim;
-  if (!t || !source.duration) return "";
-  return `${Math.round(workLength(source))}s of ${Math.round(source.duration)}s`;
+  if (!source || !source.ranges || !source.duration) return "";
+  return t("{kept} of {total}", { kept: fmtLength(workLength(source)), total: fmtLength(source.duration) });
+}
+
+/**
+ * The Erase tab's first card: "00:00:02.0 – 00:00:08.0" for one part, "2
+ * parts" for several. "" when the length is not known -- a job opened out of
+ * the Projects list has none on its record.
+ */
+export function partRange(source) {
+  if (!source || !(source.duration >= 1)) return "";
+  const kept = source.ranges || [[0, source.duration]];
+  if (kept.length > 1) return t("{n} parts", { n: kept.length });
+  return `${fmtClockTenths(kept[0][0])} – ${fmtClockTenths(kept[0][1])}`;
 }
 
 /** How long this erase will take, in seconds. 0 when the length is unknown. */
@@ -173,26 +197,29 @@ export function estimateSeconds(durationSec, { whole = false, windows = false, n
  */
 export function noGpuNote(platformKey) {
   return platformKey === "win-cpu"
-    ? "No graphics card found. Erasing will take about 5x longer." : "";
+    ? t("No graphics card found. Erasing will take about 5x longer.") : "";
 }
 
 /** "About 9 min" for the top bar, or "" when there is nothing to promise. */
 export function estimateLabel(seconds) {
   if (!seconds) return "";
-  return `About ${Math.max(1, Math.ceil(seconds / 60))} min`;
+  return t("About {n} min", { n: Math.max(1, Math.ceil(seconds / 60)) });
 }
 
 /**
  * The line under the video while the erase runs: "Erasing · 43% · 4 min left".
  * The time left is the estimate less the part already done, and is dropped
  * once under half a minute is left rather than counting down to "1 min left"
- * and staying there.
+ * and staying there. At 100% the frames are done but the result is still being
+ * checked and put together, which takes minutes, so the line says that rather
+ * than sitting on a number that looks finished.
  */
 export function progressLine(percent, estSeconds) {
   const pct = Math.max(0, Math.min(100, Math.round(percent || 0)));
+  if (pct === 100) return t("Finishing up");
   const remaining = (estSeconds || 0) * (1 - pct / 100);
-  if (remaining < 30) return `Erasing · ${pct}%`;
-  return `Erasing · ${pct}% · ${Math.ceil(remaining / 60)} min left`;
+  if (remaining < 30) return t("Erasing · {pct}%", { pct });
+  return t("Erasing · {pct}% · {n} min left", { pct, n: Math.ceil(remaining / 60) });
 }
 
 /**
@@ -216,7 +243,7 @@ export function isPackMissing(err) {
 
 /** The banner over the video when it is not: "Erase tool needed · 3.6 GB, once". */
 export function packNeededLine(bytes) {
-  return `Erase tool needed · ${gb(bytes || 0)} GB, once`;
+  return t("Erase tool needed · {size} GB, once", { size: gb(bytes || 0) });
 }
 
 /**

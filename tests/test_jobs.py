@@ -2,7 +2,9 @@ import json
 import threading
 import time
 
-from app.jobs import JobCancelled, JobStore, error_text_for_ui, kind_of
+import pytest
+
+from app.jobs import JobCancelled, JobStore, error_text_for_ui, kind_of, raise_if_cancelled
 from app.perso_client import PersoCreditExhaustedError
 
 
@@ -481,3 +483,45 @@ def test_run_async_leaves_the_record_alone_when_the_result_says_nothing():
     j = _wait(store, jid)
     assert j["status"] == "done"
     assert "perso_credits" not in j and "duration" not in j
+
+
+def test_a_restart_keeps_the_lines_that_were_cut_short(tmp_path):
+    work = tmp_path / "day" / "clip_es"
+    work.mkdir(parents=True)
+    (work / "job.json").write_text(json.dumps({
+        "id": "abc12345", "status": "done",
+        "result": {"out_path": str(work / "dubbed.mp4")}}), encoding="utf-8")
+    (work / "clipped_lines.json").write_text(json.dumps({
+        "clipped": [{"line": 2, "cut_s": 0.901}], "clipped_count": 1}), encoding="utf-8")
+
+    store = JobStore(log_dir=str(tmp_path))
+    store.restore(str(tmp_path))
+
+    result = store.get("abc12345")["result"]
+    assert result["clipped"] == [{"line": 2, "cut_s": 0.901}]
+    assert result["clipped_count"] == 1
+
+
+def test_a_restart_without_a_cut_list_leaves_the_result_alone(tmp_path):
+    work = tmp_path / "day" / "clip_es"
+    work.mkdir(parents=True)
+    (work / "job.json").write_text(json.dumps({
+        "id": "abc12346", "status": "done",
+        "result": {"out_path": str(work / "dubbed.mp4")}}), encoding="utf-8")
+
+    store = JobStore(log_dir=str(tmp_path))
+    store.restore(str(tmp_path))
+
+    assert "clipped" not in store.get("abc12346")["result"]
+
+
+def test_the_cancel_checkpoint_writes_its_line_and_stops_only_when_cancel_was_pressed():
+    # One checkpoint for the stages, the voice lines and the pace-fit rounds:
+    # the job log's line and the exception's text are what each wrote before.
+    logs = []
+    raise_if_cancelled(None, logs.append)
+    raise_if_cancelled(lambda: False, logs.append)
+    assert logs == []
+    with pytest.raises(JobCancelled, match="^cancelled by user$"):
+        raise_if_cancelled(lambda: True, logs.append)
+    assert logs == ["Cancelled by user request"]

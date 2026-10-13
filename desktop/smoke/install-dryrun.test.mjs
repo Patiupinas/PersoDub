@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { buildSteps, baseSteps, packSteps, packInstalled, PACKS } from "../src/installSpec.js";
+import { buildSteps, bootSteps } from "../src/installSpec.js";
 import { runInstall } from "../src/installer.js";
 import { checkKit } from "../src/engineCheck.js";
 import { IS_WIN, venvBin, exeName } from "../src/platform.js";
@@ -81,15 +81,12 @@ test("full install dry run completes, satisfies checkKit, and resumes as all-ski
     },
   };
 
-  // What the boot flow actually runs (main.js): the base steps, plus only
-  // the packs already on this kit's disk. This fake kit never gets a pack
-  // installed, so toRun is the 6 base steps on both runs -- the whole point
-  // being that a light install (and its resume check) never touches the
-  // engine/ollama-runtime packs at all.
-  const toRun = (all) => [
-    ...baseSteps(all),
-    ...PACKS.filter((p) => packInstalled(kitDir, p.id)).flatMap((p) => packSteps(all, p.id)),
-  ];
+  // What the boot flow actually runs (bootSteps, as bootFlow.js calls it): the
+  // base steps, plus only the packs already on this kit's disk. This fake kit
+  // never gets a pack installed, so toRun is the 6 base steps on both runs --
+  // the whole point being that a light install (and its resume check) never
+  // touches the engine/ollama-runtime packs at all.
+  const toRun = (all) => bootSteps(all, kitDir);
 
   const prevXdg = process.env.XDG_CACHE_HOME;
   process.env.XDG_CACHE_HOME = cacheDir;

@@ -5,7 +5,11 @@ model once at startup and exposes a tiny HTTP surface the persodub app calls
 over httpx (see app/engines/qwen_tts.py for the client side).
 
 Endpoints:
-  GET  /health   -> {"status":"ok","model_loaded":bool}
+  GET  /health   -> {"status":"ok"|"loading","model_loaded":bool,"device":str|None,
+                    "rss_mb":int|None}
+  POST /restart  -> {"restarting":true}; the process then exits with
+                    RESTART_EXIT_CODE once the line in flight is done, and the
+                    desktop shell starts it again (desktop/src/orchestrator.js)
   POST /clone    -> form(ref_audio file, ref_text, mode) -> {"voice_id": str}
   POST /generate -> form(text, language, voice_id | ref_audio(+ref_text), mode,
                     seed, temperature, top_p, repetition_penalty)
@@ -22,8 +26,10 @@ import hashlib
 import io
 import math
 import os
+import sys
 import tempfile
 import threading
+import traceback
 
 import numpy as np
 import soundfile as sf
@@ -110,9 +116,70 @@ def health():
     # only NVIDIA is accelerated, "it ran on CPU" is the answer to almost every
     # "why is this slow". Reported even when the model was not loaded, since
     # the choice is made from the environment, not from the load.
-    return {"status": "ok",
+    # "loading" while the startup load runs (_start_loading): the desktop app
+    # keeps waiting on that answer, and gives up only on silence.
+    return {"status": "loading" if getattr(app.state, "loading", False) else "ok",
             "model_loaded": getattr(app.state, "synth", None) is not None,
-            "device": getattr(app.state, "device", None)}
+            "device": getattr(app.state, "device", None),
+            "rss_mb": _rss_mb()}
+
+
+def _rss_mb():
+    """The memory this process holds as the system counts it, for the app's
+    restart rule (app/qwen_pipeline ENGINE_RESTART_MB): the engine keeps memory
+    it no longer uses, about 8-12 GB more per 50 lines (2026-10-07). On macOS
+    that is the physical footprint top and Activity Monitor show -- the
+    model's unified memory is in it, while RSS read 1.2 GB against a 7.8 GB
+    footprint and 0.2 GB once swapped out (2026-10-07). Elsewhere the larger
+    of RSS and its peak. None where none of these can be read."""
+    try:
+        if sys.platform == "darwin":
+            return int(_phys_footprint() // (1024 * 1024))
+        import psutil
+        info = psutil.Process().memory_info()
+        peak = getattr(info, "peak_wset", 0)   # Windows
+        if not peak:
+            import resource
+            peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024   # Linux: KB
+        return int(max(info.rss, peak) // (1024 * 1024))
+    except Exception:
+        return None
+
+
+def _phys_footprint():
+    """proc_pid_rusage(RUSAGE_INFO_V2).ri_phys_footprint, in bytes."""
+    import ctypes
+    u64 = ctypes.c_uint64
+
+    class RusageV2(ctypes.Structure):
+        _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [(n, u64) for n in (
+            "ri_user_time", "ri_system_time", "ri_pkg_idle_wkups", "ri_interrupt_wkups", "ri_pageins",
+            "ri_wired_size", "ri_resident_size", "ri_phys_footprint", "ri_proc_start_abstime",
+            "ri_proc_exit_abstime", "ri_child_user_time", "ri_child_system_time", "ri_child_pkg_idle_wkups",
+            "ri_child_interrupt_wkups", "ri_child_pageins", "ri_child_elapsed_abstime",
+            "ri_diskio_bytesread", "ri_diskio_byteswritten")]
+    info = RusageV2()
+    if ctypes.CDLL("/usr/lib/libproc.dylib").proc_pid_rusage(os.getpid(), 2, ctypes.byref(info)) != 0:
+        raise OSError("proc_pid_rusage failed")
+    return info.ri_phys_footprint
+
+
+# The desktop shell starts the engine again when it exits with this code, and
+# only this one (desktop/src/orchestrator.js RESTART_EXIT_CODE).
+RESTART_EXIT_CODE = 75
+
+
+@app.post("/restart")
+def restart():
+    """Exit once the line in flight is done, so the shell brings up a fresh
+    engine: the one way to give the leaked memory back today."""
+    def go():
+        with _WORK_LOCK:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(RESTART_EXIT_CODE)
+    threading.Timer(0.2, go).start()
+    return {"restarting": True}
 
 
 @app.post("/clone")
@@ -261,22 +328,44 @@ def _resolve_device(device):
 
 
 @app.on_event("startup")
+def _start_loading():
+    # The load runs beside the server, not before it: uvicorn opens its port
+    # only once startup returns, and a load of minutes on a slow computer was
+    # minutes of silence the app could not tell from a hung engine. /health
+    # answers "loading" meanwhile; a request that needs the model waits on
+    # _LOAD_LOCK, which the load holds.
+    app.state.loading = True
+    _LOAD_LOCK.acquire()
+    threading.Thread(target=_load_model, daemon=True).start()
+
+
 def _load_model():
-    # Resolved first and kept on app.state so /health can report it even when
-    # the load below is skipped -- the device is decided by the environment,
-    # not by whether a model is resident.
-    device = _resolve_device(os.environ.get("QWEN_TTS_DEVICE", "cuda:0"))
-    app.state.device = device
-    print(f"QWEN_TTS device={device}", flush=True)
-    # Skip the heavy load when a fake was injected (tests) or explicitly disabled.
-    if getattr(app.state, "synth", None) is not None:
-        return
-    if os.environ.get("QWEN_TTS_SKIP_LOAD") == "1":
-        return
-    # The model is optional now: when its weights are not on disk yet (the
-    # in-app catalog downloads them later), start without it. /health reports
-    # model_loaded false and _synth() loads it lazily once the file appears.
-    if not os.path.exists(_weights_path()):
-        print(f"QWEN_TTS model not downloaded yet ({_weights_path()}); starting without it", flush=True)
-        return
-    app.state.synth = QwenSynth(device=device)
+    try:
+        # Resolved first and kept on app.state so /health can report it even
+        # when the load below is skipped -- the device is decided by the
+        # environment, not by whether a model is resident.
+        device = _resolve_device(os.environ.get("QWEN_TTS_DEVICE", "cuda:0"))
+        app.state.device = device
+        print(f"QWEN_TTS device={device}", flush=True)
+        # Skip the heavy load when a fake was injected (tests) or explicitly disabled.
+        if getattr(app.state, "synth", None) is not None:
+            return
+        if os.environ.get("QWEN_TTS_SKIP_LOAD") == "1":
+            return
+        # The model is optional now: when its weights are not on disk yet (the
+        # in-app catalog downloads them later), start without it. /health reports
+        # model_loaded false and _synth() loads it lazily once the file appears.
+        if not os.path.exists(_weights_path()):
+            print(f"QWEN_TTS model not downloaded yet ({_weights_path()}); starting without it", flush=True)
+            return
+        app.state.synth = QwenSynth(device=device)
+    except BaseException:
+        # What a failed load in startup used to do: the traceback to the log
+        # and the process gone, so the app sees an engine that stopped (and
+        # its last lines) rather than one that says "loading" forever.
+        traceback.print_exc()
+        sys.stderr.flush()
+        os._exit(1)
+    finally:
+        app.state.loading = False
+        _LOAD_LOCK.release()

@@ -3,6 +3,8 @@ import json
 import os
 import time
 
+import pytest
+
 from app import languages, state
 
 
@@ -12,21 +14,26 @@ def test_local_is_the_models_ten_in_product_order():
     assert all(e["tag"] is None for e in languages.local_languages())
 
 
-def test_bundled_perso_list_is_perso_v3_minus_auto_with_region_tags(monkeypatch):
+def test_bundled_perso_list_is_persos_offered_models_minus_auto_with_region_tags(monkeypatch):
     monkeypatch.setattr(languages, "_fetch", lambda: None)
     langs = languages.perso_languages()
     ids = {e["id"] for e in langs}
     assert "auto" not in ids
     assert {"hi", "th", "ar", "en", "en-GB", "es-ES", "pt-PT"} <= ids
-    assert len(langs) >= 70
+    assert len(langs) >= 100
     gb = next(e for e in langs if e["id"] == "en-GB")
-    assert gb == {"id": "en-GB", "code": "en", "name": "English (UK)", "tag": "en-GB"}
+    assert gb == {"id": "en-GB", "code": "en", "name": "English (UK)", "tag": "en-GB",
+                  "models": ["NIGHTINGALE", "ORIOLE"]}
+    # Every entry names the offered models it has, in the screen's order.
+    assert all(e["models"] and set(e["models"]) <= set(languages.TTS_MODELS) for e in langs)
+    assert next(e for e in langs if e["id"] == "ko")["models"] == ["NIGHTINGALE", "ORIOLE", "WREN"]
+    assert next(e for e in langs if e["id"] == "en-AU")["models"] == ["NIGHTINGALE"]
 
 
 def test_perso_list_is_fetched_once_a_day_then_kept(monkeypatch, tmp_path):
     monkeypatch.setattr(state, "WORKSPACE", str(tmp_path))
     calls = []
-    fresh = [{"id": "zz", "code": "zz", "name": "Zed", "tag": None}]
+    fresh = [{"id": "zz", "code": "zz", "name": "Zed", "tag": None, "models": ["ORIOLE"]}]
     monkeypatch.setattr(languages, "_fetch", lambda: (calls.append(1), fresh)[1])
     assert languages.perso_languages() == fresh
     assert languages.perso_languages() == fresh            # kept copy, no second call
@@ -49,3 +56,61 @@ def test_lookup_knows_each_path_apart(monkeypatch):
     assert languages.lookup("perso", "EN-gb")["tag"] == "en-GB"     # case-insensitive
     assert languages.lookup("perso", "xx") is None
     assert languages.lookup("perso", "../etc") is None
+
+
+class _Answer:
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._body
+
+
+def test_fetch_keeps_each_language_with_an_offered_model_and_says_which(monkeypatch):
+    # Perso's list as it answered on 2026-10-02: AUDIO_ENGINE_V3 is gone from
+    # it, and filtering on that name kept no language at all.
+    import httpx
+
+    from app import settings_env
+    raw = [
+        {"code": "auto", "name": "Auto Detect", "languageTag": "default", "supportedTtsModels": []},
+        {"code": "ko", "name": "Korean", "languageTag": "default",
+         "supportedTtsModels": ["ORIOLE", "DODO", "NIGHTINGALE", "WREN"]},
+        {"code": "en", "name": "English (Australia)", "languageTag": "en-AU",
+         "supportedTtsModels": ["NIGHTINGALE"]},
+        {"code": "xx", "name": "Dodo only", "languageTag": "default", "supportedTtsModels": ["DODO"]},
+    ]
+    monkeypatch.setattr(settings_env, "current_value", lambda k: "dummy-key")
+    monkeypatch.setattr(httpx, "get", lambda url, headers=None, timeout=None: _Answer({"languages": raw}))
+    assert languages._fetch() == [
+        {"id": "ko", "code": "ko", "name": "Korean", "tag": None,
+         "models": ["NIGHTINGALE", "ORIOLE", "WREN"]},
+        {"id": "en-AU", "code": "en", "name": "English (Australia)", "tag": "en-AU",
+         "models": ["NIGHTINGALE"]},
+    ]
+
+
+def test_a_kept_list_from_before_models_were_kept_still_loads_as_oriole(monkeypatch, tmp_path):
+    monkeypatch.setattr(state, "WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(languages, "_fetch", lambda: None)
+    with open(os.path.join(str(tmp_path), languages.CACHE_NAME), "w", encoding="utf-8") as f:
+        json.dump({"fetched": "2026-09-08",
+                   "languages": [{"id": "hi", "code": "hi", "name": "Hindi", "tag": None}]}, f)
+    assert languages.perso_languages() == [
+        {"id": "hi", "code": "hi", "name": "Hindi", "tag": None, "models": ["ORIOLE"]}]
+
+
+def test_model_for_takes_the_one_asked_for_or_oriole_or_the_first_the_language_has():
+    ko = {"name": "Korean", "models": ["NIGHTINGALE", "ORIOLE", "WREN"]}
+    au = {"name": "English (Australia)", "models": ["NIGHTINGALE"]}
+    assert languages.model_for(ko) == "ORIOLE"
+    assert languages.model_for(au) == "NIGHTINGALE"
+    assert languages.model_for(ko, "wren") == "WREN"             # case-insensitive
+    assert languages.model_for({"name": "Old", "code": "zz"}) == "ORIOLE"   # no models kept
+    with pytest.raises(ValueError, match="Wren.*English \\(Australia\\)"):
+        languages.model_for(au, "WREN")
+    with pytest.raises(ValueError, match="Dodo"):
+        languages.model_for(ko, "DODO")                           # not offered

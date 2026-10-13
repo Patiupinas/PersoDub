@@ -72,7 +72,7 @@ def strip_source_line(text: str) -> str:
     """The job log without its first line.
 
     That line is the video itself -- a link, a title or a file name, whichever
-    the job was started from (app/api/dub.py's launch_job) -- and none of the
+    the job was started from (app/api/_launch.py's launch_job) -- and none of the
     three is a fact about the failure. The rest of the log is the failure.
     Replaced rather than dropped, so the line numbers a reader counts still
     line up with the log on the machine it came from.

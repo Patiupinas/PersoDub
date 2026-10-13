@@ -59,3 +59,27 @@ test("parses KEY=value lines, skipping comments and blanks", () => {
   assert.ok(!("NOEQUALS_LINE" in env));
   assert.equal(Object.keys(env).length, 5);
 });
+
+import { envWithKit } from "./kitEnv.js";
+
+test("the user's switches are kit.env laid over the process's environment, read fresh every time", () => {
+  const d = kit();
+  assert.equal(envWithKit(d), process.env, "no kit.env: the process's own");
+  assert.equal(envWithKit(null), process.env, "no kit at all: the same");
+  writeFileSync(join(d, KIT_ENV), "PERSODUB_NO_REPORTS=1\n");
+  assert.equal(envWithKit(d).PERSODUB_NO_REPORTS, "1");
+  // The rest of the environment is still there, each variable under its own
+  // spelling: on Windows process.env answers PATH for "Path", but a copy keeps
+  // only the real name, so the check walks the real names (Windows, 2026-10-10).
+  const merged = envWithKit(d);
+  for (const [name, value] of Object.entries(process.env)) {
+    if (name !== "PERSODUB_NO_REPORTS") assert.equal(merged[name], value, `the rest of the environment is still there (${name})`);
+  }
+  // Settings turned it back: the very next read sees it, no restart.
+  writeFileSync(join(d, KIT_ENV), "PERSODUB_NO_REPORTS=0\n");
+  assert.equal(envWithKit(d).PERSODUB_NO_REPORTS, "0");
+  // A kit.env that cannot be read is no kit.env, never an error.
+  const unreadable = kit();
+  mkdirSync(join(unreadable, KIT_ENV));
+  assert.equal(envWithKit(unreadable), process.env);
+});

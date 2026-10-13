@@ -13,6 +13,8 @@ import {
   cancelDubJob,
   applyEngineAvailability,
   engineChips,
+  engineLine,
+  voiceLabel,
   startedLabel,
   startErase,
 } from "./dubApi.mjs";
@@ -230,7 +232,7 @@ test("pollDubJob stops with a readable line when the server says the job is gone
     const unreachable = [];
     await assert.rejects(
       pollDubJob("j1", { intervalMs: 0, maxIntervalMs: 0, onUnreachable: (e) => unreachable.push(e) }),
-      /no longer on the app server/,
+      /no longer here/,
     );
     assert.equal(call, 1);
     assert.equal(unreachable.length, 0);
@@ -329,6 +331,14 @@ test("buildDubFormData sends trim_start/trim_end only when a trim is given", () 
   assert.equal(fd2.get("trim_start"), null);
 });
 
+test("buildDubFormData sends the timeline's kept parts as one JSON field, only when given", () => {
+  const fd = buildDubFormData({ downloadId: "d1", targetLang: "ko", ranges: [[0, 2.5], [4, 9.5]] });
+  assert.equal(fd.get("ranges"), "[[0,2.5],[4,9.5]]");
+  assert.deepEqual(JSON.parse(fd.get("ranges")), [[0, 2.5], [4, 9.5]]);
+  assert.equal(fd.get("trim_start"), null);
+  assert.equal(buildDubFormData({ downloadId: "d1", targetLang: "ko" }).get("ranges"), null);
+});
+
 // --- applyEngineAvailability: GET /api/engines progressive enhancement ----
 const ALL_AVAILABLE = { gemma_available: true, qwen_available: true, hunyuan_available: true, gemini_available: true, perso_available: true };
 
@@ -407,6 +417,33 @@ test("engineChips: a sidebar row keeps only what differs between jobs", () => {
   assert.deepEqual(chips.map((c) => c.label), ["Whisper", "Gemma 3"]);
 });
 
+test("voiceLabel: the engine with its model, long for the dropdown and short for a job", () => {
+  const models = { qwen3: "1.7B" };
+  assert.equal(voiceLabel("qwen3", models), "Qwen3-TTS · 1.7B");
+  assert.equal(voiceLabel("qwen3", models, true), "Qwen3-TTS 1.7B");
+  // Not downloaded yet, or the page has not heard: the name alone.
+  assert.equal(voiceLabel("qwen3", { qwen3: "" }), "Qwen3-TTS");
+  assert.equal(voiceLabel("qwen3", undefined, true), "Qwen3-TTS");
+});
+
+test("engineChips: the voice chip carries its model when the page knows it", () => {
+  const job = { stt_engine: "perso", translator: "chatgpt", tts: "qwen3", quality: 1 };
+  const labels = (o) => engineChips(job, o).map((c) => c.label);
+  assert.deepEqual(labels({ voiceModels: { qwen3: "1.7B" } }),
+    ["Fast mode", "Perso", "ChatGPT", "Qwen3-TTS 1.7B"]);
+  assert.deepEqual(labels(), ["Fast mode", "Perso", "ChatGPT", "Qwen3-TTS"]);
+});
+
+test("engineLine names the role beside every engine", () => {
+  const job = { separation: "perso", stt_engine: "perso", translator: "chatgpt", tts: "qwen3", quality: 1 };
+  assert.equal(engineLine(job, { voiceModels: { qwen3: "1.7B" } }),
+    "Fast mode · Separation Perso · Transcription Perso · Translation ChatGPT · Voice Qwen3-TTS 1.7B");
+  // Local separation is the default and stays unsaid, as on the chips.
+  assert.equal(engineLine({ separation: "demucs", stt_engine: "whisper", translator: "gemma", tts: "qwen3" }),
+    "Transcription Whisper · Translation Gemma 3 · Voice Qwen3-TTS");
+  assert.equal(engineLine({ project: "old" }), "");
+});
+
 test("engineChips: a job saved before the fields existed shows nothing", () => {
   assert.deepEqual(engineChips({ project: "old", language_code: "en" }), []);
   assert.deepEqual(engineChips(null), []);
@@ -458,11 +495,22 @@ test("buildDubFormData always names the dub mode, local included", () => {
   assert.equal(fd2.get("dub_mode"), "local");
 });
 
+test("buildDubFormData sends the Perso voice model with a Perso dubbing only", () => {
+  const base = { video: new Blob(["x"]), targetLang: "ko", persoModel: "WREN" };
+  assert.equal(buildDubFormData({ ...base, dubMode: "perso" }).get("perso_model"), "WREN");
+  assert.equal(buildDubFormData({ ...base, dubMode: "local" }).get("perso_model"), null);
+  // None chosen: nothing is sent and the server picks.
+  assert.equal(buildDubFormData({ ...base, dubMode: "perso", persoModel: null }).get("perso_model"), null);
+});
+
 test("engineChips: a cloud dub gets a Dubbing chip; a local one stays silent", () => {
   const cloud = engineChips({ dub_mode: "perso", quality: 1 });
   assert.deepEqual(cloud.map((c) => `${c.role} ${c.label}`.trim()), ["Fast mode", "Dubbing Perso"]);
   const local = engineChips({ dub_mode: "local", stt_engine: "whisper", translator: "gemma", tts: "qwen3", quality: 1 });
   assert.ok(!local.some((c) => c.role === "Dubbing"));
+  // The voice model it was made with, once the record keeps one.
+  assert.equal(engineLine({ dub_mode: "perso", perso_model: "WREN" }), "Dubbing Perso Wren");
+  assert.equal(engineLine({ dub_mode: "perso", perso_model: "DODO" }), "Dubbing Perso");
 });
 
 test("parseProgress follows the three Perso cloud phases", () => {
@@ -562,6 +610,7 @@ test("startErase carries the trim, both fields or neither -- the route refuses o
     await startErase({ downloadId: "d1", area: [1, 2, 3, 4], project: "A talk",
                        trim: { start: 2, end: 12 } });
     await startErase({ downloadId: "d1", area: "whole" });
+    await startErase({ downloadId: "d1", area: "whole", ranges: [[0, 3.4], [6.8, 10]] });
   } finally {
     globalThis.fetch = real;
   }
@@ -570,6 +619,18 @@ test("startErase carries the trim, both fields or neither -- the route refuses o
   assert.equal(sent[0].body.get("area"), "[1,2,3,4]");
   assert.equal(sent[0].body.get("trim_start"), "2");
   assert.equal(sent[0].body.get("trim_end"), "12");
+  assert.equal(sent[0].body.get("ranges"), null);
   assert.equal(sent[1].body.get("trim_start"), null);
   assert.equal(sent[1].body.get("trim_end"), null);
+  // Several kept parts go as the pairs the dub's own route reads.
+  assert.equal(sent[2].body.get("ranges"), "[[0,3.4],[6.8,10]]");
+  assert.equal(sent[2].body.get("trim_start"), null);
+});
+
+test("buildDubFormData: the voice engine travels when one is chosen, and only then", () => {
+  const video = new Blob(["v"], { type: "video/mp4" });
+  assert.equal(buildDubFormData({ video, direction: "en_to_ko", ttsEngine: "qwen3" }).get("tts_engine"),
+               "qwen3");
+  // No choice sent: the server's saved default decides.
+  assert.equal(buildDubFormData({ video, direction: "en_to_ko" }).get("tts_engine"), null);
 });

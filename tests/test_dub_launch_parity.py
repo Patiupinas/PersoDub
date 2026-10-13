@@ -19,13 +19,16 @@ Recorded through `_as_the_pipeline_reads_it`, not raw, for two reasons that
 are both about comparing like with like -- see that function.
 """
 import inspect
+import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import engines_status, pipeline, state
+from app.api import _launch as launch_api
 from app.api import dub as dub_api
 from app.config import QWEN_N_TAKES
 from app.main import app
@@ -40,7 +43,7 @@ client = TestClient(app, base_url="http://127.0.0.1")
 # ---------------------------------------------------------------------------
 
 _DEFAULTS = {"dub_mode": "local", "separation": "local", "stt": "local",
-             "translator": "hunyuan", "voice_quality": "fast"}
+             "translator": "hunyuan", "voice_quality": "fast", "voice": "qwen3"}
 
 
 @pytest.fixture(autouse=True)
@@ -50,9 +53,9 @@ def _fixed_world(monkeypatch):
     # dub_start hand run_dub no n_takes at all.
     monkeypatch.setattr(dub_api.dub_setup, "default_n_takes", lambda: None)
     monkeypatch.setattr(dub_api, "default_stt_engine", lambda: "")
-    monkeypatch.setattr(dub_api, "_today", lambda: "2026-09-06")
-    monkeypatch.setattr(dub_api, "_missing_models", lambda *a, **kw: [])
-    monkeypatch.setattr(dub_api, "current_value",
+    monkeypatch.setattr(launch_api, "today", lambda: "2026-09-06")
+    monkeypatch.setattr(launch_api, "missing_models", lambda *a, **kw: [])
+    monkeypatch.setattr(launch_api, "current_value",
                         lambda k: "1" if k == "PERSO_SPACE_SEQ" else "x")
     for name in ("gemma_status", "hunyuan_status", "qwen_status"):
         monkeypatch.setattr(engines_status, name, lambda: "available")
@@ -70,10 +73,12 @@ def recorder(monkeypatch):
         seen["run_dub"].append(kw)
         return {"out_path": kw["out_path"], "num_segments": 0}
 
-    def fake_cloud(jid, video_path, out_path, source_code, target_code, num_speakers, log):
+    def fake_cloud(jid, video_path, out_path, source_code, target_code, num_speakers, log,
+                   tts_model=None):
         seen["cloud"].append({"jid_is_the_new_job": jid, "video_path": video_path,
                               "out_path": out_path, "source_code": source_code,
-                              "target_code": target_code, "num_speakers": num_speakers})
+                              "target_code": target_code, "num_speakers": num_speakers,
+                              "tts_model": tts_model})
         return {"out_path": out_path}
 
     def fake_fetch(url, dest, log=None, cancel_check=None):
@@ -135,8 +140,9 @@ def _as_the_pipeline_reads_it(kw, work):
     # Never set by any caller here; they are the sidecar seams tests inject.
     for key in ("diar_engine", "qwen_engine", "perso_client", "translator"):
         out.pop(key, None)
-    # Added after these recordings (2026-09-23) and set only by the Resume
-    # button, which none of the four paths here is.
+    # Added after these recordings (2026-09-23), so none of them has it. Of
+    # the four paths here only the re-arm says it, and its tests add it
+    # beside the recording.
     if out.get("resume") is False:
         out.pop("resume")
     return out
@@ -319,8 +325,63 @@ def test_start_a_perso_cloud_dub(recorder):
         "source_code": "en",
         "target_code": "ko",
         "num_speakers": 2,
+        # Nobody chose a Perso voice model: ORIOLE, which Korean has.
+        "tts_model": "ORIOLE",
     }
     assert recorder["run_dub"] == []
+    assert state.job_store.get(jid)["perso_model"] == "ORIOLE"
+
+
+def _start_cloud(**extra):
+    return client.post(
+        "/api/dub/start",
+        files={"video": ("v.mp4", b"video-bytes", "video/mp4")},
+        data={"language": "Korean", "language_code": "ko", "dub_mode": "perso", **extra},
+    )
+
+
+def test_a_perso_cloud_dub_is_made_with_the_voice_model_chosen(recorder):
+    r = _start_cloud(perso_model="wren")
+    assert r.status_code == 200
+    jid = r.json()["job_id"]
+    assert _wait(recorder["cloud"])[0]["tts_model"] == "WREN"
+    # Kept on the record, and in job.json, for the finished screen to name
+    # and for a restart to come back to.
+    assert state.job_store.get(jid)["perso_model"] == "WREN"
+    with open(os.path.join(_work_dir(jid), "job.json"), encoding="utf-8") as f:
+        assert json.load(f)["perso_model"] == "WREN"
+
+
+def test_try_again_on_a_cloud_job_repeats_its_voice_model(recorder, tmp_path):
+    jid, _ = _saved_job(tmp_path, name="cloud-wren", language="Korean", language_code="ko",
+                        dub_mode="perso", perso_model="WREN")
+    r = client.post(f"/api/dub/jobs/{jid}/retry")
+    assert r.status_code == 200
+    assert state.job_store.get(r.json()["job_id"])["perso_model"] == "WREN"
+    assert _wait(recorder["cloud"])[0]["tts_model"] == "WREN"
+
+
+def test_a_voice_model_the_language_does_not_have_is_refused_by_name(recorder):
+    # English (Australia) has NIGHTINGALE only (Perso's list, 2026-10-02).
+    r = _start_cloud(language="English (Australia)", language_code="en-AU", perso_model="WREN")
+    assert r.status_code == 422
+    assert "Wren" in r.json()["detail"] and "English (Australia)" in r.json()["detail"]
+    assert recorder["cloud"] == []
+    # Left to the app, that language gets the one model it has.
+    r = _start_cloud(language="English (Australia)", language_code="en-AU")
+    assert r.status_code == 200
+    assert _wait(recorder["cloud"])[0]["tts_model"] == "NIGHTINGALE"
+
+
+def test_a_dubbing_on_this_computer_takes_no_perso_voice_model(recorder):
+    r = client.post(
+        "/api/dub/start",
+        files={"video": ("v.mp4", b"video-bytes", "video/mp4")},
+        data={"language": "Korean", "language_code": "ko", "dub_mode": "local",
+              "perso_model": "WREN"},
+    )
+    assert r.status_code == 200
+    assert "perso_model" not in state.job_store.get(r.json()["job_id"])
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +426,19 @@ def test_redub(recorder, tmp_path):
     assert _as_the_pipeline_reads_it(kw, _work_dir(r.json()["job_id"])) == REDUB
 
 
+def test_a_redub_is_recorded_as_made_on_this_computer(recorder, tmp_path):
+    # A remake always makes its voices here (dub_launch.work_for sends only a
+    # whole dub to the cloud), and its record said nothing: dub_mode came out
+    # null (Windows test H19, 2026-10-10).
+    jid, work = _saved_job(tmp_path, name="finished", **_FIRST_RUN)
+    (work / "translated.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n\n")
+    state.job_store._update(jid, status="done",
+                            result={"out_path": str(work / "dubbed.mp4")})
+    r = client.post(f"/api/dub/jobs/{jid}/redub")
+    assert r.status_code == 200
+    assert state.job_store.get(r.json()["job_id"])["dub_mode"] == "local"
+
+
 def test_redub_of_a_job_without_a_script_is_refused_not_a_500(recorder, tmp_path):
     # Found on the real app (2026-09-07): a finished job with no translated.srt
     # crashed the route on the copy. The screen needs a sentence, not a 500.
@@ -385,13 +459,15 @@ def test_rearm_after_a_restart(recorder, tmp_path):
 
     dub_api._dub_target_for(job)(lambda msg: None)
 
-    assert _as_the_pipeline_reads_it(recorder["run_dub"][0], str(work)) == REARM
+    # The one difference from the recording, a fix: the re-arm resumes, so a
+    # job picks up what its folder holds, as the door that queued it asked.
+    assert _as_the_pipeline_reads_it(recorder["run_dub"][0], str(work)) == {**REARM, "resume": True}
 
 
 def test_rearm_of_a_cloud_job(recorder, tmp_path):
     jid, work = _saved_job(tmp_path, name="queued-cloud", language="Korean",
                            language_code="ko", source_lang="en", num_speakers=3,
-                           dub_mode="perso")
+                           dub_mode="perso", perso_model="WREN")
     job = state.job_store.get(jid)
 
     dub_api._dub_target_for(job)(lambda msg: None)
@@ -403,6 +479,7 @@ def test_rearm_of_a_cloud_job(recorder, tmp_path):
         "source_code": "en",
         "target_code": "ko",
         "num_speakers": 3,
+        "tts_model": "WREN",
     }]
 
 
@@ -418,6 +495,33 @@ def test_rearm_downloads_only_when_the_video_is_missing(recorder, tmp_path):
     (work / "input.mp4").unlink()
     dub_api._dub_target_for(state.job_store.get(jid))(lambda msg: None)
     assert [f["url"] for f in recorder["fetch"]] == ["https://x.test/v"]
+
+
+def test_a_redub_that_waits_out_a_restart_stays_voices_only(recorder, after_a_restart, tmp_path):
+    """The re-arm has only job.json to go on, and a redub's says voices_only:
+    it runs as a redub runs, not as a first dub that transcribes (in the
+    cloud, for this one) and translates all over again."""
+    jid, work = _saved_job(tmp_path, name="finished", **_FIRST_RUN)
+    (work / "translated.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n\n")
+    state.job_store._update(jid, status="done", result={"out_path": str(work / "dubbed.mp4")})
+
+    new_jid = after_a_restart(lambda: client.post(f"/api/dub/jobs/{jid}/redub").json()["job_id"])
+
+    kw = _wait(recorder["run_dub"])[0]
+    assert _as_the_pipeline_reads_it(kw, _work_dir(new_jid)) == {**REDUB, "resume": True}
+
+
+def test_a_resume_that_waits_out_a_restart_still_resumes(recorder, after_a_restart):
+    """Resume keeps what the stopped run finished. Queued behind another dub
+    and then a restart, it still must, or the Perso stages are paid twice."""
+    # In the workspace, where the restart reads job.json files back from.
+    jid, work = _saved_job(Path(state.WORKSPACE), name="stopped", **_FIRST_RUN)
+
+    after_a_restart(lambda: client.post(f"/api/dub/jobs/{jid}/resume").json()["job_id"])
+
+    kw = _wait(recorder["run_dub"])[0]
+    assert kw.get("resume") is True
+    assert kw["out_path"] == str(work / "dubbed.mp4")   # in its own folder, as Resume runs it
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +574,26 @@ def test_the_cloud_path_reports_a_perso_failure_the_same_way(
 
     assert str(caught.value) == expected_notice["message"]
     assert lines[-1] == expected_line
-    assert state.job_store.get(jid)["notices"] == [expected_notice]
+    # message_shown: the same sentence in the user's language, English here.
+    assert state.job_store.get(jid)["notices"] == [{**expected_notice, "message_shown": expected_notice["message"]}]
+
+
+def test_the_cloud_path_hands_perso_the_voice_model(monkeypatch, tmp_path):
+    from app import perso_client as pc_module
+    sent = []
+
+    class FakeClient:
+        def dub_video(self, *a, **kw):
+            sent.append(kw)
+
+    monkeypatch.setattr(pc_module, "PersoClient", FakeClient)
+    monkeypatch.setattr(pc_module, "note_credits", lambda *a, **kw: None)
+    args = (str(tmp_path / "in.mp4"), str(tmp_path / "out.mp4"), "ko", "en-AU", None, lambda m: None)
+    dub_api._run_cloud_dub(state.job_store.create(), *args, tts_model="NIGHTINGALE")
+    # A record from before the model was kept: the language's own.
+    dub_api._run_cloud_dub(state.job_store.create(), *args[:3], "ko", None, lambda m: None)
+    assert [kw["tts_model"] for kw in sent] == ["NIGHTINGALE", "ORIOLE"]
+    assert sent[0]["target_tag"] == "en-AU"
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +640,23 @@ def test_try_again_on_a_cloud_job_goes_back_to_the_cloud(recorder, tmp_path):
         "source_code": "en",
         "target_code": "ko",
         "num_speakers": None,
+        # A record from before the model was kept names none; the cloud path
+        # then takes the language's own (app/dub_launch.py run_cloud_dub).
+        "tts_model": None,
     }
     assert recorder["run_dub"] == []
     assert state.job_store.get(new_jid)["dub_mode"] == "perso"
+
+
+def test_try_again_on_a_cloud_job_names_no_local_engines(recorder, tmp_path):
+    """A cloud job's record names no local engines, as dub_start writes it.
+    Try again stamped today's local defaults onto the new one instead, and its
+    finished screen then named a translator and a voice engine for a dub Perso
+    made whole (2026-10-10)."""
+    jid, _ = _saved_job(tmp_path, name="cloud-engines", language="Korean",
+                        language_code="ko", dub_mode="perso", perso_model="ORIOLE")
+    r = client.post(f"/api/dub/jobs/{jid}/retry")
+    assert r.status_code == 200
+    _wait(recorder["cloud"])
+    record = state.job_store.get(r.json()["job_id"])
+    assert [record.get(k) for k in ("stt_engine", "translator", "tts", "quality", "separation")] == [None] * 5

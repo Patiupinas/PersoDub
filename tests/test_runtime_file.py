@@ -49,3 +49,17 @@ def test_tolerates_a_malformed_runtime_file(tmp_path, monkeypatch):
 def test_unknown_pack_name_is_empty(tmp_path, monkeypatch):
     monkeypatch.setenv("PERSODUB_KIT_DIR", str(tmp_path))
     assert runtime.url("something_else") == ""
+
+
+def test_reads_the_state_the_shell_wrote_and_nothing_else(tmp_path, monkeypatch):
+    # "starting" / "failed" next to the address (desktop/src/orchestrator.js
+    # PACK_STATE_KEY); any other value, or none, is "".
+    monkeypatch.setenv("PERSODUB_KIT_DIR", str(tmp_path))
+    (tmp_path / "runtime.json").write_text(
+        json.dumps({"version": 1, "tts_state": "failed", "ollama_state": "weird"}))
+    assert runtime.state("tts") == "failed"
+    assert runtime.state("ollama") == ""
+    (tmp_path / "runtime.json").write_text("{not json")
+    assert runtime.state("tts") == ""
+    monkeypatch.delenv("PERSODUB_KIT_DIR")
+    assert runtime.state("tts") == ""

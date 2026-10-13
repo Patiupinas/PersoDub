@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import app.api.script as script_api
 import app.main as main
 from app import engines_status, jobs, perso_client, state
+from app.api import _launch as launch_api
 from app.api import dub as dub_api
 from app.main import app
 
@@ -37,7 +38,7 @@ def _all_engines_available(monkeypatch):
     monkeypatch.setattr(engines_status, "perso_available", lambda: True)
     # Model files live in a kit these tests never build -- the missing-model
     # preflight (409) is exercised in tests/test_dub_start_preflight.py.
-    monkeypatch.setattr(dub_api, "_missing_models", lambda *a, **kw: [])
+    monkeypatch.setattr(launch_api, "missing_models", lambda *a, **kw: [])
 
 
 def test_dub_run_endpoint_is_gone():
@@ -180,7 +181,7 @@ def test_dub_start_perso_without_pin_rejects_multi_workspace_accounts(monkeypatc
     # minutes of separation work. The preflight must refuse up front and send
     # the user to Settings.
     monkeypatch.delenv("PERSO_SPACE_SEQ", raising=False)
-    monkeypatch.setattr(dub_api, "list_dubbing_spaces",
+    monkeypatch.setattr(launch_api, "list_dubbing_spaces",
                         lambda key: [{"seq": 1, "name": "A"}, {"seq": 2, "name": "B"}])
     r = client.post(
         "/api/dub/start",
@@ -198,7 +199,7 @@ def test_dub_start_perso_without_pin_allows_single_workspace_accounts(monkeypatc
 
     monkeypatch.setattr(dub_api, "run_dub", fake_run_dub)
     monkeypatch.delenv("PERSO_SPACE_SEQ", raising=False)
-    monkeypatch.setattr(dub_api, "list_dubbing_spaces", lambda key: [{"seq": 1, "name": "A"}])
+    monkeypatch.setattr(launch_api, "list_dubbing_spaces", lambda key: [{"seq": 1, "name": "A"}])
     r = client.post(
         "/api/dub/start",
         files={"video": ("v.mp4", b"vid", "video/mp4")},
@@ -233,9 +234,11 @@ def test_dub_start_rejects_unknown_stt_engine(monkeypatch):
 def test_dub_start_stt_engine_defaults_to_local_without_key(monkeypatch):
     # Omitting stt_engine with no PERSO_API_KEY configured -> local (None)
     captured = {}
+    calls = []
 
     def fake_run_dub(**kw):
         captured.update(kw)
+        calls.append(kw)
         return {"job_id": "x", "out_path": kw["out_path"], "num_segments": 1}
 
     monkeypatch.setattr(dub_api, "run_dub", fake_run_dub)
@@ -248,6 +251,7 @@ def test_dub_start_stt_engine_defaults_to_local_without_key(monkeypatch):
         data={"language": "Korean", "language_code": "ko"},
     )
     assert r.status_code == 200
+    _wait_for(calls)  # the job runs on a worker thread; slow runners got here first
     assert captured["stt_engine"] is None
 
 
@@ -323,7 +327,9 @@ def test_dub_start_stt_engine_defaults_to_perso_with_key(monkeypatch):
     r = client.post(
         "/api/dub/start",
         files={"video": ("v.mp4", b"vid", "video/mp4")},
-        data={"language": "Korean", "language_code": "ko"},
+        # Dubbing goes to Perso by default in the production edition
+        # (app/setup.py), so the local path this test watches is asked for.
+        data={"language": "Korean", "language_code": "ko", "dub_mode": "local"},
     )
     assert r.status_code == 200
     # The job runs on its own thread: wait for it, as the tests above do, or
@@ -550,7 +556,7 @@ def test_dub_retry_refuses_a_running_job(monkeypatch):
     try:
         r = client.post(f"/api/dub/jobs/{jid}/retry")
         assert r.status_code == 409
-        assert r.json()["detail"] == "This job is still running."
+        assert r.json()["detail"] == "This project is still running."
     finally:
         release.set()
 
@@ -571,7 +577,7 @@ def test_dub_retry_says_so_when_the_video_is_gone(monkeypatch):
     os.remove(os.path.join(client.get(f"/api/dub/jobs/{jid}").json()["work_dir"], "input.mp4"))
     r = client.post(f"/api/dub/jobs/{jid}/retry")
     assert r.status_code == 409
-    assert r.json()["detail"] == "This job's video is no longer on disk."
+    assert r.json()["detail"] == "This project's video is no longer on disk."
 
 
 def test_deleting_a_cancelling_job_is_refused(monkeypatch):
@@ -1064,6 +1070,70 @@ def test_stale_voices_remakes_only_the_rewritten_lines_and_rebuilds_once(monkeyp
     assert len(built) == 1
 
 
+# "Read it all again": every line spoken again in place, the video rebuilt once.
+# Only the lines whose words changed could be remade before, so with none
+# changed the Dub Agent had nothing to do (Windows test F18, 2026-10-11).
+def test_all_voices_remakes_every_line_with_words_and_rebuilds_once(monkeypatch, tmp_path):
+    said, built = [], []
+    monkeypatch.setattr(script_api, "resynth_one_line",
+                        lambda *a: said.append(a) or "made.wav")
+    monkeypatch.setattr(script_api, "rebuild_dub", lambda *a: built.append(a))
+    # Nothing rewritten, every voice current; line 3 was left untranslated.
+    jid = _dubbed_job(tmp_path, ["one", "two", "", "four"])
+
+    r = client.post(f"/api/dub/jobs/{jid}/voices/all")
+    assert r.status_code == 200
+    assert r.json() == {"remade": [1, 2, 4], "skipped": 1}
+    assert [a[2] for a in said] == ["one", "two", "four"]
+    assert len(built) == 1
+
+
+def test_all_voices_refuses_a_job_that_is_still_running(tmp_path):
+    jid = _dubbed_job(tmp_path, ["one"])
+    state.job_store._update(jid, status="running")
+    assert client.post(f"/api/dub/jobs/{jid}/voices/all").status_code == 409
+
+
+# A sweep that stops part-way (the voice engine taken by a dub) had already
+# marked its first lines up to date, but never rebuilt: the video kept their old
+# voices and nothing counted them as changed any more (final review, 2026-10-12).
+def test_a_sweep_that_stops_part_way_still_rebuilds_with_the_lines_it_made(monkeypatch, tmp_path):
+    from app.engines.base import VoiceEngineDown
+    built = []
+
+    def say(work, entry, text, language):
+        if text == "two":
+            raise VoiceEngineDown("taken")
+        return "made.wav"
+
+    monkeypatch.setattr(script_api, "resynth_one_line", say)
+    monkeypatch.setattr(script_api, "rebuild_dub", lambda *a: built.append(a))
+    monkeypatch.setattr(script_api, "dub_in_progress", lambda: True)
+    jid = _dubbed_job(tmp_path, ["one", "two", "three"])
+
+    r = client.post(f"/api/dub/jobs/{jid}/voices/all")
+    assert r.status_code == 503
+    assert len(built) == 1
+
+
+# Two remakes of one project at once wrote the same line files and the same
+# finished video together; the second is turned away while the first runs.
+def test_a_second_remake_of_the_same_project_waits_its_turn(monkeypatch, tmp_path):
+    monkeypatch.setattr(script_api, "resynth_one_line", lambda *a: "made.wav")
+    monkeypatch.setattr(script_api, "rebuild_dub", lambda *a: None)
+    # A rewritten line, so each of the three has work to do.
+    jid = _dubbed_job(tmp_path, ["one"], edits={1: "ONE"}, stale=(1,))
+    script_api._remaking.add(jid)
+    try:
+        for path in ("voices/all", "voices/stale", "script/1/voice"):
+            r = client.post(f"/api/dub/jobs/{jid}/{path}")
+            assert r.status_code == 409, path
+            assert "being remade" in r.json()["detail"]
+    finally:
+        script_api._remaking.discard(jid)
+    assert client.post(f"/api/dub/jobs/{jid}/voices/all").status_code == 200
+
+
 def test_stale_voices_refuses_a_job_that_is_still_running(tmp_path):
     jid = _dubbed_job(tmp_path, ["one"], edits={1: "ONE"}, stale=(1,))
     state.job_store._update(jid, status="running")
@@ -1286,10 +1356,11 @@ class _FakeCloudClient:
     def __init__(self, *a, **kw):
         self.cancel_check = None
 
-    def dub_video(self, video_path, out_path, source_code, target_code, num_speakers=None, space_seq=None, log=None):
+    def dub_video(self, video_path, out_path, source_code, target_code, num_speakers=None, space_seq=None, log=None,
+                  tts_model=None):
         _FakeCloudClient.calls.append({
             "video": video_path, "out": out_path, "source": source_code,
-            "target": target_code, "speakers": num_speakers,
+            "target": target_code, "speakers": num_speakers, "tts_model": tts_model,
         })
         with open(out_path, "wb") as f:
             f.write(b"CLOUDMP4")
@@ -1325,6 +1396,8 @@ def test_dub_start_cloud_mode_skips_local_pipeline(monkeypatch):
     assert j["dub_mode"] == "perso"
     call = _FakeCloudClient.calls[0]
     assert call["target"] == "en" and call["source"] == "ko" and call["speakers"] == 2
+    # Nobody chose a voice model: ORIOLE, and the job says so.
+    assert call["tts_model"] == "ORIOLE" and j["perso_model"] == "ORIOLE"
     # and the finished file is the cloud one
     rr = client.get(f"/api/dub/result/{j['id']}")
     assert rr.content == b"CLOUDMP4"
@@ -1588,6 +1661,29 @@ def test_one_line_voice_says_the_engine_was_busy_instead_of_crashing(monkeypatch
     assert "busy" in r.json()["detail"]
 
 
+def test_one_line_voice_says_the_engine_is_not_running_when_nothing_answers(monkeypatch, tmp_path):
+    # Connection refused with no dubbing running: there is nothing to wait for,
+    # and "wait for the running dubbing to finish" would never come true.
+    import httpx
+
+    def refused(*a):
+        raise httpx.ConnectError("connection refused")
+    monkeypatch.setattr(script_api, "resynth_one_line", refused)
+    # The store is shared by every test in the run; say outright that nothing
+    # is dubbing rather than lean on what the tests before this one left.
+    monkeypatch.setattr(script_api, "dub_in_progress", lambda: False)
+    jid = _dubbed_job(tmp_path, ["one"], edits={1: "ONE"})
+
+    r = client.post(f"/api/dub/jobs/{jid}/script/1/voice")
+    assert r.status_code == 503
+    assert r.json()["detail"] == "The voice engine is not running. Quit and reopen PersoDub."
+
+    # While another video is dubbing, a refused connection is still the wait.
+    monkeypatch.setattr(script_api, "dub_in_progress", lambda: True)
+    r = client.post(f"/api/dub/jobs/{jid}/script/1/voice")
+    assert r.status_code == 503 and "busy" in r.json()["detail"]
+
+
 def test_remaking_voices_on_a_full_disk_is_a_507_before_any_voice_is_made(monkeypatch, tmp_path):
     # The rebuild writes the whole dub again: the same 3 GB floor a new dub
     # starts with, said with both numbers, before the voice engine is asked.
@@ -1603,3 +1699,14 @@ def test_remaking_voices_on_a_full_disk_is_a_507_before_any_voice_is_made(monkey
         assert r.status_code == 507, url
         assert r.json()["detail"] == "Not enough space. Needs 3.0 GB, 0.5 GB free."
     assert said == []
+
+
+def test_script_reports_the_lines_the_latest_assembly_cut_short(tmp_path):
+    jid = _dubbed_job(tmp_path, ["one", "two"])
+    work = tmp_path / "dubbed"
+    r = client.get(f"/api/dub/jobs/{jid}/script")
+    assert r.json()["clipped"] is None      # nothing recorded: unknown
+    (work / "clipped_lines.json").write_text(
+        json.dumps({"clipped": [{"line": 2, "cut_s": 0.4}], "clipped_count": 1}))
+    r = client.get(f"/api/dub/jobs/{jid}/script")
+    assert r.json()["clipped"] == [{"line": 2, "cut_s": 0.4}]

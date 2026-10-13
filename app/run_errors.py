@@ -12,6 +12,9 @@ So the reason goes first here, and the command line does not travel at all:
 which python ran is in the logs, and the archive behind the issue has them.
 """
 import subprocess
+from typing import Tuple
+
+from app.i18n import both
 
 
 def describe_start_failure(what: str, exc: BaseException, timeout=None) -> str:
@@ -24,6 +27,16 @@ def describe_start_failure(what: str, exc: BaseException, timeout=None) -> str:
     return "%s failed to start (%s: %s)" % (what, type(exc).__name__, str(exc)[:200])
 
 
+# A process the operating system kills outright for running out of memory
+# leaves no message of its own to read -- POSIX SIGKILL (returncode -9, or
+# 137 when something in the chain reports it the shell's 128+signal way) and
+# Windows' STATUS_NO_MEMORY (0xC0000017, which Python reports as the signed
+# -1073741801). Named here so advice_for's own "out of memory" match still
+# finds it, instead of "exited with code -9 and said nothing" sending someone
+# to check a video that was never the problem.
+_OOM_EXIT_CODES = (-9, 137, -1073741801)
+
+
 def describe_exit_failure(what: str, result) -> str:
     """The process ran and failed. Its own last words, wherever it left them.
 
@@ -31,6 +44,8 @@ def describe_exit_failure(what: str, result) -> str:
     that writes its complaint to stdout used to produce "no output produced",
     which is not a diagnosis (issues #44 #53).
     """
+    if result.returncode in _OOM_EXIT_CODES:
+        return "%s was killed by the operating system, out of memory" % what
     tail = (result.stderr or "").strip()[-400:]
     if not tail:
         tail = (result.stdout or "").strip()[-400:]
@@ -43,15 +58,18 @@ def describe_exit_failure(what: str, result) -> str:
 # was too slow or too full is not a broken file, and "Check the video file"
 # sent them to look at the one thing that was fine (2026-09-15: eleven
 # separations and nine transcriptions, every one of them advised wrongly).
-_TOO_SLOW = "This computer needed more time than allowed. A shorter video will finish."
-_TOO_FULL = "This computer ran out of memory. Close other apps and try again."
+def advice_both(detail: str, otherwise: Tuple[str, str]) -> Tuple[str, str]:
+    """The one sentence under a failed stage, chosen by what actually failed,
+    in English and in the user's language (app/i18n.py both()); `otherwise`
+    is such a pair too."""
+    text = str(detail or "").lower()
+    if "timed out" in text or "timeout" in text:
+        return both("This computer needed more time than allowed. A shorter video will finish.")
+    if "not enough memory" in text or "out of memory" in text or "cannot allocate" in text:
+        return both("This computer ran out of memory. Close other apps and try again.")
+    return otherwise
 
 
 def advice_for(detail: str, otherwise: str) -> str:
-    """The one sentence under a failed stage, chosen by what actually failed."""
-    text = str(detail or "").lower()
-    if "timed out" in text or "timeout" in text:
-        return _TOO_SLOW
-    if "not enough memory" in text or "out of memory" in text or "cannot allocate" in text:
-        return _TOO_FULL
-    return otherwise
+    """advice_both's sentence in English."""
+    return advice_both(detail, (otherwise, otherwise))[0]

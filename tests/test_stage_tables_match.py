@@ -62,3 +62,32 @@ def test_the_language_tables_match_on_both_sides():
         block = f.read().split("export const LANGUAGES = [")[1].split("];")[0]
     codes = re.findall(r'code: "([a-z]+)"', block)
     assert codes == list(config.LANGUAGE_NAMES.keys()), (codes, list(config.LANGUAGE_NAMES))
+
+
+# The percent arithmetic lives on both sides now (app/stages.py progress_of
+# for the Dub Agent, ui/src/dubApi.mjs parseProgress for the screen), so the
+# weights and floors are pinned too.
+_NUM = re.compile(r'\{\s*name:\s*"([^"]+)".*?weight:\s*(\d+)(?:.*?floor:\s*(\d+))?')
+
+
+def test_stage_weights_and_floors_match_the_ui_table():
+    from app.stages import STAGE_FLOOR, STAGE_WEIGHT, VOICE_CAP
+    src = _JS.read_text(encoding="utf-8")
+    body = re.search(r"export const STAGES = \[(.*?)\];", src, re.S).group(1)
+    for name, weight, floor in _NUM.findall(body):
+        assert STAGE_WEIGHT[name] == int(weight), name
+        assert STAGE_FLOOR.get(name) == (int(floor) if floor else None), name
+    assert re.search(r"const VOICE_CAP = %d;" % VOICE_CAP, src)
+
+
+def test_progress_of_reads_the_logs_the_way_the_screen_does():
+    from app.stages import progress_of
+    assert progress_of([]) == {"stage": 0, "label": "Waiting to start", "percent": 0}
+    assert progress_of(["1/6 Separating…"])["percent"] == 3
+    assert progress_of(["1/6 a", "2/6 b"]) == {"stage": 2, "label": "Transcribing", "percent": 18}
+    mid = ["1/6 a", "2/6 b", "3/6 c", "4 dialogue lines prepared", "4/6 d",
+           "   line 0: chose take 1", "   line 1: chose take 0"]
+    assert progress_of(mid) == {"stage": 4, "label": "Dubbing", "percent": 75}
+    assert progress_of(mid + ["5/6 e"])["percent"] == 96
+    assert progress_of(mid + ["5/6 e", "6/6 f"])["percent"] == 97
+    assert progress_of(["Uploading the video to Perso", "Perso is dubbing"])["percent"] == 55

@@ -4,6 +4,7 @@ import { cpSync, rmSync, mkdirSync, existsSync, readFileSync, writeFileSync } fr
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { EDITIONS, buildEdition } from "../src/edition.js";
 
 const DESKTOP = dirname(dirname(fileURLToPath(import.meta.url)));
 const REPO = dirname(DESKTOP);
@@ -26,6 +27,9 @@ export function buildKitVersion(version, gitSha) {
 
 function main() {
   const campplusSrc = resolveCampplusSrc(process.env);
+  // Checked before the old payload is deleted: an unknown PERSODUB_EDITION
+  // stops the build here.
+  const edition = buildEdition(process.env);
   rmSync(OUT, { recursive: true, force: true });
   mkdirSync(join(OUT, "app-repo"), { recursive: true });
 
@@ -52,6 +56,10 @@ function main() {
     gitSha = null;
   }
   writeFileSync(join(OUT, "KIT_VERSION"), buildKitVersion(version, gitSha));
+  // EDITION carries the edition into the packaged app, where the environment
+  // it runs in cannot change it (src/edition.js readEdition).
+  writeFileSync(join(OUT, "EDITION"), edition);
+  console.log(`payload: ${edition} edition, ${EDITIONS[edition]}`);
 
   console.log(`payload ready at ${OUT}`);
 }

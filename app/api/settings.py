@@ -15,7 +15,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app import state
+from app import i18n, state
+from app.i18n import t
 from app.perso_client import APP_VERSION, SIGNUP_LINK, list_dubbing_spaces
 from app.settings_env import (
     current_value,
@@ -25,6 +26,7 @@ from app.settings_env import (
     read_value,
     write_analytics_off,
     write_keys,
+    write_language,
     write_reports_off,
 )
 
@@ -37,6 +39,7 @@ class SettingsRequest(BaseModel):
     perso_space_seq: Optional[str] = None
     analytics_off: Optional[bool] = None
     reports_off: Optional[bool] = None
+    ui_language: Optional[str] = None
 
 
 @router.get("/api/settings")
@@ -52,7 +55,7 @@ def settings_get():
     changing the bind to 0.0.0.0 WOULD expose these values."""
     status = read_key_status()
     if status is None:
-        raise HTTPException(503, "Settings need a desktop install (no kit.env found)")
+        raise HTTPException(503, t("Settings need a desktop install (no kit.env found)"))
     # perso_signup_link carries the UTM tag, which is built from the running platform --
     # the static page can't know it, so it comes from here.
     return {"gemini_key_set": status["GEMINI_API_KEY"], "perso_key_set": status["PERSO_API_KEY"],
@@ -62,6 +65,9 @@ def settings_get():
             "perso_signup_link": SIGNUP_LINK,
             "analytics_off": read_analytics_off(),
             "reports_off": read_reports_off(),
+            # "auto", "en" or "ko" (app/i18n.py): the page resolves "auto"
+            # against the computer's language itself.
+            "ui_language": i18n.saved_setting(),
             # The folder every finished video is saved in. Only the server knows
             # it -- the desktop shell can point the workspace anywhere -- so the
             # screen cannot tell the user where their videos are without this.
@@ -84,7 +90,9 @@ def settings_post(body: SettingsRequest):
     # isdigit (not isdigit alone): "²" passes isdigit but crashes int(), and
     # Arabic-Indic digits silently convert to a different workspace number.
     if space and not (space.isascii() and space.isdigit() and len(space) <= 10):
-        raise HTTPException(422, "perso_space_seq must be a workspace number")
+        raise HTTPException(422, t("perso_space_seq must be a workspace number"))
+    if body.ui_language is not None and body.ui_language not in i18n.SETTINGS:
+        raise HTTPException(422, t("ui_language must be one of: {choices}", choices=", ".join(i18n.SETTINGS)))
     try:
         # None = field not sent (leave alone); "" = clear the saved value.
         status = write_keys({
@@ -93,7 +101,7 @@ def settings_post(body: SettingsRequest):
             "PERSO_SPACE_SEQ": space,
         })
     except FileNotFoundError:
-        raise HTTPException(503, "Settings need a desktop install (no kit.env found)")
+        raise HTTPException(503, t("Settings need a desktop install (no kit.env found)"))
     except ValueError as e:
         raise HTTPException(422, str(e))
     # Unlike the keys, this one needs no restart: the desktop shell re-reads
@@ -104,6 +112,11 @@ def settings_post(body: SettingsRequest):
     # the shell re-reads kit.env before it sends one.
     if body.reports_off is not None:
         write_reports_off(body.reports_off)
+    # The language, saved and then in force for the engine's next sentence:
+    # the engine keeps the one it decided on (app/i18n.py), so it is told.
+    if body.ui_language is not None:
+        write_language(body.ui_language)
+        i18n.set_language(body.ui_language)
     return {"gemini_key_set": status["GEMINI_API_KEY"], "perso_key_set": status["PERSO_API_KEY"],
             "perso_space_seq": read_value("PERSO_SPACE_SEQ"),
             "restart_required": False}
@@ -132,7 +145,7 @@ def settings_reveal_output():
         os.makedirs(state.WORKSPACE, exist_ok=True)
         _open_folder(state.WORKSPACE)
     except OSError as e:
-        raise HTTPException(500, f"Could not open the folder: {e}")
+        raise HTTPException(500, t("Could not open the folder: {reason}", reason=e))
     return {"ok": True}
 
 
@@ -147,12 +160,12 @@ def perso_spaces():
     """
     key = current_value("PERSO_API_KEY")
     if not key:
-        raise HTTPException(409, "Enter a Perso API key to see its workspaces")
+        raise HTTPException(409, t("Enter a Perso API key to see its workspaces"))
     try:
         spaces = list_dubbing_spaces(key)
     except Exception as e:
         # Never interpolate str(e): an httpx error can echo request details.
-        raise HTTPException(502, f"Could not list Perso workspaces ({type(e).__name__})")
+        raise HTTPException(502, t("Could not list Perso workspaces ({kind})", kind=type(e).__name__))
     return {"spaces": spaces}
 
 
@@ -179,7 +192,7 @@ def perso_spaces_preview(body: PersoSpacesPreviewRequest):
     """
     key = (body.api_key or "").strip()
     if not key:
-        raise HTTPException(400, "Enter a Perso API key to see its workspaces")
+        raise HTTPException(400, t("Enter a Perso API key to see its workspaces"))
     now = time.monotonic()
     if _preview_last["spaces"] is not None and _preview_last["key"] == key \
             and now - _preview_last["at"] < _PREVIEW_WINDOW_SEC:
@@ -189,6 +202,6 @@ def perso_spaces_preview(body: PersoSpacesPreviewRequest):
     except Exception as e:
         # Same rule as above: the type name only, never str(e) -- an httpx
         # error message can carry the request, and the request carries the key.
-        raise HTTPException(502, f"Could not list Perso workspaces ({type(e).__name__})")
+        raise HTTPException(502, t("Could not list Perso workspaces ({kind})", kind=type(e).__name__))
     _preview_last.update(key=key, at=now, spaces=spaces)
     return {"spaces": spaces}

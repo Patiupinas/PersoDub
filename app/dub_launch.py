@@ -24,13 +24,7 @@ from typing import Optional
 
 from app import config, engines_status, languages, media, perso_client, state
 from app.jobs import JobCancelled
-from app.perso_client import (
-    PersoCreditExhaustedError,
-    PersoInvalidKeyError,
-    PersoProjectFailedError,
-    PersoUnavailableError,
-)
-from app.pipeline import raise_notice
+from app.pipeline import _PERSO_NOTICE_ERRORS, _raise_perso_failed, raise_notice
 from app.pipeline import run_dub as _run_dub
 from app.source_fetch import fetch as _fetch_source
 
@@ -59,53 +53,77 @@ def _legacy_language_name(code: str) -> str:
 def translate_model_missing(translator: str, status: Optional[str] = None) -> Optional[str]:
     """The catalog id a local translator still needs, or None.
 
-    Only gemma and hunyuan have a model to be missing; Gemini is a key and
+    Only a translator whose model the app downloads (app/engines_status.py
+    TRANSLATORS: gemma and hunyuan) has one to be missing; Gemini is a key and
     lives on the web. `status` is for the caller that already asked (dub_start
     also has to tell an unreachable Ollama apart from a missing model, and one
     probe per start is enough) -- left out, this asks.
     """
-    if translator not in ("gemma", "hunyuan"):
+    info = engines_status.TRANSLATORS.get(translator)
+    if info is None or not info.catalog_id:
         return None
     if status is None:
-        status = (engines_status.gemma_status() if translator == "gemma"
-                  else engines_status.hunyuan_status())
-    return translator if status == "model_missing" else None
+        status = info.probe()
+    return info.catalog_id if status == "model_missing" else None
 
 
-def run_cloud_dub(jid, video_path, out_path, source_code, target_code, num_speakers, log):
+def run_cloud_dub(jid, video_path, out_path, source_code, target_code, num_speakers, log,
+                  tts_model=None):
     """The whole-job Perso path: upload -> cloud dub -> download. Same failure
-    grammar as the Perso STT/separation stages (no silent local fallback)."""
+    grammar as the Perso STT/separation stages (no silent local fallback).
+    tts_model is the Perso voice model the job's record names; a record from
+    before one was kept names none and gets the language's own."""
     log("1/1 Dubbing in the Perso cloud…")
-    pc = perso_client.PersoClient()
-    pc.cancel_check = lambda: state.job_store.is_cancel_requested(jid)
-    ws = getattr(pc, "describe_workspace", lambda: None)()
-    if ws:
-        log(f"   Perso workspace: {ws.get('name') or ws.get('seq')} (#{ws.get('seq')})")
+    # Made inside the `try`, as the stages make theirs: a client that cannot
+    # be made (no key, or the workspace lookup offline or refused) is worded
+    # like a failed call. ws is set first because the `finally` reads it.
+    ws = None
     try:
+        pc = perso_client.PersoClient()
+        pc.cancel_check = lambda: state.job_store.is_cancel_requested(jid)
+        ws = perso_client.begin_credit_watch(pc)
+        if ws:
+            log(f"   Perso workspace: {ws.get('name') or ws.get('seq')} (#{ws.get('seq')})")
         # The job's language_code is the screen's id (a region tag such as
         # "en-GB" or a plain code); Perso wants the code and the tag apart.
         entry = languages.lookup("perso", target_code) or {"code": target_code, "tag": None}
         tag = {"target_tag": entry["tag"]} if entry.get("tag") else {}
-        pc.dub_video(video_path, out_path, source_code, entry["code"], num_speakers=num_speakers, log=log, **tag)
+        pc.dub_video(video_path, out_path, source_code, entry["code"], num_speakers=num_speakers, log=log,
+                     tts_model=tts_model or languages.model_for(entry), **tag)
         # The Perso project number is how the script viewer (and later the
         # agent) finds this job's sentences again -- persist it with the job.
         seq = getattr(pc, "last_dub_project_seq", None)
         if seq:
-            state.job_store.update(jid, perso_project_seq=seq)
+            # The workspace beside it: the project lives in that one, and
+            # editing it later must not follow a workspace changed since.
+            state.job_store.update(jid, perso_project_seq=seq,
+                                   perso_space_seq=getattr(pc, "space_seq", None))
             state.job_store.persist(jid, os.path.dirname(out_path))
+        perso_client.note_credits(ws, pc, log, "the Perso cloud dub")
     except JobCancelled:
         raise
-    # The fourth is a project Perso took and gave up on: the request was fine,
+    # Among them, a project Perso took and gave up on: the request was fine,
     # the answer said it had failed. Without it here a cloud dub that Perso
     # abandoned fell through to the generic handler and lost Perso's own
     # reason on the way (user, 2026-09-11).
-    except (PersoCreditExhaustedError, PersoInvalidKeyError, PersoUnavailableError,
-            PersoProjectFailedError) as e:
-        # The same three messages the stages report, from the same table
-        # (app/pipeline.py's _NOTICE_ERRORS). They used to be hand-copied here,
-        # so the wording could drift on one path and not the other.
+    except _PERSO_NOTICE_ERRORS as e:
+        # The same messages the stages report, for the same errors, both from
+        # app/pipeline.py (_NOTICE_ERRORS, _PERSO_NOTICE_ERRORS). They used to
+        # be hand-copied here, so one path could drift from the other.
         raise_notice(e, log, lambda n: state.job_store.append_notice(jid, n))
-    perso_client.note_credits(ws, pc, log, "the Perso cloud dub")
+    except RuntimeError:
+        # The app's own sentences (app/perso_client.py), already worded for
+        # the user. Wrapped, one runs past the 140 characters the failure
+        # card shows.
+        raise
+    except Exception as e:
+        # Anything else is worded as the stages word it: a short sentence on
+        # screen, the address Perso was called at only in the app log. Named
+        # "Perso dubbing", short, so a refusal Perso gave no reason for still
+        # fits in those 140.
+        _raise_perso_failed(e, log, "Perso dubbing")
+    finally:
+        perso_client.end_credit_watch(ws)   # a dub that failed must not count as still running
     # The length is for the usage count, and a probe that fails must not fail
     # a dub Perso has already delivered.
     try:
@@ -118,7 +136,8 @@ def run_cloud_dub(jid, video_path, out_path, source_code, target_code, num_speak
 
 def work_for(job, *, cancel_check, on_notice, voices_only=False, resume=False,
              run_dub=_run_dub, run_cloud_dub=run_cloud_dub,
-             fetch_source=_fetch_source, cut_video=media.cut_video):
+             fetch_source=_fetch_source, cut_video=media.cut_video,
+             cut_ranges=media.cut_ranges):
     """The work one job runs, built from its record and its folder.
 
     Returns work(log) -- what JobStore.start wants. Everything it needs it
@@ -166,9 +185,18 @@ def work_for(job, *, cancel_check, on_notice, voices_only=False, resume=False,
                 state.job_store.persist(jid, work)
 
             cut_video(video_path, trim["start"], trim["end"], on_cut=_cut_recorded)
+        # Parts kept on the timeline, owed the same way: recorded the instant
+        # the joined video takes the downloaded one's place.
+        if job.get("ranges_pending") and job.get("ranges"):
+            def _joined_recorded():
+                state.job_store.update(jid, ranges_pending=False)
+                state.job_store.persist(jid, work)
+
+            cut_ranges(video_path, job["ranges"], on_cut=_joined_recorded)
         if job.get("dub_mode") == "perso" and not voices_only:
             return run_cloud_dub(jid, video_path, out_path, job.get("source_lang"),
-                                 language_code, job.get("num_speakers"), log)
+                                 language_code, job.get("num_speakers"), log,
+                                 tts_model=job.get("perso_model"))
         return run_dub(
             video_path=video_path,
             srt_path=srt_path,

@@ -24,6 +24,44 @@ class _Response:
             raise httpx.HTTPStatusError("boom", request=None, response=None)
 
 
+@pytest.fixture(autouse=True)
+def _new_reply(tmp_path, monkeypatch, request):
+    """Each test is a reply of its own: the server lives one message long,
+    and the asks it keeps on disk go to a folder of this test's own. Unless a
+    test is about the asking itself (marked `guard`), the user is taken to
+    have had every plan in an earlier reply, so confirm=true goes through."""
+    mcp_server._asked.clear()
+    monkeypatch.setattr(mcp_server, "_ASK_FILE", str(tmp_path / "asked.json"))
+    if not request.node.get_closest_marker("guard"):
+        mcp_server._write_asks({t: {"plan": "*", "pid": 0} for t in (
+            "queue_dub", "erase_subtitles", "remake_voices", "remake_line_voice",
+            "proofread_dub", "change_speaker", "extract_subtitles", "set_default")})
+        monkeypatch.setattr(mcp_server, "_forget_ask", lambda tool, plan: None)   # the yes stands all test long
+    # queue_dub reads the saved defaults before it starts (which stages are
+    # paid). A test that stubs nothing gets an empty one there and the closed
+    # app everywhere else, as the real network would answer.
+    def default_get(url, **kw):
+        if str(url).endswith("/api/setup"):
+            return _Response(200, {"defaults": {}})
+        raise httpx.ConnectError("connection refused")
+    monkeypatch.setattr(mcp_server.httpx, "get", default_get)
+
+
+def _next_reply():
+    """The user's message in between: a fresh server process, with the asks of
+    the reply before still on file as another process's."""
+    mcp_server._asked.clear()
+    _as_earlier()
+
+
+def _as_earlier():
+    """Every ask on file, as put by another (earlier) process."""
+    asks = mcp_server._asks_on_file()
+    for tool, value in asks.items():
+        asks[tool] = [{**e, "pid": 0} for e in mcp_server._ask_entries(value)]
+    mcp_server._write_asks(asks)
+
+
 class _Calls(list):
     """The URLs posted so far, plus the answer the next post is given."""
     answer = _Response(200, {})
@@ -40,6 +78,9 @@ def posted(monkeypatch):
         return calls.answer
 
     monkeypatch.setattr(mcp_server.httpx, "post", fake_post)
+    # The remakes read the job first, to tell a Perso dub from a local one.
+    monkeypatch.setattr(mcp_server.httpx, "get",
+                        lambda url, **kw: _Response(200, {"id": "job7", "dub_mode": "local"}))
     return calls
 
 
@@ -82,7 +123,7 @@ def test_change_speaker_on_a_local_dub_says_so_before_any_credit_question(monkey
                         lambda url, **kw: _Response(200, {"id": "job7", "dub_mode": "local"}))
     posted = []
     monkeypatch.setattr(mcp_server.httpx, "post", lambda *a, **kw: posted.append(a))
-    with pytest.raises(ValueError, match="Perso dubs only"):
+    with pytest.raises(ValueError, match="Perso dubbing only"):
         mcp_server.change_speaker("job7", 3)
     assert posted == []
 
@@ -114,10 +155,10 @@ def test_change_speaker_posts_once_confirmed(monkeypatch, a_perso_job):
 
 def test_change_speaker_relays_a_refusal(monkeypatch, a_perso_job):
     def fake_post(url, json=None, timeout=None):
-        return _Response(409, {"detail": "Only Perso dubs have server-side speakers."})
+        return _Response(409, {"detail": "Only Perso dubbing has server-side speakers."})
 
     monkeypatch.setattr(mcp_server.httpx, "post", fake_post)
-    with pytest.raises(ValueError, match="Only Perso dubs"):
+    with pytest.raises(ValueError, match="Only Perso dubbing"):
         mcp_server.change_speaker("job7", 3, confirm=True)
 
 
@@ -285,6 +326,47 @@ def test_queue_dub_asks_even_for_a_free_local_dub(monkeypatch, tmp_path):
     assert posted == []
 
 
+def test_queue_dub_will_not_take_a_yes_in_the_reply_that_asked(monkeypatch, tmp_path):
+    # Claude asked "Proceed?" and answered it itself in the same reply,
+    # starting a dubbing the user never agreed to (night test 2026-10-01).
+    video = _tmp_video(tmp_path)
+    posted = []
+    monkeypatch.setattr(mcp_server.httpx, "post", lambda url, **kw: posted.append(url) or _Response(
+        200, {"job_id": "j1", "status": "queued"}))
+    monkeypatch.setattr(
+        mcp_server.httpx, "get",
+        lambda url, params=None, timeout=None: _Response(
+            200, {"seconds": 10.0, "credits_estimate": 0, "credits_balance": None,
+                  "defaults": {}}))
+    out = mcp_server.queue_dub(str(video), "ja")
+    # The plan names the file and the language, not only "Proceed?".
+    assert "영상.mp4 into Japanese." in out["message"]
+    with pytest.raises(ValueError, match="has not answered yet"):
+        mcp_server.queue_dub(str(video), "ja", confirm=True)
+    assert posted == []
+
+    _next_reply()   # the user's yes arrives as the next message
+    assert mcp_server.queue_dub(str(video), "ja", confirm=True)["job_id"] == "j1"
+
+
+def test_erase_subtitles_puts_the_plan_first_and_starts_on_the_yes(monkeypatch, tmp_path):
+    # Free, but it holds this machine for minutes: "2 dubbing, 1 erase"
+    # started the erase without saying which file (night test 2026-10-01).
+    video = _tmp_video(tmp_path)
+    posted = []
+    monkeypatch.setattr(mcp_server.httpx, "post", lambda url, **kw: posted.append(url) or _Response(
+        200, {"job_id": "e1", "status": "queued"}))
+    out = mcp_server.erase_subtitles(str(video), area="whole", start=20, end=30)
+    assert out["needs_confirmation"] is True
+    assert "영상.mp4 from 20s to 30s, anywhere in the frame" in out["message"]
+    with pytest.raises(ValueError, match="has not answered yet"):
+        mcp_server.erase_subtitles(str(video), area="whole", start=20, end=30, confirm=True)
+    assert posted == []
+
+    _next_reply()
+    assert mcp_server.erase_subtitles(str(video), area="whole", confirm=True)["job_id"] == "e1"
+
+
 def test_queue_dub_starts_the_job_once_confirmed(monkeypatch, tmp_path):
     video = _tmp_video(tmp_path)
     calls = {}
@@ -306,6 +388,22 @@ def test_queue_dub_starts_the_job_once_confirmed(monkeypatch, tmp_path):
     assert calls["data"]["dub_mode"] == "perso"
     assert calls["data"]["source_language_code"] == "ko"
     assert calls["file_name"] == "영상.mp4"
+
+
+def test_queue_dub_says_local_out_loud_so_the_servers_perso_default_cannot_take_it(monkeypatch, tmp_path):
+    # Left unsaid, a local dub went to Perso and cost 10 credits the agent had
+    # promised were not needed (Windows F10, 2026-10-07).
+    video = _tmp_video(tmp_path)
+    calls = {}
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        calls["data"] = data
+        return _Response(200, {"job_id": "j2", "status": "running", "dub_mode": "local"})
+
+    monkeypatch.setattr(mcp_server.httpx, "post", fake_post)
+    mcp_server.queue_dub(str(video), "ko", dub_mode="local", confirm=True)
+    assert calls["data"]["dub_mode"] == "local"
+    assert "perso_model" not in calls["data"]
 
 
 def test_queue_dub_refuses_a_language_the_voices_cannot_speak(tmp_path):
@@ -490,7 +588,7 @@ def test_queue_dub_keeps_a_plain_string_refusal_as_is(monkeypatch, tmp_path):
 def test_queue_dub_relays_what_this_computer_cannot_do(monkeypatch, tmp_path):
     # app/room.py's refusals: too little memory (422), too little room (507).
     video = _tmp_video(tmp_path)
-    for status, detail in ((422, "This computer needs 8 GB of memory to dub."),
+    for status, detail in ((422, "Dubbing needs 8 GB of memory on this computer."),
                            (507, "Not enough space. Needs 8.2 GB, 1.1 GB free.")):
         monkeypatch.setattr(mcp_server.httpx, "post",
                             lambda *a, _r=_Response(status, {"detail": detail}), **kw: _r)
@@ -503,6 +601,8 @@ def test_remaking_voices_relays_a_full_disk(monkeypatch):
     detail = "Not enough space. Needs 3.0 GB, 0.5 GB free."
     monkeypatch.setattr(mcp_server.httpx, "post",
                         lambda *a, **kw: _Response(507, {"detail": detail}))
+    monkeypatch.setattr(mcp_server.httpx, "get",
+                        lambda url, **kw: _Response(200, {"id": "j1", "dub_mode": "local"}))
     with pytest.raises(ValueError, match="Not enough space"):
         mcp_server.remake_line_voice("j1", 1)
     with pytest.raises(ValueError, match="Not enough space"):
@@ -579,16 +679,16 @@ def test_set_default_posts_one_stage_and_relays_a_refusal(monkeypatch):
     def fake_post(url, json=None, data=None, files=None, timeout=None):
         posted["url"] = url
         posted["json"] = json
-        if json.get("translator") == "nope":
-            return _Response(422, {"detail": "translator must be one of: hunyuan, gemma, gemini"})
+        if json.get("translator") == "hunyuan":
+            return _Response(503, {"detail": "Settings need a desktop install (no kit.env found)"})
         return _Response(200, {"defaults": {"translator": "gemma"}})
 
     monkeypatch.setattr(mcp_server.httpx, "post", fake_post)
     out = mcp_server.set_default("translator", "gemma")
     assert posted["url"].endswith("/api/setup") and posted["json"] == {"translator": "gemma"}
     assert out["defaults"]["translator"] == "gemma"
-    with pytest.raises(ValueError, match="one of"):
-        mcp_server.set_default("translator", "nope")
+    with pytest.raises(ValueError, match="desktop install"):
+        mcp_server.set_default("translator", "hunyuan")
 
 
 def test_download_model_never_downloads_it_only_offers_the_button(monkeypatch):
@@ -635,6 +735,28 @@ def test_queue_dub_knows_persos_languages_on_the_perso_path_only(monkeypatch, tm
     assert calls["data"]["language"] == "Hindi" and calls["data"]["language_code"] == "hi"
 
 
+def test_queue_dub_passes_the_perso_voice_model_and_refuses_one_the_language_lacks(monkeypatch, tmp_path):
+    from app import languages
+    monkeypatch.setattr(languages, "_fetch", lambda: None)
+    video = _tmp_video(tmp_path)
+    # Refused before anything is asked or started, naming the model and the language.
+    with pytest.raises(ValueError, match="Wren.*English \\(Australia\\)"):
+        mcp_server.queue_dub(str(video), "en-AU", dub_mode="perso", perso_model="wren")
+    calls = []
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        calls.append(data)
+        return _Response(200, {"job_id": "j1", "status": "running"})
+
+    monkeypatch.setattr(mcp_server.httpx, "post", fake_post)
+    mcp_server.queue_dub(str(video), "ko", dub_mode="perso", perso_model="wren", confirm=True)
+    assert calls[-1]["perso_model"] == "WREN"
+    # Not named: the app picks. Named for a local dubbing: it does not apply.
+    mcp_server.queue_dub(str(video), "ko", dub_mode="perso", confirm=True)
+    mcp_server.queue_dub(str(video), "ko", perso_model="wren", confirm=True)
+    assert "perso_model" not in calls[-2] and "perso_model" not in calls[-1]
+
+
 # --- fetching a link, and rubbing out subtitles ------------------------------
 
 def test_download_video_waits_until_the_file_is_really_there(monkeypatch):
@@ -672,7 +794,7 @@ def test_erase_subtitles_turns_bottom_into_the_bottom_quarter(monkeypatch, tmp_p
         return _Response(200, {"job_id": "e1", "status": "running"})
 
     monkeypatch.setattr(mcp_server.httpx, "post", fake_post)
-    out = mcp_server.erase_subtitles(str(video), area="bottom", start=20, end=30)
+    out = mcp_server.erase_subtitles(str(video), area="bottom", start=20, end=30, confirm=True)
     assert out == {"job_id": "e1", "status": "running",
                    "area_used": "the bottom quarter of the frame"}
     assert calls["url"] == "%s/api/erase" % mcp_server.API
@@ -693,7 +815,7 @@ def test_erase_subtitles_asks_the_app_where_the_subtitles_are_first(monkeypatch,
         return _Response(200, {"job_id": "e1", "status": "queued"})
 
     monkeypatch.setattr(mcp_server.httpx, "post", fake_post)
-    out = mcp_server.erase_subtitles(str(video))
+    out = mcp_server.erase_subtitles(str(video), confirm=True)
     assert posted == ["%s/api/erase/suggest" % mcp_server.API,
                       "%s/api/erase" % mcp_server.API]
     assert out["area_used"] == "where the subtitles were found"
@@ -708,8 +830,8 @@ def test_erase_subtitles_passes_a_box_through_and_names_the_whole_frame(monkeypa
         return _Response(200, {"job_id": "e1", "status": "running"})
 
     monkeypatch.setattr(mcp_server.httpx, "post", fake_post)
-    mcp_server.erase_subtitles(str(video), area=[660, 800, 0, 608])
-    mcp_server.erase_subtitles(str(video), area="whole")
+    mcp_server.erase_subtitles(str(video), area=[660, 800, 0, 608], confirm=True)
+    mcp_server.erase_subtitles(str(video), area="whole", confirm=True)
     assert calls == ["[660, 800, 0, 608]", "whole"]
 
 
@@ -718,7 +840,7 @@ def test_erase_subtitles_says_plainly_that_the_eraser_is_not_installed(monkeypat
     monkeypatch.setattr(mcp_server.httpx, "post", lambda url, **kw: _Response(
         409, {"detail": {"reason": "pack_missing", "pack": "subtitle-eraser"}}))
     with pytest.raises(ValueError, match="not installed on this computer"):
-        mcp_server.erase_subtitles(str(video), area="whole")
+        mcp_server.erase_subtitles(str(video), area="whole", confirm=True)
 
 
 def test_erase_subtitles_refuses_a_video_that_is_not_there(tmp_path):
@@ -771,7 +893,21 @@ def test_list_jobs_names_what_is_running_so_stop_it_can_find_a_job(monkeypatch):
     monkeypatch.setattr(mcp_server.httpx, "get", lambda url, **kw: _Response(200, JOBS))
     out = mcp_server.list_jobs()
     assert [j["id"] for j in out] == ["e1", "d2"]
-    assert out[0] == {"id": "e1", "kind": "erase", "title": "clip8", "status": "running"}
+    assert out[0] == {"id": "e1", "kind": "erase", "title": "clip8", "status": "running",
+                      "language_code": None, "project_id": "e1"}
+
+
+def test_list_jobs_says_which_dubbings_are_languages_of_one_video(monkeypatch):
+    # Add language: the second dubbing names the first as its project; a job
+    # saved before that field existed is a project of its own.
+    jobs = {"jobs": [
+        {"id": "d5", "kind": "dub", "status": "done", "project": "cats", "language_code": "en",
+         "project_id": "d4"},
+        {"id": "d4", "kind": "dub", "status": "done", "project": "cats", "language_code": "ko"},
+    ]}
+    monkeypatch.setattr(mcp_server.httpx, "get", lambda url, **kw: _Response(200, jobs))
+    out = mcp_server.list_jobs(active_only=False)
+    assert [(j["project_id"], j["language_code"]) for j in out] == [("d4", "en"), ("d4", "ko")]
 
 
 def test_list_jobs_can_list_the_finished_ones_too(monkeypatch):
@@ -845,7 +981,10 @@ def test_set_default_asks_before_a_choice_that_spends_credits(monkeypatch):
     # so every later dub would have spent credits (Windows full test, F35).
     posted = []
     monkeypatch.setattr(mcp_server.httpx, "post", lambda *a, **kw: posted.append((a, kw)) or _Response(200, {}))
-    for stage, choice in (("stt", "perso"), ("separation", "perso"), ("dub_mode", "perso"), ("translator", "gemini")):
+    for stage, choice in (("stt", "perso"), ("separation", "perso"), ("dub_mode", "perso"), ("translator", "gemini"),
+                          # Spelled any other way too: the app saves a choice trimmed and
+                          # lowercased, and "Gemini" became the default unasked (2026-10-10).
+                          ("translator", "Gemini"), ("dub_mode", "PERSO"), ("stt", " perso")):
         out = mcp_server.set_default(stage, choice)
         assert out["needs_confirmation"] is True and "every" in out["message"]
     assert posted == []
@@ -858,7 +997,39 @@ def test_set_default_changes_a_paid_choice_once_confirmed_and_a_free_one_at_once
     mcp_server.set_default("stt", "perso", confirm=True)
     mcp_server.set_default("stt", "local")
     mcp_server.set_default("translator", "gemma")
-    assert posted == [{"stt": "perso"}, {"stt": "local"}, {"translator": "gemma"}]
+    mcp_server.set_default("translator", "Gemini", confirm=True)
+    assert posted == [{"stt": "perso"}, {"stt": "local"}, {"translator": "gemma"}, {"translator": "gemini"}]
+
+
+def test_set_default_refuses_a_stage_or_choice_it_does_not_have_before_posting(monkeypatch):
+    # The app passes over a stage it does not know, so "Translator" changed
+    # nothing and said nothing (2026-10-10).
+    posted = []
+    monkeypatch.setattr(mcp_server.httpx, "post", lambda *a, **kw: posted.append((a, kw)) or _Response(200, {}))
+    with pytest.raises(ValueError, match="Unknown stage: Translator"):
+        mcp_server.set_default("Translator", "hunyuan")
+    with pytest.raises(ValueError, match="translator must be one of"):
+        mcp_server.set_default("translator", "nope")
+    assert posted == []
+
+
+@pytest.mark.guard
+def test_set_default_will_not_save_a_paid_default_on_a_yes_nobody_was_asked_for(monkeypatch):
+    # confirm=true on the first call saved a paid default straight away: like
+    # every paid tool, the plan with its cost reaches the user first.
+    posted = []
+    monkeypatch.setattr(mcp_server.httpx, "post",
+                        lambda url, json=None, timeout=None: posted.append(json) or _Response(200, {"defaults": {}}))
+    with pytest.raises(ValueError, match="spends credits"):
+        mcp_server.set_default("translator", "gemini", confirm=True)
+    mcp_server.set_default("translator", "Gemini")
+    with pytest.raises(ValueError, match="has not answered yet"):
+        mcp_server.set_default("translator", "gemini", confirm=True)
+    assert posted == []
+
+    _next_reply()   # the user's yes arrives as the next message
+    mcp_server.set_default("translator", "gemini", confirm=True)
+    assert posted == [{"translator": "gemini"}]
 
 
 def test_queue_dub_takes_the_engines_for_this_dub_only(monkeypatch, tmp_path):
@@ -890,3 +1061,342 @@ def test_queue_dub_prices_the_engines_named_for_this_dub(monkeypatch, tmp_path):
     assert "2 credits" in out["message"] and "500" in out["message"] and "free" not in out["message"]
     with pytest.raises(ValueError, match="stt"):
         mcp_server.queue_dub(str(video), "en", stt="whisper")
+
+
+def _gemini_default(monkeypatch):
+    def fake_get(url, params=None, timeout=None):
+        if url.endswith("/api/setup"):
+            return _Response(200, {"defaults": {"stt": "local", "separation": "local", "translator": "gemini"}})
+        return _Response(200, {"seconds": 30.0, "credits_estimate": 0, "credits_balance": None})
+    monkeypatch.setattr(mcp_server.httpx, "get", fake_get)
+
+
+def test_queue_dub_says_a_gemini_translation_spends_the_users_quota(monkeypatch, tmp_path):
+    # set_default asks before Gemini becomes the default because it spends the
+    # user's Gemini API quota, yet a Gemini dub's plan said it "runs free on
+    # this machine" (2026-10-10).
+    video = _tmp_video(tmp_path)
+    _gemini_default(monkeypatch)
+    monkeypatch.setattr(mcp_server.httpx, "post", lambda *a, **kw: pytest.fail("posted"))
+    for translator in ("gemini", ""):   # named for this dub, or the saved default
+        message = mcp_server.queue_dub(str(video), "ko", translator=translator)["message"]
+        assert "free" not in message and "Gemini API quota" in message
+    message = mcp_server.queue_dub(str(video), "ko", translator="hunyuan")["message"]
+    assert "runs free on this machine" in message and "quota" not in message
+
+
+@pytest.mark.guard
+def test_queue_dub_will_not_start_a_gemini_dub_on_a_yes_nobody_was_asked_for(monkeypatch, tmp_path):
+    video = _tmp_video(tmp_path)
+    _gemini_default(monkeypatch)
+    monkeypatch.setattr(mcp_server.httpx, "post", lambda *a, **kw: pytest.fail("posted"))
+    with pytest.raises(ValueError, match="spends credits"):
+        mcp_server.queue_dub(str(video), "ko", confirm=True)
+
+
+# --- a Perso dub's voices are remade by Perso, and that is asked first -------
+
+class _PersoApp:
+    """The app's side of one Perso dub: what it answers, and what was posted."""
+
+    def __init__(self, monkeypatch, edit=None, lines=None):
+        self.edit = {"available": True, "reason": "", "nightingale": False,
+                     "retranslate_available": True, "working": None,
+                     "unfetched": False, "error": None, **(edit or {})}
+        self.lines = lines or []
+        self.posted = []
+        self.answer = _Response(200, {"line": 3, "ok": True, "credits": 2})
+        monkeypatch.setattr(mcp_server.httpx, "get", self.get)
+        monkeypatch.setattr(mcp_server.httpx, "post", self.post)
+
+    def get(self, url, **kw):
+        if url.endswith("/perso/edit"):
+            return _Response(200, self.edit)
+        if url.endswith("/script"):
+            return _Response(200, {"lines": self.lines})
+        return _Response(200, {"id": "job7", "status": "done", "dub_mode": "perso",
+                               "result": {"out_path": "/nowhere/dubbed.mp4"}})
+
+    def post(self, url, json=None, timeout=None, **kw):
+        self.posted.append((url.replace(mcp_server.API, ""), json))
+        return self.answer
+
+
+def test_remaking_a_perso_line_asks_before_spending(monkeypatch):
+    app = _PersoApp(monkeypatch)
+    out = mcp_server.remake_line_voice("job7", 3)
+    assert out["needs_confirmation"] is True and "credits" in out["message"]
+    assert app.posted == []
+
+
+def test_remaking_a_perso_line_goes_to_perso_once_confirmed(monkeypatch):
+    app = _PersoApp(monkeypatch)
+    assert mcp_server.remake_line_voice("job7", 3, confirm=True)["credits"] == 2
+    assert app.posted == [("/api/dub/jobs/job7/perso/script/3/voice", {"confirm": True})]
+
+
+def test_a_nightingale_dub_is_sent_to_proofread_instead(monkeypatch):
+    app = _PersoApp(monkeypatch, edit={"nightingale": True})
+    with pytest.raises(ValueError, match="proofread_dub"):
+        mcp_server.remake_line_voice("job7", 3, confirm=True)
+    assert app.posted == []
+
+
+def test_a_perso_dub_voiced_on_this_computer_stays_on_this_computer(monkeypatch):
+    from app.perso_edit import LOCAL_VOICE
+    app = _PersoApp(monkeypatch, edit={"available": False, "reason": LOCAL_VOICE})
+    mcp_server.remake_line_voice("job7", 3)
+    assert app.posted == [("/api/dub/jobs/job7/script/3/voice", None)]
+
+
+def test_a_perso_dub_that_cannot_be_edited_now_is_not_voiced_here_instead(monkeypatch):
+    app = _PersoApp(monkeypatch, edit={"available": False, "reason": "This job is still running."})
+    with pytest.raises(ValueError, match="still running"):
+        mcp_server.remake_line_voice("job7", 3, confirm=True)
+    assert app.posted == []
+
+
+def test_perso_refusals_reach_the_agent_with_their_reason(monkeypatch):
+    app = _PersoApp(monkeypatch)
+    app.answer = _Response(402, {"detail": "Perso credits are used up. Recharge to continue."})
+    with pytest.raises(ValueError, match="credits are used up"):
+        mcp_server.remake_line_voice("job7", 3, confirm=True)
+
+
+def test_remake_voices_on_a_perso_dub_sends_each_changed_line_to_perso(monkeypatch):
+    lines = [{"line": 1, "voice_stale": False}, {"line": 2, "voice_stale": True},
+             {"line": 3, "voice_stale": True}]
+    app = _PersoApp(monkeypatch, lines=lines)
+    out = mcp_server.remake_voices("job7")
+    assert out["needs_confirmation"] is True and "2 voices" in out["message"]
+    assert app.posted == []
+
+    _next_reply()   # the user's yes is the next message
+    out = mcp_server.remake_voices("job7", confirm=True)
+    assert out == {"remade": [2, 3], "skipped": 1, "credits": 4}
+    assert [p[0] for p in app.posted] == ["/api/dub/jobs/job7/perso/script/2/voice",
+                                          "/api/dub/jobs/job7/perso/script/3/voice"]
+
+
+def test_remake_voices_on_a_perso_dub_with_nothing_changed_asks_nothing(monkeypatch):
+    app = _PersoApp(monkeypatch, lines=[{"line": 1, "voice_stale": False}])
+    assert mcp_server.remake_voices("job7") == {"remade": [], "skipped": 1}
+    assert app.posted == []
+
+
+def test_translating_a_perso_dub_again_changes_words_only_and_asks_nothing(monkeypatch):
+    app = _PersoApp(monkeypatch)
+    app.answer = _Response(200, {"changed": []})
+    assert mcp_server.retranslate_lines("job7", [2]) == {"changed": []}
+    assert app.posted == [("/api/dub/jobs/job7/retranslate", {"lines": [2]})]
+
+
+def test_translating_again_with_a_translator_not_downloaded_names_it(monkeypatch):
+    # A Hunyuan project whose model is gone: the app's 409 download dialog
+    # payload, said as a sentence rather than relayed raw.
+    app = _PersoApp(monkeypatch)
+    app.answer = _Response(409, {"detail": {"missing": [
+        {"id": "hunyuan", "name": "Hunyuan 1.8B", "bytes": 1100000000}]}})
+    with pytest.raises(ValueError, match=r"Hunyuan 1\.8B \(1\.1 GB\)"):
+        mcp_server.retranslate_lines("job7", [2])
+
+
+def test_proofread_asks_then_starts(monkeypatch):
+    app = _PersoApp(monkeypatch)
+    out = mcp_server.proofread_dub("job7")
+    assert out["needs_confirmation"] is True and "credits" in out["message"]
+    assert "free" not in out["message"]
+    assert app.posted == []
+    app.answer = _Response(200, {"started": True, "fetch_only": False})
+    _next_reply()   # the user's yes is the next message
+    assert mcp_server.proofread_dub("job7", confirm=True)["started"] is True
+    assert app.posted == [("/api/dub/jobs/job7/perso/proofread", {"confirm": True})]
+
+
+def test_proofread_names_the_free_first_one_on_nightingale(monkeypatch):
+    _PersoApp(monkeypatch, edit={"nightingale": True})
+    assert "first time on this dubbing is free" in mcp_server.proofread_dub("job7")["message"]
+
+
+def test_proofread_is_refused_when_perso_has_nothing_to_go_over(monkeypatch):
+    app = _PersoApp(monkeypatch, edit={"retranslate_available": False})
+    with pytest.raises(ValueError, match="nothing to redo"):
+        mcp_server.proofread_dub("job7", confirm=True)
+    assert app.posted == []
+
+
+def test_a_proofread_never_fetched_is_fetched_without_asking(monkeypatch):
+    app = _PersoApp(monkeypatch, edit={"available": False, "unfetched": True,
+                                       "retranslate_available": False})
+    app.answer = _Response(200, {"started": True, "fetch_only": True})
+    assert mcp_server.proofread_dub("job7")["fetch_only"] is True
+
+
+def test_proofread_is_for_perso_dubs_only(monkeypatch):
+    monkeypatch.setattr(mcp_server.httpx, "get",
+                        lambda url, **kw: _Response(200, {"id": "job7", "dub_mode": "local"}))
+    with pytest.raises(ValueError, match="Perso dubbing only"):
+        mcp_server.proofread_dub("job7", confirm=True)
+
+
+def test_job_status_of_a_perso_dub_says_what_perso_is_doing(monkeypatch):
+    _PersoApp(monkeypatch, edit={"working": "proofread"})
+    assert mcp_server.get_job_status("job7")["perso_edit"]["working"] == "proofread"
+
+
+def test_editing_a_perso_dub_nobody_opened_fetches_it_first(monkeypatch, tmp_path):
+    app = _PersoApp(monkeypatch)
+    job = {"id": "job7", "dub_mode": "perso", "language_code": "en",
+           "result": {"out_path": str(tmp_path / "dubbed.mp4")}}
+    monkeypatch.setattr(mcp_server, "_job", lambda job_id: job)
+    edited = []
+    monkeypatch.setattr(mcp_server, "edit_line", lambda *a: edited.append(a) or {"line": 1})
+    mcp_server.edit_script_line("job7", 1, "Hello")
+    assert app.posted == [("/api/dub/jobs/job7/perso/materialize", None)]
+    assert edited == [(str(tmp_path), 1, "Hello", "en")]
+
+
+# Several plans put in one reply ("Shall I start all three?") are all the
+# user's to say yes to in the next. Only the last was kept on file, so a batch
+# that spends credits started one video per answer (final review, 2026-10-12).
+@pytest.mark.guard
+def test_every_plan_put_in_one_reply_can_be_confirmed_in_the_next():
+    for plan in ("a.mp4|ko|local|stt", "b.mp4|ko|local|stt"):
+        mcp_server._ask("queue_dub", {}, plan=plan)
+    _next_reply()
+    mcp_server._answered("queue_dub", "a.mp4|ko|local|stt", paid=True)
+    mcp_server._answered("queue_dub", "b.mp4|ko|local|stt", paid=True)
+    # Each yes is used once, and a plan nobody was asked about still waits.
+    for plan in ("a.mp4|ko|local|stt", "c.mp4|ko|local|stt"):
+        with pytest.raises(ValueError, match="spends credits"):
+            mcp_server._answered("queue_dub", plan, paid=True)
+
+
+# A new question replaces the plans of the reply before: a plan from an older
+# reply, which the user may have turned down, is not started on a later yes.
+@pytest.mark.guard
+def test_a_new_question_replaces_the_plans_of_an_older_reply():
+    mcp_server._ask("queue_dub", {}, plan="a")
+    _next_reply()
+    mcp_server._ask("queue_dub", {}, plan="b")
+    _next_reply()
+    with pytest.raises(ValueError, match="spends credits"):
+        mcp_server._answered("queue_dub", "a", paid=True)
+    mcp_server._answered("queue_dub", "b", paid=True)
+
+
+@pytest.mark.guard
+def test_a_plan_put_again_in_the_reply_that_confirms_it_is_not_a_new_question(monkeypatch, tmp_path):
+    # The agent put the plan, the user said yes, and in the next reply the
+    # agent put the same plan once more before confirming: every consent had
+    # to be given twice (Windows F41, 2026-10-07).
+    monkeypatch.setattr(mcp_server, "_ASK_FILE", str(tmp_path / "asked.json"))
+    video = _tmp_video(tmp_path)
+    posted = []
+    monkeypatch.setattr(mcp_server.httpx, "post", lambda url, **kw: posted.append(url) or _Response(
+        200, {"job_id": "j1", "status": "queued"}))
+    monkeypatch.setattr(mcp_server.httpx, "get", lambda url, params=None, timeout=None: _Response(
+        200, {"seconds": 10.0, "credits_estimate": 0, "credits_balance": None, "defaults": {}}))
+
+    # Reply 1: the plan is put. (A fresh server process next time: _asked is empty again.)
+    first = mcp_server.queue_dub(str(video), "ja")
+    _next_reply()
+    # Reply 2, after the user's yes: the same plan put again, then confirmed.
+    again = mcp_server.queue_dub(str(video), "ja")
+    assert again["message"] == first["message"]
+    # The file still holds reply 1's ask, so this confirm is the user's answer.
+    assert mcp_server._asks_on_file()["queue_dub"][0]["pid"] == 0
+    assert mcp_server.queue_dub(str(video), "ja", confirm=True)["job_id"] == "j1"
+    assert posted == ["%s/api/dub/start" % mcp_server.API]
+    # ...and is used up: the next same plan has to be asked afresh.
+    assert "queue_dub" not in mcp_server._asks_on_file()
+
+    # A different plan in that reply (another language) is a new question.
+    _next_reply()
+    mcp_server.queue_dub(str(video), "ja")
+    _as_earlier()
+    mcp_server.queue_dub(str(video), "ko")
+    with pytest.raises(ValueError, match="has not answered yet"):
+        mcp_server.queue_dub(str(video), "ko", confirm=True)
+
+
+@pytest.mark.guard
+def test_a_dub_that_spends_credits_is_not_started_on_the_users_word_alone(monkeypatch, tmp_path):
+    # "Dub test90.mp4 into English, on this computer" started a dub whose
+    # transcription ran on Perso, with no quote (Mac F10, 2026-10-08).
+    video = _tmp_video(tmp_path)
+    posted = []
+    monkeypatch.setattr(mcp_server.httpx, "post", lambda url, **kw: posted.append(url) or _Response(
+        200, {"job_id": "j1", "status": "queued"}))
+    monkeypatch.setattr(mcp_server.httpx, "get", lambda url, params=None, timeout=None: _Response(
+        200, {"seconds": 10.0, "credits_estimate": 2, "credits_balance": 100,
+              "defaults": {"stt": "perso", "separation": "local", "voice": "qwen3"}}))
+    with pytest.raises(ValueError, match="spends credits"):
+        mcp_server.queue_dub(str(video), "en", confirm=True)
+    assert posted == []
+    # Named free, it may start on the user's word: the message said which file and to go.
+    assert mcp_server.queue_dub(str(video), "en", stt="local", confirm=True)["job_id"] == "j1"
+    # Asked first, the user's yes in the next reply starts the paid one.
+    mcp_server.queue_dub(str(video), "en")
+    _next_reply()
+    assert mcp_server.queue_dub(str(video), "en", confirm=True)["job_id"] == "j1"
+
+
+def test_get_job_status_of_a_running_dub_carries_the_screens_percent(monkeypatch):
+    # The agent used to answer "no percent given" (Windows F6, 2026-10-07).
+    logs = ["1/6 a", "2/6 b", "3/6 c", "2 dialogue lines prepared", "4/6 d", "   line 0: chose take 2"]
+    monkeypatch.setattr(mcp_server.httpx, "get", lambda url, **kw: _Response(
+        200, {"status": "running", "kind": "dub", "logs": logs}))
+    out = mcp_server.get_job_status("d1")
+    assert out["stage"] == 4 and out["label"] == "Dubbing" and out["percent"] == 75
+
+
+# "Read it all again" (Windows test F18, 2026-10-11): every line, changed or
+# not. It takes a while, so the number of lines goes to the user first.
+def test_remake_every_voice_asks_with_the_line_count_then_remakes_them_all(posted, monkeypatch):
+    monkeypatch.setattr(mcp_server.httpx, "get", lambda url, **kw: _Response(200, {
+        "id": "job7", "dub_mode": "local", "language_code": "ko",
+        "result": {"out_path": "/w/dubbed/dubbed.mp4"}}))
+    monkeypatch.setattr(mcp_server, "load_lines", lambda work, lang: [
+        {"line": 1, "text": "one"}, {"line": 2, "text": ""}, {"line": 3, "text": "three"}])
+    asked = mcp_server.remake_voices("job7", every_line=True)
+    assert asked["needs_confirmation"] is True and "all 2 lines" in asked["message"]
+    assert posted == []
+    _next_reply()
+    posted.answer = _Response(200, {"remade": [1, 3], "skipped": 1})
+    assert mcp_server.remake_voices("job7", confirm=True, every_line=True) == {"remade": [1, 3], "skipped": 1}
+    assert posted == ["%s/api/dub/jobs/job7/voices/all" % mcp_server.API]
+
+
+# A busy or failing voice engine reached the agent as a bare HTTP error, with
+# nothing to tell the user (final review, 2026-10-12).
+def test_a_busy_voice_engine_reaches_the_agent_with_its_sentence(posted, monkeypatch):
+    monkeypatch.setattr(mcp_server.httpx, "get", lambda url, **kw: _Response(200, {
+        "id": "job7", "dub_mode": "local", "result": {"out_path": "/w/dubbed/dubbed.mp4"}}))
+    posted.answer = _Response(503, {"detail": "The voice engine is busy. Wait for the running dubbing to finish."})
+    with pytest.raises(ValueError, match="voice engine is busy"):
+        mcp_server.remake_voices("job7")
+
+
+def test_remake_every_voice_on_a_perso_dub_points_to_proofread(monkeypatch):
+    app = _PersoApp(monkeypatch)
+    with pytest.raises(ValueError, match="proofread_dub"):
+        mcp_server.remake_voices("job7", every_line=True)
+    assert app.posted == []
+
+
+# A Perso dub whose voices are made here now (a line was remade on this
+# computer) is read again here, as its changed lines already are: refused, the
+# agent had no way to do it (final review, 2026-10-12).
+def test_remake_every_voice_on_a_perso_dub_voiced_here_stays_here(monkeypatch):
+    from app.perso_edit import LOCAL_VOICE
+    app = _PersoApp(monkeypatch, edit={"available": False, "reason": LOCAL_VOICE})
+    monkeypatch.setattr(mcp_server, "load_lines", lambda work, lang: [
+        {"line": 1, "text": "one"}, {"line": 2, "text": "two"}])
+    asked = mcp_server.remake_voices("job7", every_line=True)
+    assert asked["needs_confirmation"] is True and "all 2 lines" in asked["message"]
+    assert app.posted == []
+    _next_reply()
+    app.answer = _Response(200, {"remade": [1, 2], "skipped": 0})
+    assert mcp_server.remake_voices("job7", confirm=True, every_line=True) == {"remade": [1, 2], "skipped": 0}
+    assert [url for url, _ in app.posted] == ["/api/dub/jobs/job7/voices/all"]

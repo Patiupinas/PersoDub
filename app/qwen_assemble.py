@@ -19,6 +19,7 @@ numpy port, which costs ~13.8GB per hour of video); see gate_vocals_chunks.
 """
 import audioop
 import struct
+import subprocess
 import wave
 from math import log10 as _log10
 from typing import Callable, List, Optional, Sequence, Tuple
@@ -52,6 +53,7 @@ from app.config import (
     QWEN_GATE_PAD_SEC,
     QWEN_GATE_SPEECH_DUCK_DB,
     QWEN_GATE_VAD,
+    QWEN_MAX_SPEEDUP,
     QWEN_TRIM_LEAD_SEC,
 )
 
@@ -538,12 +540,6 @@ def gate_vocals_chunks(vocals_path: str, speech_regions: Sequence[Sequence[float
             out_frame += n_frames
 
 
-LEAD_BORROW_MAX_SEC = 0.8       # a line may start at most this much before its cue start
-LEAD_BORROW_MIN_GAP_SEC = 0.12  # ...but must keep this gap after the previous line's audio end
-LEAD_BORROW_TRIGGER_SEC = 0.05  # only overshoots >= this trigger a borrow (rounding noise below)
-LEAD_BORROW_PASSES = 5          # chain effects: an earlier shift can unblock the next line
-
-
 def line_play_durations(line_paths: List[Optional[str]]) -> List[float]:
     """Each line wav's PLACED playback duration in seconds: lead/tail silence
     trimmed exactly like place_lines will trim it (see _trim_lead_tail_silence).
@@ -563,56 +559,20 @@ def line_play_durations(line_paths: List[Optional[str]]) -> List[float]:
     return durs
 
 
-def borrow_lead_starts(starts: List[float], durs: List[float],
-                       max_borrow: float = LEAD_BORROW_MAX_SEC,
-                       min_gap: float = LEAD_BORROW_MIN_GAP_SEC,
-                       headroom: float = END_HEADROOM_SECONDS,
-                       log: Optional[Callable[[str], None]] = None) -> List[float]:
-    """Leading-pause borrow (pure function; port of the 2026-07-30 v3 emergency
-    reassembly fix into the real pipeline): a line whose audio would be
-    truncated by the next placed line's start (place_lines' anti-overlap cut)
-    may start up to max_borrow seconds BEFORE its cue start -- dialogue almost
-    always has a breath pause before a cue, so starting slightly early is
-    inaudible while a mid-word cut is not.
-
-    durs[i] is the line's placed (silence-trimmed) duration -- see
-    line_play_durations; 0.0/None-duration lines are never placed, so they
-    neither borrow nor block a neighbor. Constraints: a shift never exceeds
-    max_borrow total per line, never moves a line before min_gap after the
-    previous placed line's (possibly already shifted) audio end, and never
-    delays a line. Multi-pass (LEAD_BORROW_PASSES) so a shift that moves one
-    line's tail earlier can unblock the following line's borrow. Returns the
-    new starts list (same length/order); no audio is modified -- callers hand
-    the result to place_lines, so there is still no time-stretch anywhere.
-    """
-    log = log or (lambda m: None)
-    new = list(starts)
-    placed = [j for j, (s, d) in enumerate(zip(starts, durs))
-              if s is not None and s >= 0 and d and d > 0]
-    order = sorted(placed, key=lambda j: (starts[j], j))
-    for _ in range(LEAD_BORROW_PASSES):
-        changed = False
-        for idx, j in enumerate(order):
-            if idx + 1 >= len(order):
-                continue  # last placed line is never truncated by a neighbor
-            nxt = order[idx + 1]
-            over = (new[j] + durs[j]) - (new[nxt] - headroom)
-            if over < LEAD_BORROW_TRIGGER_SEC:
-                continue
-            budget = max_borrow - (starts[j] - new[j])  # total borrow cap per line
-            want = min(budget, over)
-            if want <= 1e-9:
-                continue
-            prev_end = (new[order[idx - 1]] + durs[order[idx - 1]]) if idx > 0 else 0.0
-            cand = max(new[j] - want, prev_end + min_gap, 0.0)
-            if cand < new[j] - 1e-6:
-                log("   lead borrow line %d: start %.3f -> %.3f (%.3fs earlier, tail was "
-                    "%.2fs over the next line's start)" % (j, new[j], cand, new[j] - cand, over))
-                new[j] = cand
-                changed = True
-        if not changed:
-            break
-    return new
+def _speed_up(line: bytes, rate: float) -> Optional[bytes]:
+    """48k stereo MIX_WIDTH PCM played `rate` times faster with ffmpeg atempo
+    (pitch kept). None if ffmpeg fails or is missing -- the caller then cuts as before."""
+    pcm16 = audioop.lin2lin(line, MIX_WIDTH, SAMPWIDTH)
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "s16le", "-ar", str(SR), "-ac", str(NCHANNELS), "-i", "pipe:0",
+             "-filter:a", "atempo=%.4f" % rate, "-f", "s16le", "-ar", str(SR), "-ac", str(NCHANNELS), "pipe:1"],
+            input=pcm16, capture_output=True)
+    except OSError:  # no ffmpeg on this machine
+        return None
+    if r.returncode != 0 or not r.stdout:
+        return None
+    return audioop.lin2lin(r.stdout, SAMPWIDTH, MIX_WIDTH)
 
 
 def place_lines(background_path: str, line_paths: List[Optional[str]],
@@ -622,7 +582,8 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
                 speech_regions: Optional[Sequence[Sequence[float]]] = None,
                 log: Optional[Callable[[str], None]] = None,
                 gate_pad_sec: Optional[float] = None,
-                gate_duck_db: Optional[float] = None) -> str:
+                gate_duck_db: Optional[float] = None,
+                clipped: Optional[List[dict]] = None) -> str:
     """Lay each line wav at its cue start time (seconds) over the background track.
 
     background_path: the Demucs 'no_vocals' track (any sample rate/width/channel
@@ -645,6 +606,14 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
     headroom, it is truncated and its tail is faded out (no time-stretch); if
     there is no room for it at all, the line is skipped -- logged as a warning
     (via `log`, not silently dropped) rather than summed with the next line.
+    The last placed line is bounded the same way by the background track's own
+    (pre-placement) length -- nothing plays past the end of the video either.
+
+    clipped (optional): a list this function appends {"line": n, "cut_s": s}
+    to, n being the script's line number (from 1), one entry per line
+    actually cut short (never a full skip, and never the line's text -- see app/qwen_assemble.py's own log lines for the same
+    rule). The caller's to keep across every place_lines call in one job and
+    hand to the job's result data, so the UI can show it later.
 
     vocals_path + speech_regions (optional): if given, the original vocals
     track (any sample rate/width/channel count) is mixed in too, gated (see
@@ -679,6 +648,10 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
     bed = bytearray(audioop.lin2lin(
         _to_48k_stereo_pcm16(bg_data, bg_sr, bg_w, bg_ch), SAMPWIDTH, MIX_WIDTH))
     bytes_per_frame = MIX_WIDTH * NCHANNELS
+    # The video's own length, before any line grows `bed` past it -- the
+    # boundary the last placed line is cut against, same as a mid-sequence
+    # line is cut against its neighbor's start.
+    video_end_frame = len(bed) // bytes_per_frame
 
     fade_frames = int(round(FADE_SECONDS * SR))
     head_frames = int(round(END_HEADROOM_SECONDS * SR))
@@ -718,12 +691,12 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
         data = _trim_lead_tail_silence(data, w, ch, sr)
         line = audioop.lin2lin(_to_48k_stereo_pcm16(data, sr, w, ch), SAMPWIDTH, MIX_WIDTH)
 
-        # Stretch watchdog (2026-07-30 calibration): this app has no time-stretch/atempo code
-        # anywhere -- the resample just above only changes the sample RATE, never playback
-        # speed, so its duration must always match the source line's own (measured before any
-        # later overlap truncation, which is a legitimate content cut, not a stretch, and is
-        # already warned about separately below). Any deviation past rounding is a regression
-        # signal that speed manipulation snuck in somewhere.
+        # Stretch watchdog (2026-07-30 calibration): the resample just above only changes the
+        # sample RATE, never playback speed, so its duration must always match the source
+        # line's own. The one deliberate speed change (_speed_up, below, capped at
+        # QWEN_MAX_SPEEDUP) runs after this check and logs itself; overlap truncation is a
+        # content cut, not a stretch. Any deviation here past rounding is a regression signal
+        # that speed manipulation snuck in somewhere else.
         if sr:
             src_dur = (len(data) // (w * ch)) / float(sr)
             placed_dur = (len(line) // bytes_per_frame) / float(SR)
@@ -736,22 +709,50 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
                         "time-stretch is banned in this app, this should never happen"
                         % (i, stretch_rate))
 
+        pos_frame = int(round(start * SR))
+        nxt = next_start[i]
+        # The last placed line has no neighbor to collide with, but it still
+        # must not sound past the end of the video -- bounded by the
+        # background track's own (pre-placement) length instead of a
+        # neighbor's start, and with no end-headroom subtracted (there is no
+        # next line's onset to keep clear of).
+        limit_frame = (int(round(nxt * SR)) - head_frames) if nxt is not None else video_end_frame
+        maxlen_frames = limit_frame - pos_frame
+
+        # A line that would be cut is first sped up, at most QWEN_MAX_SPEEDUP,
+        # so less (often nothing) is cut below.
+        line_frames = len(line) // bytes_per_frame
+        if 0 < maxlen_frames < line_frames and QWEN_MAX_SPEEDUP > 1.0:
+            rate = min(QWEN_MAX_SPEEDUP, line_frames / float(maxlen_frames))
+            sped = _speed_up(line, rate) if rate > 1.005 else None
+            if sped:
+                log("   line %d sped up x%.3f to fit (%.2fs -> %.2fs)" % (
+                    i, rate, line_frames / float(SR), len(sped) // bytes_per_frame / float(SR)))
+                line = sped
+
         gain = gains[i] if gains is not None and gains[i] is not None else 1.0
         if gain != 1.0:
             line = audioop.mul(line, MIX_WIDTH, gain)
-
-        pos_frame = int(round(start * SR))
-        nxt = next_start[i]
-        if nxt is not None:
-            limit_frame = int(round(nxt * SR)) - head_frames
-            maxlen_frames = limit_frame - pos_frame
-            if maxlen_frames <= 0:
+        if maxlen_frames <= 0:
+            if nxt is not None:
                 log("   Warning: line %d at %.3fs collides with the next line's start (%.3fs) -- "
                     "skipped to avoid overlap" % (i, start, nxt))
-                continue
-            line_frames = len(line) // bytes_per_frame
-            if line_frames > maxlen_frames:
-                line = _fade_tail(line[:maxlen_frames * bytes_per_frame], fade_frames)
+            else:
+                log("   Warning: line %d at %.3fs starts at or after the end of the video -- "
+                    "skipped" % (i, start))
+            continue
+        line_frames = len(line) // bytes_per_frame
+        if line_frames > maxlen_frames:
+            cut_s = (line_frames - maxlen_frames) / float(SR)
+            # Seconds cut, never the line's own words -- same rule as every
+            # other log line in this app.
+            log("   line %d cut short by %.2fs (%s)" % (
+                i, cut_s, "runs into the next line" if nxt is not None else "runs past the end of the video"))
+            if clipped is not None:
+                # Numbered as the script is, from 1 (i counts from 0): the
+                # screen reads it by the script's own line number.
+                clipped.append({"line": i + 1, "cut_s": round(cut_s, 3)})
+            line = _fade_tail(line[:maxlen_frames * bytes_per_frame], fade_frames)
 
         line_frames = len(line) // bytes_per_frame
         placed_spans.append((pos_frame / float(SR), (pos_frame + line_frames) / float(SR)))

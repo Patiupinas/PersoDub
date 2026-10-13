@@ -14,17 +14,22 @@ import pytest
 
 from app import pipeline
 from app.text.srt import parse_srt
-from app.translate import GEMINI_UPGRADE_URL, GeminiQuotaExhaustedError, GeminiUnavailableError
+from app.translate import (
+    GEMINI_UPGRADE_URL,
+    GeminiQuotaExhaustedError,
+    GeminiUnavailableError,
+    TranslationEngine,
+)
 
 
 def j(arr):
     return json.dumps(arr, ensure_ascii=False)
 
 
-class FakeTranslator:
+class FakeTranslator(TranslationEngine):
     """Stands in for a TranslationEngine.
 
-    `_ask` is what app.text.length_fit.fit_translate drives (raw JSON candidate arrays);
+    `_ask` answers what app.text.length_fit.fit_translate asks through `ask` (raw JSON candidate arrays);
     `translate` is the higher-level call the pipeline uses for its own fallback and
     its wrong-language re-translation. Both record what they were asked.
 
@@ -68,6 +73,14 @@ def read_cues(path):
         return parse_srt(f.read())
 
 
+@pytest.fixture(autouse=True)
+def _korean_at_4_4(monkeypatch):
+    # The budgets and windows worked out below assume Korean at 4.4 characters
+    # a second (the table's value before 2026-10-02); they test the mechanics.
+    from app.text import srt
+    monkeypatch.setitem(srt._SYL_PER_SEC, "ko", 4.4)
+
+
 # --- _auto_translate_srt ---------------------------------------------------------
 
 
@@ -96,9 +109,9 @@ def test_happy_path_writes_translated_srt(tmp_path):
     assert "from en " in eng.prompts[0]
 
 
-def test_translated_block_is_split_into_one_cue_per_sentence(tmp_path):
-    # One source cue whose translation is two sentences -> two SRT cues, time divided in
-    # proportion to character count (srt_utils.split_cues_into_sentences).
+def test_translated_block_said_without_a_pause_stays_one_line(tmp_path):
+    # Two sentences in one 6s source cue are voiced as one line: a dubbed line
+    # is cut where the speaker pauses, not at every full stop.
     src = [{"start": 0.0, "end": 6.0,
             "text": "Hi everyone. The weather is so nice that it's a good day for a walk."}]
     eng = FakeTranslator(ask_responses=[
@@ -107,14 +120,8 @@ def test_translated_block_is_split_into_one_cue_per_sentence(tmp_path):
     out = pipeline._auto_translate_srt(src, "ko", eng, str(tmp_path))
 
     cues = read_cues(out)
-    assert len(cues) == 2
-    assert [c["text"] for c in cues] == [
-        "안녕하세요 여러분.",
-        "오늘은 날씨가 정말 좋아서 산책하기 좋습니다.",
-    ]
-    assert cues[0]["start"] == 0.0
-    assert cues[0]["end"] == cues[1]["start"] == 1.714  # 6.0s split 10:25 by character count
-    assert cues[1]["end"] == 6.0
+    assert [(c["start"], c["end"], c["text"]) for c in cues] == [
+        (0.0, 6.0, "안녕하세요 여러분. 오늘은 날씨가 정말 좋아서 산책하기 좋습니다.")]
 
 
 def test_source_cues_are_not_mutated(tmp_path):
@@ -331,8 +338,8 @@ def _stub_run_dub_until_translation(monkeypatch):
     monkeypatch.setattr(pipeline, "SeparationEngine", _FakeSep)
     monkeypatch.setattr(
         pipeline, "transcribe_local",
-        lambda video, language=None, log=None, on_language=None, video_duration=None:
-            [{"start": 0.0, "end": 2.0, "text": "hi"}],
+        lambda video, language=None, word_timestamps=False, log=None, on_language=None, video_duration=None,
+        vocals_path=None: [{"start": 0.0, "end": 2.0, "text": "hi"}],
     )
     monkeypatch.setattr(pipeline, "diarize", lambda path, cues, num_speakers=None, video_duration=None: cues)
 
@@ -414,7 +421,7 @@ def test_an_unexpected_gemini_failure_names_the_part_and_sends_them_to_google(
     assert str(e.value).endswith("Ask Google if it keeps happening.")
 
 
-class _CursedLineTranslator:
+class _CursedLineTranslator(TranslationEngine):
     """A translator run for real: fit_translate drives its _ask, and translate()
     is the engines' own chunked fallback. Every chunk comes back with no lines
     at all (issue #82's "got 0, need N"), so each line is asked alone -- and a
@@ -508,3 +515,12 @@ def test_only_the_hunyuan_model_goes_without_length_rules():
 
     assert OllamaTranslator(url="http://x", model=OLLAMA_HUNYUAN_MODEL).length_rules is False
     assert OllamaTranslator(url="http://x", model=OLLAMA_GEMMA_MODEL).length_rules is True
+
+
+def test_a_machine_transcript_is_joined_by_pauses_but_a_users_script_is_kept(tmp_path):
+    whisper = [{"start": 0.0, "end": 2.0, "text": "A."}, {"start": 2.1, "end": 4.0, "text": "B."}]
+    assert [c["text"] for c in pipeline._pick_source_cues(None, None, whisper)] == ["A. B."]
+    script = tmp_path / "source.srt"
+    script.write_text("1\n00:00:00,000 --> 00:00:02,000\nA.\n\n2\n00:00:02,100 --> 00:00:04,000\nB.\n",
+                      encoding="utf-8")
+    assert [c["text"] for c in pipeline._pick_source_cues(str(script), None, whisper)] == ["A.", "B."]

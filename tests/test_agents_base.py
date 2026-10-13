@@ -350,3 +350,33 @@ def test_the_turn_after_a_stopped_one_runs_normally():
                            lambda e: [{"kind": "text", "text": "hi"}]))
     assert {"kind": "text", "text": "hi"} in second
     assert not any(e.get("stopped") for e in second)
+
+
+def test_a_turn_outlasts_the_longest_tool_it_can_call():
+    """A turn that remade voices was cut off at 3 minutes as "stopped partway"
+    (2026-10-02) while its tool was still waiting on the app. Every tool's wait
+    has to fit inside one turn."""
+    import os
+    import re
+
+    src = open(os.path.join(os.path.dirname(base.__file__), "..", "mcp_server.py"), encoding="utf-8").read()
+    longest = max(float(t) for t in re.findall(r"timeout=([\d.]+)", src))
+    assert longest <= base.TIMEOUT_SECONDS
+
+
+def test_a_turn_that_keeps_talking_is_not_cut_off(monkeypatch):
+    """Five lines 0.3 s apart take 1.5 s, three times the limit: the limit is
+    on silence, not on the whole turn."""
+    monkeypatch.setattr(base, "TIMEOUT_SECONDS", 0.5)
+    talk = "import time\nfor _ in range(5):\n    print('{}', flush=True)\n    time.sleep(0.3)\n"
+    out = list(base.run(sys.executable, ["-c", talk], lambda e: [{"kind": "step"}]))
+    assert [e["kind"] for e in out] == ["step"] * 5 + ["done"]
+
+
+def test_a_turn_that_goes_silent_is_ended(monkeypatch):
+    monkeypatch.setattr(base, "TIMEOUT_SECONDS", 0.5)
+    silent = "import time\nprint('{}', flush=True)\ntime.sleep(30)\n"
+    started = time.time()
+    out = list(base.run(sys.executable, ["-c", silent], lambda e: [{"kind": "step"}]))
+    assert time.time() - started < 10
+    assert out[-1]["kind"] == "error"

@@ -52,7 +52,14 @@ EXTRA_PATHS = [
 # PATHEXT, the EXTRA_PATHS walk has to be told.
 _SUFFIXES = ("", ".exe", ".cmd") if os.name == "nt" else ("",)
 
-TIMEOUT_SECONDS = float(os.environ.get("PERSODUB_AGENT_TIMEOUT", "180"))
+# How long a turn may go without a word from the CLI before it is ended. A
+# turn that keeps working is never cut off: every line it prints starts the
+# wait over. It was 3 minutes for the whole turn, and a turn that remade
+# voices or retranslated lines was cut off midway as "stopped partway"
+# (2026-10-02). A tool says nothing while it runs, and the tools wait up to an
+# hour on the app (extract_subtitles), so the wait outlasts them. Stop ends a
+# turn at any time.
+TIMEOUT_SECONDS = float(os.environ.get("PERSODUB_AGENT_TIMEOUT", "3600"))
 
 # How long a stopped CLI is given to go quietly before it is made to.
 STOP_GRACE = 2.0
@@ -487,6 +494,10 @@ def _run_once(binary: str, args: List[str], translate: Callable[[dict], List[dic
     drained = False
     try:
         for line in proc.stdout:
+            # It said something: the wait starts over (TIMEOUT_SECONDS).
+            timer.cancel()
+            timer = threading.Timer(TIMEOUT_SECONDS, _end, args=(proc,))
+            timer.start()
             line = line.strip()
             if not line:
                 continue

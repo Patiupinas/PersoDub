@@ -1,4 +1,4 @@
-import { existsSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 // The kit's single settings file. It was mac.env while macOS was the only
@@ -41,4 +41,19 @@ export function parseEnvFile(text) {
     out[key] = val;
   }
   return out;
+}
+
+// The environment the user's own switches live in: this process's, with the
+// kit's kit.env laid over it. Read fresh at every call, because Settings
+// writes those switches into that file and turning one off has to take effect
+// on the very next event rather than at the next restart. A GUI app's
+// process.env never carries them, which is why the file is read at all.
+export function envWithKit(kitDir) {
+  try {
+    const kitEnvPath = kitDir ? join(kitDir, KIT_ENV) : null;
+    if (kitEnvPath && existsSync(kitEnvPath)) {
+      return { ...process.env, ...parseEnvFile(readFileSync(kitEnvPath, "utf8")) };
+    }
+  } catch { /* unreadable kit.env: fall back to process.env */ }
+  return process.env;
 }

@@ -2,6 +2,7 @@
 name = "persodub"
 version = "0.1.0"
 description = "Voice-cloned video dubbing that runs locally"
+authors = [{ name = "ESTsoft corp." }]
 # The supported product is the Mac desktop app, whose kit runs Python 3.11
 # (desktop/src/installSpec.js PYTHON_URL). Upper bound: six modules import
 # audioop, removed in Python 3.13.
@@ -12,6 +13,7 @@ license = { text = "AGPL-3.0-or-later" }
 # `python -m pytest` from the repo root works).
 [tool.pytest.ini_options]
 pythonpath = ["."]
+markers = ["guard: a test about the Dub Agent's asking itself (no pre-agreed plans on file)"]
 
 # Lint configuration. There was none before 2026-08-02: no linter, no formatter,
 # no type checker, no CI. The code was nonetheless clean (a full scan found six
@@ -24,7 +26,7 @@ pythonpath = ["."]
 
 [tool.ruff]
 line-length = 120        # 21 violations; 100 would be 175, and the longest line in app/ is 142
-target-version = "py38"  # conservative floor; code is written to the 3.8 stdlib and runs on the kit's 3.11
+target-version = "py38"  # lint-rule floor only: the code runs on the kit's 3.11 and uses 3.11 (enum.StrEnum in app/jobs.py); py311 would add ~770 style findings
 
 [tool.ruff.lint]
 select = ["F", "E", "W", "I", "B", "C4", "RET", "SIM", "UP", "PLE", "PLC"]
@@ -53,15 +55,12 @@ ignore = [
               #      converting is pure churn with real risk in log strings.
   "PLC0415",  #  91  import-outside-top-level. Some are lazy heavy-dependency
               #      imports (the subprocess workers) and are correct as-is.
-              #      NOTE: one is not -- app/translate.py's function-body import
-              #      of app.text.length_fit exists only to break a circular import. That
-              #      is tracked as a refactor task, not by this rule.
 ]
 
 # Known limitation, recorded so nobody assumes the linter has it covered:
-# ruff does NOT flag `from app.translate import _ask_with_retry` and friends.
+# ruff does NOT flag `from app.text.srt import _count_syllables` and friends.
 # Its private-import rule treats same-package imports as internal and exempt, so
-# the three cross-module private imports in app/ need review discipline, not
+# the cross-module private imports in app/ need review discipline, not
 # tooling.
 
 [tool.ruff.lint.per-file-ignores]

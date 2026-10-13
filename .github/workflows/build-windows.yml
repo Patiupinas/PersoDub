@@ -13,6 +13,13 @@ name: Build Windows installer
 
 on:
   workflow_dispatch:
+    inputs:
+      edition:
+        description: Edition to build
+        required: false
+        default: opensource
+        type: choice
+        options: [opensource, production]
   push:
     branches: [feature/windows-support]
 
@@ -45,6 +52,9 @@ jobs:
         env:
           CAMPPLUS_SRC: ${{ github.workspace }}\campplus.onnx
           CSC_IDENTITY_AUTO_DISCOVERY: "false"  # no certificate: do not go looking for one
+          # Open source unless a hand-started run picks production
+          # (desktop/src/edition.js); a release build is the open-source one.
+          PERSODUB_EDITION: ${{ github.event.inputs.edition || 'opensource' }}
         run: npm run dist:win
 
       - uses: actions/upload-artifact@v4

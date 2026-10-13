@@ -4,6 +4,7 @@ No CLI is spawned. The runner is replaced, so these say what the two endpoints
 promise the panel -- which assistant is usable, why one is not, and that the
 backend the panel names is the backend that answers.
 """
+import json
 import time
 
 from fastapi.testclient import TestClient
@@ -175,6 +176,27 @@ def test_a_turn_goes_to_the_backend_the_panel_named(monkeypatch, tmp_path):
     # newline in argv is where cmd.exe cut the .cmd shim's command line).
     assert "abc123" in seen["input_text"]
     assert not any("abc123" in a for a in seen["args"])
+
+
+def test_a_turn_ended_on_a_usage_limit_says_so_once(monkeypatch, tmp_path):
+    # The reader ends the turn on the limit, and the CLI it stopped says the
+    # same thing again on its way out: the panel showed the sentence twice
+    # (Windows test H18, 2026-10-10).
+    _capture(monkeypatch, tmp_path)
+    limit = "Usage limit reached. Wait a while or pick another assistant."
+    stopped = []
+
+    def fake_run(binary, args, translate, **kw):
+        yield {"kind": "progress", "tool": "transport", "label": "Reconnecting…"}
+        yield {"kind": "error", "message": limit, "stop": True}
+        yield {"kind": "error", "message": limit}
+
+    monkeypatch.setattr(agent_api.agent_base, "run", fake_run)
+    monkeypatch.setattr(agent_api.agent_base, "stop_turn", lambda: stopped.append(1) or True)
+    r = client.post("/api/agent/chat", json={"message": "hi", "agent": "codex"})
+    assert r.status_code == 200
+    assert r.text.count("Usage limit reached") == 1 and stopped
+    assert "Reconnecting" in r.text   # what came before the stop still shows
 
 
 def test_home_screen_turn_says_no_job_is_open(monkeypatch, tmp_path):
@@ -364,3 +386,96 @@ def test_a_deliberate_ask_does_not_get_a_minute_old_answer(monkeypatch):
 
     # Opening the picker starts the check, and the answer that lands is the new one.
     assert _settled_to("codex", False)["codex"]["logged_in"] is False
+
+
+def test_claude_runs_without_the_users_memory_files(monkeypatch):
+    # Even with no settings files, the CLI read CLAUDE.md / AGENTS.md up the
+    # folder tree and the auto-memory of the repository the agent folder sits
+    # in (measured 2026-10-11: ~/.claude/projects/<repo>/memory/MEMORY.md).
+    # Two switches in its environment turn both off; the user's own env stays.
+    monkeypatch.setenv("PERSODUB_TEST_MARK", "kept")
+    env = agent_api._turn_env(agent_api.AGENTS["claude"])
+    assert env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] == "1"
+    assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+    assert env["PERSODUB_TEST_MARK"] == "kept"
+    # Codex and ChatGPT keep PersoDub's own home, as before, and Claude's
+    # sign-in runs in the user's own environment, untouched.
+    assert "CODEX_HOME" in agent_api._turn_env(agent_api.AGENTS["codex"])
+    assert agent_api._env_of(agent_api.AGENTS["claude"]) is None
+
+
+def _chat_events(fake_run, monkeypatch, tmp_path):
+    _capture(monkeypatch, tmp_path)
+    monkeypatch.setattr(agent_api.agent_base, "run", fake_run)
+    r = client.post("/api/agent/chat", json={"message": "hi", "agent": "claude"})
+    assert r.status_code == 200
+    return [json.loads(line) for line in r.text.splitlines() if line.strip()]
+
+
+# The words held back for the address check went out after the tool chip that
+# followed them, so one sentence was split across two bubbles: "Let me read
+# the" · chip · "script.Line 3 is too long." (final review, 2026-10-12).
+def test_the_words_before_a_tool_reach_the_panel_before_its_chip(monkeypatch, tmp_path):
+    def fake_run(binary, args, translate, **kw):
+        yield {"kind": "text", "text": "Let me read"}
+        yield {"kind": "text", "text": " the script."}
+        yield {"kind": "progress", "tool": "get_script"}
+        yield {"kind": "text", "text": "Line 3"}
+        yield {"kind": "text", "text": " is too long."}
+        yield {"kind": "done", "text": "Line 3 is too long."}
+
+    events = _chat_events(fake_run, monkeypatch, tmp_path)
+    chip = next(i for i, e in enumerate(events) if e.get("kind") == "progress")
+    assert _texts(events[:chip]) == "Let me read the script."
+    assert _texts(events[chip:]) == "Line 3 is too long."
+
+
+# An error's sentence and the CLI's own last words go to the panel too, and
+# the CLI can name the signed-in account there (final review, 2026-10-12).
+def test_an_email_address_never_reaches_the_panel_in_an_error_either(monkeypatch, tmp_path):
+    def fake_run(binary, args, translate, **kw):
+        yield {"kind": "error", "message": "Stopped for some.one@example.com.",
+               "detail": "auth: some.one@example.com expired"}
+
+    events = _chat_events(fake_run, monkeypatch, tmp_path)
+    error = next(e for e in events if e.get("kind") == "error")
+    assert "@" not in json.dumps(events)
+    assert error["message"] == "Stopped for (email hidden)."
+
+
+def _texts(events):
+    return "".join(e.get("text", "") for e in events if e.get("kind") == "text")
+
+
+# Text with no spaces (Chinese, Japanese) was held back whole until a line
+# break or the end of the reply, so those users saw no live answer.
+def test_text_without_spaces_streams_as_it_comes(monkeypatch, tmp_path):
+    def fake_run(binary, args, translate, **kw):
+        yield {"kind": "text", "text": "你好"}
+        yield {"kind": "text", "text": "世界。"}
+        yield {"kind": "done", "text": "你好世界。"}
+
+    events = _chat_events(fake_run, monkeypatch, tmp_path)
+    assert [e["text"] for e in events if e.get("kind") == "text"] == ["你好", "世界。"]
+
+
+def test_an_email_address_never_reaches_the_panel_even_cut_in_pieces(monkeypatch, tmp_path):
+    # Claude Code puts the signed-in account's address into the assistant's
+    # context, and told not to repeat it, Sonnet still answered "Who am I
+    # signed in as?" with it three times in three (2026-10-11, Windows test
+    # F1). The panel can be on a shared screen: the address is taken out on
+    # the way, also when the stream cuts it between two pieces.
+    _capture(monkeypatch, tmp_path)
+
+    def fake_run(binary, args, translate, **kw):
+        for piece in ["You're signed in as some.on", "e@exam", "ple.com", ". Anything else?"]:
+            yield {"kind": "text", "text": piece}
+        yield {"kind": "done", "text": "You're signed in as some.one@example.com. Anything else?"}
+
+    monkeypatch.setattr(agent_api.agent_base, "run", fake_run)
+    r = client.post("/api/agent/chat", json={"message": "who am I", "agent": "claude"})
+    assert r.status_code == 200
+    events = [json.loads(line) for line in r.text.splitlines() if line.strip()]
+    shown = "".join(e.get("text", "") for e in events if e.get("kind") == "text")
+    assert "@" not in r.text and "some.on" not in shown
+    assert shown == "You're signed in as (email hidden). Anything else?"

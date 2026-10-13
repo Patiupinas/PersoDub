@@ -143,7 +143,7 @@ def test_raises_on_empty_audio_no_segments(monkeypatch, audio_file):
     monkeypatch.setattr(stt_local, "STT_PYTHON", sys.executable)
     monkeypatch.setattr(stt_local, "SCRIPT_PATH", sys.executable)
     monkeypatch.setattr(stt_local.subprocess, "run", _fake_run_writing(_ok_result(segments=[])))
-    with pytest.raises(RuntimeError, match="no segments"):
+    with pytest.raises(RuntimeError, match="This video has no speech to transcribe"):
         stt_local.transcribe_local(audio_file)
 
 
@@ -338,3 +338,96 @@ def test_transcribe_passes_computed_timeout_to_subprocess_run(monkeypatch, audio
     stt_local.transcribe_local(audio_file, video_duration=600.0)  # 10 min
 
     assert captured["timeout"] == 6000.0
+
+
+# --- transcribe_batch: Fast mode hears its lines back (2026-10-01) ----------
+
+def test_transcribe_batch_is_none_without_its_interpreter(monkeypatch, tmp_path):
+    monkeypatch.setattr(stt_local, "NONVERBAL_WHISPER_PYTHON", str(tmp_path / "no-such-python"))
+    assert stt_local.transcribe_batch([str(tmp_path / "a.wav")], "en") is None
+
+
+def test_transcribe_batch_reads_what_the_runner_heard(monkeypatch, tmp_path):
+    import sys
+    monkeypatch.setattr(stt_local, "NONVERBAL_WHISPER_PYTHON", sys.executable)
+    seen = {}
+
+    def fake_run(cmd, **_kw):
+        seen["model"], seen["language"], list_path, out_path = cmd[3:7]
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(dict.fromkeys(json.load(open(list_path)), "heard"), f)
+
+        class _R:
+            returncode = 0
+        return _R()
+
+    monkeypatch.setattr(stt_local.subprocess, "run", fake_run)
+    assert stt_local.transcribe_batch(["a.wav", "b.wav"], "es") == {"a.wav": "heard", "b.wav": "heard"}
+    assert seen["language"] == "es"
+
+
+# --- a trimmed clip and Whisper's made-up lines (Windows B5/D14, 2026-10-06) --
+# A 27 s TikTok cut to 10 s came back as one line, "Thank you for watching!",
+# at 0-29.98 s: Whisper's 30 s window, and words it made up over music.
+
+def _vocals(path, seconds, loud_from=None, loud_to=None):
+    """A 16 kHz mono vocals track: silence, with a loud tone over [loud_from, loud_to)."""
+    import math
+    import struct
+    import wave
+    rate = 16000
+    frames = bytearray()
+    for i in range(int(seconds * rate)):
+        t = i / rate
+        on = loud_from is not None and loud_from <= t < loud_to
+        frames += struct.pack("<h", int(8000 * math.sin(2 * math.pi * 220 * t)) if on else 0)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(bytes(frames))
+    return str(path)
+
+
+def _heard(monkeypatch, segments):
+    monkeypatch.setattr(stt_local, "STT_PYTHON", sys.executable)
+    monkeypatch.setattr(stt_local, "SCRIPT_PATH", sys.executable)
+    monkeypatch.setattr(stt_local.subprocess, "run", _fake_run_writing(_ok_result(segments=segments)))
+
+
+def test_lines_end_where_the_video_ends(monkeypatch, audio_file):
+    _heard(monkeypatch, [{"start": 0.0, "end": 29.98, "text": "We made it."},
+                         {"start": 10.0, "end": 12.0, "text": "Past the end."}])
+    assert stt_local.transcribe_local(audio_file, video_duration=10.0) == [
+        {"start": 0.0, "end": 10.0, "text": "We made it."}]
+
+
+def test_made_up_lines_over_quiet_vocals_are_dropped(monkeypatch, audio_file, tmp_path):
+    vocals = _vocals(tmp_path / "vocals.wav", 6.0, loud_from=0.0, loud_to=1.0)
+    _heard(monkeypatch, [{"start": 0.0, "end": 1.0, "text": "Real words."},
+                         {"start": 1.0, "end": 3.0, "text": "Thank you for watching!"},
+                         {"start": 3.0, "end": 4.5, "text": "시청해 주셔서 감사합니다."},
+                         {"start": 4.5, "end": 6.0, "text": "Subtitles by the Amara.org community"}])
+    assert stt_local.transcribe_local(audio_file, vocals_path=vocals) == [
+        {"start": 0.0, "end": 1.0, "text": "Real words."}]
+
+
+def test_a_speaker_who_says_it_is_kept(monkeypatch, audio_file, tmp_path):
+    vocals = _vocals(tmp_path / "vocals.wav", 4.0, loud_from=1.0, loud_to=3.0)
+    lines = [{"start": 1.0, "end": 3.0, "text": "Thanks for watching."}]
+    _heard(monkeypatch, lines)
+    assert stt_local.transcribe_local(audio_file, vocals_path=vocals) == lines
+
+
+def test_quiet_lines_with_other_words_are_kept(monkeypatch, audio_file, tmp_path):
+    vocals = _vocals(tmp_path / "vocals.wav", 3.0)
+    lines = [{"start": 0.0, "end": 3.0, "text": "Thank you for watching my brother play."}]
+    _heard(monkeypatch, lines)
+    assert stt_local.transcribe_local(audio_file, vocals_path=vocals) == lines
+
+
+def test_a_clip_of_only_made_up_lines_has_no_speech(monkeypatch, audio_file, tmp_path):
+    vocals = _vocals(tmp_path / "vocals.wav", 12.0)
+    _heard(monkeypatch, [{"start": 0.0, "end": 29.98, "text": "Thank you for watching!"}])
+    with pytest.raises(RuntimeError, match="This video has no speech to transcribe"):
+        stt_local.transcribe_local(audio_file, video_duration=10.0, vocals_path=vocals)

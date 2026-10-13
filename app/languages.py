@@ -1,10 +1,12 @@
 """The languages a dub can be made in, per path.
 
 Local dubbing knows the ten Qwen3-TTS speaks (config.LANGUAGE_NAMES). Perso's
-cloud dubbing knows what Perso says it knows: 77 entries on 2026-09-08,
-three of them regional variants told apart by a tag (en-GB, es-ES, pt-PT).
+cloud dubbing knows what Perso says it knows: 111 entries on 2026-10-02,
+some of them regional variants told apart by a tag (en-GB, es-ES, pt-PT).
 The screen sends one id per language -- the tag when there is one, else the
-code -- and this module turns it back into what each path needs.
+code -- and this module turns it back into what each path needs. A Perso
+entry also names the voice models that language can be dubbed with
+("models"), which is what the Dubbing model choice is drawn from.
 
 The Perso list is asked of the API once a day and kept beside the workspace;
 when the API cannot be reached (no key, offline) the last answer is used,
@@ -18,6 +20,8 @@ import time
 from typing import Optional
 
 from app import config
+from app.i18n import t
+from app.perso_client import DEFAULT_TTS_MODEL, TTS_MODELS
 
 BUNDLED = os.path.join(os.path.dirname(__file__), "perso_languages.json")
 CACHE_NAME = "perso_languages.json"
@@ -31,8 +35,16 @@ def local_languages() -> list:
     return [{"id": c, "code": c, "name": n, "tag": None} for c, n in config.LANGUAGE_NAMES.items()]
 
 
+def _offered(models) -> list:
+    """The offered voice models among these, in the screen's order."""
+    return [m for m in TTS_MODELS if m in (models or ())]
+
+
 def _with_ids(entries) -> list:
-    return [{"id": (e.get("tag") or e["code"]), "code": e["code"], "name": e["name"], "tag": e.get("tag")}
+    # A list kept or shipped before models were (the AUDIO_ENGINE_V3 one)
+    # names none: those languages are ORIOLE's.
+    return [{"id": (e.get("tag") or e["code"]), "code": e["code"], "name": e["name"], "tag": e.get("tag"),
+             "models": _offered(e.get("models")) or [DEFAULT_TTS_MODEL]}
             for e in entries if e.get("code") and e.get("name")]
 
 
@@ -52,8 +64,9 @@ def _read(path: str) -> Optional[list]:
 
 
 def _fetch() -> Optional[list]:
-    """Perso's own list, only the AUDIO_ENGINE_V3 entries (the engine the app
-    dubs with), without the "auto" pseudo-language. None when it cannot be had."""
+    """Perso's own list, only the entries an offered voice model can dub into
+    (perso_client.TTS_MODELS), without the "auto" pseudo-language. None when
+    it cannot be had."""
     try:
         from app import perso_client
         from app.settings_env import current_value
@@ -66,15 +79,16 @@ def _fetch() -> Optional[list]:
         r.raise_for_status()
         raw = r.json().get("languages") or []
         langs = [{"code": x["code"], "name": x["name"],
-                  "tag": None if x.get("languageTag") in (None, "", "default") else x["languageTag"]}
-                 for x in raw if x.get("code") != "auto" and "AUDIO_ENGINE_V3" in (x.get("supportedTtsModels") or [])]
+                  "tag": None if x.get("languageTag") in (None, "", "default") else x["languageTag"],
+                  "models": x.get("supportedTtsModels")}
+                 for x in raw if x.get("code") != "auto" and _offered(x.get("supportedTtsModels"))]
         return _with_ids(langs) or None
     except Exception:
         return None
 
 
 def perso_languages(refresh: bool = True) -> list:
-    """[{id, code, name, tag}] for Perso dubbing. Fresh from the API when the
+    """[{id, code, name, tag, models}] for Perso dubbing. Fresh from the API when the
     kept copy is older than a day (or missing) and the API answers; otherwise
     the kept copy; otherwise the bundled one."""
     path = _cache_path()
@@ -113,3 +127,18 @@ def lookup(dub_mode: str, lang_id: str) -> Optional[dict]:
         if e["code"] == base:
             return {**e, "id": lang_id}
     return None
+
+
+def model_for(entry: dict, wanted: Optional[str] = None) -> str:
+    """The Perso voice model a dubbing into this language is made with: the
+    one asked for when the language has it (ValueError naming both when it
+    does not), else ORIOLE, else the first the language has."""
+    models = entry.get("models") or [DEFAULT_TTS_MODEL]
+    wanted = (wanted or "").strip().upper()
+    if not wanted:
+        return DEFAULT_TTS_MODEL if DEFAULT_TTS_MODEL in models else models[0]
+    if wanted not in models:
+        raise ValueError(t("Perso's {model} model cannot dub into {language}. It can be dubbed with: {models}.",
+                           model=wanted.capitalize(), language=entry["name"],
+                           models=", ".join(m.capitalize() for m in models)))
+    return wanted

@@ -50,7 +50,7 @@ def test_campplus_labels_written_into_src_cues(monkeypatch, tmp_path):
     # Qwen path builds its per-speaker voice references from), to prove the CAM++
     # labels are the ones cue_speaker() sees (not left unlabeled).
     def fake_run_qwen_dub(engine, segments, ref_cues, work_dir, vocals_path, background_path,
-                          language=None, n_takes=1, log=None, on_notice=None, video_duration=None):
+                          language=None, n_takes=1, log=None, on_notice=None, video_duration=None, sample_cues=None):
         captured["ref_labels"] = [cue_speaker(c) for c in ref_cues]
         p = os.path.join(work_dir, "qwen_dub_48k.wav")
         with open(p, "wb") as f:
@@ -110,7 +110,7 @@ def test_source_srt_keeps_diarization_labels(monkeypatch, tmp_path):
                         [dict(c, speaker=labels[i]) for i, c in enumerate(cues)])
 
     def fake_run_qwen_dub(engine, segments, ref_cues, work_dir, vocals_path, background_path,
-                          language=None, n_takes=1, log=None, on_notice=None, video_duration=None):
+                          language=None, n_takes=1, log=None, on_notice=None, video_duration=None, sample_cues=None):
         captured["ref_labels"] = [cue_speaker(c) for c in ref_cues]
         p = os.path.join(work_dir, "qwen_dub_48k.wav")
         with open(p, "wb") as f:

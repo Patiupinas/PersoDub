@@ -7,7 +7,7 @@ import { gzipSync } from "node:zlib";
 //
 // A tar rather than three uploads: the three files come back out named, which
 // is the only thing that made the format worth thirty lines of header code.
-// Nothing here reaches the network and nothing masks: main.js masks the text
+// Nothing here reaches the network and nothing masks: reporting.js masks the text
 // with report.js's rules before it ever gets here.
 
 export const MAX_ARCHIVE_BYTES = 5 * 1024 * 1024;

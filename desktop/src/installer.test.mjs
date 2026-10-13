@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runInstall, downloadInterrupted, DOWNLOAD_INTERRUPTED } from "./installer.js";
+import { runInstall, downloadInterrupted, downloadInterruptedReason } from "./installer.js";
 
 function step(id, { done = false, fail = false, completes = true } = {}, log) {
   let ran = false;
@@ -102,7 +102,7 @@ test("a download that broke mid-way is reported as interrupted, other failures k
   assert.equal(downloadInterrupted("Error: getaddrinfo ENOTFOUND huggingface.co"), true);
   assert.equal(downloadInterrupted("ERROR: No matching distribution found for torch==2.8.0"), false);
   assert.equal(downloadInterrupted(""), false);
-  assert.match(DOWNLOAD_INTERRUPTED, /Download and Start/);
+  assert.match(downloadInterruptedReason(), /Click Resume or Download to pick up/);
 });
 
 // Issues #92 (503 "Backend is unhealthy" from GitHub's file host) and #89
@@ -182,7 +182,7 @@ test("a cancel during the wait ends the install without another try", async () =
   assert.deepEqual(log, [1]);
 });
 
-import { missingVcRuntime, vcRuntimeFailure, VC_RUNTIME_MISSING, VC_RUNTIME_URL } from "./installer.js";
+import { missingVcRuntime, vcRuntimeFailure, vcRuntimeMissingReason, VC_RUNTIME_URL } from "./installer.js";
 
 test("the Visual C++ runtime check names the missing files on Windows only, and never blocks when it cannot look", () => {
   const env = { SystemRoot: "C:\\Windows" };
@@ -212,7 +212,7 @@ test("a pack that died for want of the Visual C++ runtime says so, other failure
   assert.equal(vcRuntimeFailure("requests.exceptions.ConnectionError: Max retries exceeded with url: /x"), false);
   assert.equal(vcRuntimeFailure("sha256 mismatch for https://example.com/a.zip: got 00ff"), false);
   assert.equal(vcRuntimeFailure(""), false);
-  assert.equal(VC_RUNTIME_MISSING, "Windows needs Microsoft Visual C++ to run Python + PyTorch. Install it, then try again.");
+  assert.equal(vcRuntimeMissingReason(), "Windows needs Microsoft Visual C++ to run Python + PyTorch. Install it, then try again.");
   assert.equal(VC_RUNTIME_URL, "https://aka.ms/vc14/vc_redist.x64.exe");
 });
 
@@ -245,4 +245,35 @@ test("no network at all is a network error too, in each downloader's own words",
   // what is NOT the network stays a plain failure
   assert.equal(worthRetrying("sha256 mismatch for https://example.com/a.zip: got 00ff"), false);
   assert.equal(worthRetrying("download failed 404: https://example.com/a.zip"), false);
+});
+
+import { lastReason } from "./installer.js";
+
+test("a failed pack shows the line that names the error, not the tool's whole transcript", () => {
+  // pip's own sentence, under its progress lines and above a warning that
+  // mentions an error class but is not the failure.
+  const pip = [
+    "Collecting torch==2.5.1",
+    "  Downloading torch-2.5.1-cp311-none-macosx_11_0_arm64.whl (63.9 MB)",
+    "ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device",
+    "",
+    "WARNING: Retrying after connection broken by 'ProtocolError('Connection aborted.')'",
+  ].join("\n");
+  assert.equal(lastReason(pip), "ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device");
+  // A traceback's scaffolding names files; the exception's line names the cause.
+  const traceback = [
+    "Traceback (most recent call last):",
+    '  File "C:\\PersoDub\\engines_venv\\Lib\\site-packages\\torch\\__init__.py", line 148, in <module>',
+    "    raise err",
+    "    ^^^^^^^^^",
+    "OSError: [WinError 126] The specified module could not be found.",
+  ].join("\n");
+  assert.equal(lastReason(traceback), "OSError: [WinError 126] The specified module could not be found.");
+  // A path that merely contains "error" is not the error: the last line stands.
+  assert.equal(lastReason("unpacking into /Users/x/error_logs/kit\nexit 1"), "exit 1");
+  // Nothing a person can act on: a plain sentence instead.
+  assert.equal(lastReason(""), "The install could not finish.");
+  assert.equal(lastReason(undefined), "The install could not finish.");
+  assert.equal(lastReason('Traceback (most recent call last):\n  File "x.py", line 1'), "The install could not finish.");
+  assert.equal(lastReason("x".repeat(500)).length, 200);
 });

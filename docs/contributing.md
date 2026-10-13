@@ -10,7 +10,8 @@ many machines becomes one issue with a count on it, not many. Exactly what is se
 how to turn it off, is in [Data and privacy](privacy.md). With it turned off, the bug
 report form on the Issues page asks for the same facts and you choose what to paste.
 
-Setup, architecture, and how to run the test suite are in [Development](development.md).
+Setup and how to run the test suite are in [Development](development.md); how the code
+is put together is in [Architecture](architecture.md).
 The backend targets Python 3.11 and is not yet compatible with 3.13 or later.
 
 ## Security

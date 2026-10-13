@@ -1,0 +1,98 @@
+// Run with: node --test desktop/src/windowFactory.test.mjs
+// BrowserWindow, the screen and the system browser are stand-ins.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { createWindow, openExternally } from "./windowFactory.js";
+
+function setup({ workArea = { width: 1440, height: 900 }, ctx = {} } = {}) {
+  const opened = [];
+  const on = {};
+  class BrowserWindow {
+    constructor(options) {
+      this.options = options;
+      this.url = "";
+      this.zooms = [];
+      this.sent = [];
+      this.webContents = {
+        on: (event, fn) => { on[event] = fn; },
+        send: (channel, value) => this.sent.push([channel, value]),
+        setWindowOpenHandler: (fn) => { on.windowOpen = fn; },
+        getURL: () => this.url,
+        setZoomLevel: (z) => this.zooms.push(z),
+      };
+    }
+    isDestroyed() { return false; }
+  }
+  const win = createWindow({
+    app: { isPackaged: true }, BrowserWindow, ctx, appDir: "/app", repo: "owner/PersoDub", locale: "ko",
+    screen: { getPrimaryDisplay: () => ({ workAreaSize: workArea }) },
+    shell: { openExternal: (url) => opened.push(url) },
+  });
+  // true when the window was kept from going to `url`
+  const blocked = (url) => {
+    let prevented = false;
+    on["will-navigate"]({ preventDefault: () => { prevented = true; } }, url);
+    return prevented;
+  };
+  return { win, on, opened, blocked };
+}
+
+test("the window opens at 1280 by 800, or at the screen's size when that is smaller", () => {
+  const big = setup().win.options;
+  assert.deepEqual([big.width, big.height, big.minWidth, big.minHeight], [1280, 800, 960, 640]);
+  assert.equal(big.autoHideMenuBar, true, "no English File/Edit/View bar on Windows");
+  const small = setup({ workArea: { width: 1100, height: 600 } }).win.options;
+  assert.deepEqual([small.width, small.height, small.minWidth, small.minHeight], [1100, 600, 960, 600]);
+  assert.deepEqual(big.webPreferences, { preload: join("/app", "preload.cjs"), contextIsolation: true, nodeIntegration: false,
+    // The page's GitHub links follow the build's edition (preload.cjs repo).
+    // ...and Auto's language follows the computer's (preload.cjs locale).
+    additionalArguments: ["--persodub-repo=owner/PersoDub", "--persodub-locale=ko"] });
+});
+
+test("each page load starts at 100% once per place, and hears the update's state again", () => {
+  const ctx = { updateState: null };
+  const { win, on } = setup({ ctx });
+  win.url = "file:///app/screens/loading.html";
+  on["did-finish-load"]();
+  assert.deepEqual(win.zooms, [0]);
+  assert.deepEqual(win.sent, [], "no update known yet");
+  ctx.updateState = { version: "0.7.2", phase: "downloading", pct: 10 };
+  win.url = "http://127.0.0.1:5001/";
+  on["did-finish-load"]();
+  on["did-finish-load"]();   // the same page again: the zoom the person chose stays
+  assert.deepEqual(win.zooms, [0, 0]);
+  assert.deepEqual(win.sent, [["shell:update-state", ctx.updateState], ["shell:update-state", ctx.updateState]]);
+});
+
+test("a page never opens a window of its own; an http(s) link goes to the user's browser instead", () => {
+  const { on, opened } = setup();
+  for (const url of ["https://perso.ai/pricing", "http://example.com/", "file:///etc/hosts", "persodub://x"]) {
+    assert.deepEqual(on.windowOpen({ url }), { action: "deny" });
+  }
+  assert.deepEqual(opened, ["https://perso.ai/pricing", "http://example.com/"]);
+});
+
+test("the window moves only between the app's own pages; anything else goes to the browser", () => {
+  const ctx = { engines: null };
+  const { win, opened, blocked } = setup({ ctx });
+  // Before the engines are up, only the bundled screens are the app's own.
+  assert.equal(blocked("http://127.0.0.1:5001/"), true);
+  ctx.engines = { url: "http://127.0.0.1:5001" };
+  win.url = "http://127.0.0.1:5001/";
+  assert.equal(blocked("http://127.0.0.1:5001/"), false, "the same page");
+  assert.equal(blocked("http://127.0.0.1:5001/?project=1"), false, "the app's own origin");
+  assert.equal(blocked("file:///app/screens/error.html"), false, "a bundled screen");
+  assert.equal(blocked("http://127.0.0.1:5001@evil.com/"), true, "another host behind the app's address");
+  assert.equal(blocked("https://example.com/"), true);
+  assert.equal(blocked("not a url"), true);
+  assert.deepEqual(opened, ["http://127.0.0.1:5001/", "http://127.0.0.1:5001@evil.com/", "https://example.com/"]);
+});
+
+test("only http(s) is ever handed to the system", () => {
+  const opened = [];
+  for (const url of ["https://a.example/", "HTTP://b.example/", "file:///x", "ftp://c.example/", "javascript:alert(1)"]) {
+    openExternally({ openExternal: (u) => opened.push(u) }, url);
+  }
+  assert.deepEqual(opened, ["https://a.example/", "HTTP://b.example/"]);
+});

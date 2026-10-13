@@ -8,7 +8,7 @@ import { ERROR_CODES, INSTALL_STEPS } from "./analytics.js";
 // instead of as "it didn't work".
 //
 // Same shape of file as analytics.js, and for the same reason: every decision
-// about what may leave is a pure function here, main.js is only the wiring.
+// about what may leave is a pure function here, reporting.js is only the wiring.
 // The rule it inherits is the important one -- buildReport below is an
 // ALLOW-LIST. A field nobody named cannot travel, however it arrives.
 //

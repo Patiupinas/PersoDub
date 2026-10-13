@@ -132,7 +132,7 @@ def load_model(model_dir, yaml, BagOfModels, demucs_load_model):
     files (the same two files demucs.hf.get_hf_model() would otherwise fetch
     from the HuggingFace hub) -- no network, no huggingface_hub cache lookup."""
     ht_dir = os.path.join(model_dir, "HTDemucs")
-    with open(os.path.join(ht_dir, "htdemucs.yaml")) as f:
+    with open(os.path.join(ht_dir, "htdemucs.yaml"), encoding="utf-8") as f:
         bag = yaml.safe_load(f)
     models = [
         load_safetensors_model(os.path.join(ht_dir, "%s.safetensors" % sig), demucs_load_model)

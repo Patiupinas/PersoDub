@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { tmpdir } from "node:os";
-import { startEngines, killStalePids, applyBinDir, sidecarArgv, packAlive } from "./orchestrator.js";
+import { homedir, tmpdir } from "node:os";
+import { startEngines, startPackProcesses, killStalePids, applyBinDir, sidecarArgv, packAlive } from "./orchestrator.js";
 import { readRuntime } from "./runtimeFile.js";
 import { DEFAULTS } from "./config.js";
 import { PATH_SEP, venvBin } from "./platform.js";
@@ -70,15 +70,110 @@ test("sidecar with no voice model yet (model_loaded:false) still boots", async (
   assert.ok(await waitGone(pids), "engine processes should die after stopAll");
 });
 
-test("sidecar never ready -> rejects and leaves no processes", async () => {
+// A voice engine that never answers used to take the whole app down with it:
+// the window opened on "engine start failed" although Perso dubs, erasing,
+// exporting and finished projects need no voice engine at all.
+test("sidecar never ready -> the app still starts, the engine is stopped and marked failed", async () => {
   const logDir = mkdtempSync(join(tmpdir(), "odlog-"));
   const cfg = fakeCfg({
     sidecarCmd: [process.execPath, join(FAKE, "fake_sidecar.mjs"), "{port}", "--never-ready"],
     sidecarHealthTimeoutMs: 1500,
   });
-  await assert.rejects(startEngines(cfg, { logDir }), (err) => err.logDir === logDir);
-  await killStalePids(logDir);
-  assert.ok(true);
+  const engines = await startEngines(cfg, { logDir });
+  try {
+    assert.ok((await (await fetch(engines.url)).text()).includes("PersoDub"), "the backend is up");
+    assert.deepEqual(engines.failed.map((f) => f.pack), ["engine"]);
+    assert.match(engines.failed[0].message, /timed out/);
+    const rt = readRuntime(cfg.kitDir);
+    assert.equal(rt.tts_url, undefined, "a sidecar that never answered is not announced");
+    assert.equal(rt.tts_state, "failed");
+    assert.equal(engines.pids.length, 1, "only the backend is left running");
+  } finally {
+    engines.stopAll();
+  }
+});
+
+test("a sidecar that exits while starting is noticed at once, with its own last lines, masked", async () => {
+  const logDir = mkdtempSync(join(tmpdir(), "odlog-"));
+  // Lines an earlier launch left in the same log must not be told as this one's.
+  writeFileSync(join(logDir, "sidecar.log"), "EARLIER LAUNCH LINE\n");
+  const cfg = fakeCfg({
+    sidecarCmd: [process.execPath, join(FAKE, "fake_sidecar.mjs"), "{port}", "--die"],
+    sidecarHealthTimeoutMs: 60000,   // the old wait: a dead engine must not sit it out
+  });
+  const t0 = Date.now();
+  const engines = await startEngines(cfg, { logDir });
+  try {
+    assert.ok(Date.now() - t0 < 10000, `took ${Date.now() - t0} ms`);
+    const { message } = engines.failed[0];
+    assert.match(message, /engine stopped while starting \(exit code 3\)/);
+    assert.match(message, /RuntimeError: fake engine could not load/);
+    assert.ok(!message.includes("EARLIER LAUNCH LINE"), message);
+    assert.ok(!message.includes(homedir()), "the home folder is masked");
+    assert.equal(readRuntime(cfg.kitDir).tts_state, "failed");
+  } finally {
+    engines.stopAll();
+  }
+});
+
+test("a sidecar still loading its model is waited for past the silence limit", async () => {
+  // "loading" answers are progress: only silence runs the limit out.
+  const logDir = mkdtempSync(join(tmpdir(), "odlog-"));
+  const cfg = fakeCfg({
+    sidecarCmd: [process.execPath, join(FAKE, "fake_sidecar.mjs"), "{port}", "--loading=2000"],
+    sidecarHealthTimeoutMs: 1000,
+  });
+  const engines = await startEngines(cfg, { logDir });
+  try {
+    assert.deepEqual(engines.failed, []);
+    const rt = readRuntime(cfg.kitDir);
+    assert.match(rt.tts_url, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.equal(rt.tts_state, undefined, "the state goes once the engine answers");
+  } finally {
+    engines.stopAll();
+  }
+});
+
+test("a load that never ends is still given up on, at the load limit", async () => {
+  const logDir = mkdtempSync(join(tmpdir(), "odlog-"));
+  const cfg = fakeCfg({
+    sidecarCmd: [process.execPath, join(FAKE, "fake_sidecar.mjs"), "{port}", "--loading=60000"],
+    sidecarHealthTimeoutMs: 1000,
+    engineLoadTimeoutMs: 2000,
+  });
+  const engines = await startEngines(cfg, { logDir });
+  try {
+    assert.deepEqual(engines.failed.map((f) => f.pack), ["engine"]);
+    assert.equal(readRuntime(cfg.kitDir).tts_state, "failed");
+  } finally {
+    engines.stopAll();
+  }
+});
+
+// The retry is the install-pack IPC, which lands in startPackProcesses once
+// more (through startPack): a second start after a failed one must come up
+// and wipe the failure.
+test("a pack started again after a failed start is announced and loses its failed state", async () => {
+  const logDir = mkdtempSync(join(tmpdir(), "odlog-"));
+  const children = [];
+  const opts = { logDir, env: process.env, children, record: () => {} };
+  const dying = fakeCfg({ sidecarCmd: [process.execPath, join(FAKE, "fake_sidecar.mjs"), "{port}", "--die"] });
+  await assert.rejects(startPackProcesses(dying, "engine", opts), /stopped while starting/);
+  assert.equal(readRuntime(dying.kitDir).tts_state, "failed");
+  assert.equal(children.length, 0, "the failed process is forgotten");
+  const cfg = { ...dying, sidecarCmd: [process.execPath, join(FAKE, "fake_sidecar.mjs"), "{port}"] };
+  const [child] = await startPackProcesses(cfg, "engine", opts);
+  try {
+    const rt = readRuntime(cfg.kitDir);
+    assert.match(rt.tts_url, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.equal(rt.tts_state, undefined);
+  } finally {
+    child.kill();
+  }
+});
+
+test("a program that cannot be run at all counts as dead, not alive", () => {
+  assert.equal(packAlive([{ exitCode: null, signalCode: null, killed: false, launchError: new Error("ENOENT") }]), false);
 });
 
 test("killStalePids kills a recorded stale process", async () => {
@@ -107,23 +202,31 @@ test("hands the backend its desktop identity, overriding a stale kit.env", async
   // (app/perso_client.py). Without them it reports as a plain server run, so a desktop
   // release would silently stop counting -- with nothing failing. Hence an end-to-end
   // assertion on what the spawned process actually received, not on how it was built.
+  // The edition rides along: it decides where a dub runs by default (app/setup.py), so an
+  // open-source build told "production" would send a new user's dubs to Perso.
   const logDir = mkdtempSync(join(tmpdir(), "odlog-"));
   // Inherited from the environment here, the way a stale value in the kit's kit.env would
   // reach the same merge -- what this build is must win over what it once was told.
-  const prior = process.env.PERSODUB_CLIENT;
+  const prior = { client: process.env.PERSODUB_CLIENT, edition: process.env.PERSODUB_EDITION };
   process.env.PERSODUB_CLIENT = "server";
+  process.env.PERSODUB_EDITION = "production";
   let stop = () => {};
   try {
-    const { url, stopAll } = await startEngines(fakeCfg(), { logDir, appVersion: "1.2.3" });
+    const { url, stopAll } = await startEngines(fakeCfg(), { logDir, appVersion: "1.2.3", locale: "ko", edition: "opensource" });
     stop = stopAll;
     assert.deepEqual(await (await fetch(`${url}/env`)).json(), {
       PERSODUB_CLIENT: "desktop",
       PERSODUB_APP_VERSION: "1.2.3",
+      // What "auto" means to the backend's language (app/i18n.py).
+      PERSODUB_LOCALE: "ko",
+      PERSODUB_EDITION: "opensource",
     });
   } finally {
     stop();
-    if (prior === undefined) delete process.env.PERSODUB_CLIENT;
-    else process.env.PERSODUB_CLIENT = prior;
+    if (prior.client === undefined) delete process.env.PERSODUB_CLIENT;
+    else process.env.PERSODUB_CLIENT = prior.client;
+    if (prior.edition === undefined) delete process.env.PERSODUB_EDITION;
+    else process.env.PERSODUB_EDITION = prior.edition;
   }
 });
 
@@ -172,4 +275,29 @@ test("startPack's liveness rule: a process that exited or was killed by a signal
   assert.equal(packAlive([{ exitCode: null, signalCode: null, killed: true }]), false, "stopped by us");
   assert.equal(packAlive([]), false);
   assert.equal(packAlive(undefined), false, "never started");
+});
+
+
+test("a sidecar that exits asking to be started again comes back, announced afresh, and stopAll still ends it", async () => {
+  const cfg = fakeCfg();
+  const logDir = mkdtempSync(join(tmpdir(), "odlog-"));
+  const engines = await startEngines(cfg, { logDir });
+  const before = readRuntime(cfg.kitDir).tts_url;
+  await fetch(before + "/restart", { method: "POST" });
+  // The old address is withdrawn as the process goes, and a new one announced
+  // once the fresh sidecar answers: wait for an address whose /health is up.
+  let after = "";
+  for (let i = 0; i < 100 && !after; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    const url = readRuntime(cfg.kitDir).tts_url;
+    if (!url || url === before && i < 3) continue;
+    try {
+      const body = await (await fetch(url + "/health")).json();
+      if (body.status === "ok") after = url;
+    } catch { /* not up yet */ }
+  }
+  assert.ok(after, "a fresh sidecar is announced after the restart exit");
+  const pids = JSON.parse(readFileSync(join(logDir, "pids.json"), "utf8"));
+  engines.stopAll();
+  assert.ok(await waitGone(pids), "the restarted sidecar is stopped with the rest");
 });

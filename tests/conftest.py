@@ -8,10 +8,11 @@ behind). By 2026-08-02 that had accumulated 559 litter directories against 4
 genuine jobs.
 """
 import logging
+import time
 
 import pytest
 
-from app import codex_fetch, jobs, logging_setup, room, state
+from app import codex_fetch, i18n, jobs, logging_setup, room, state
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +46,16 @@ def isolate_job_logs(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def english_engine(monkeypatch):
+    """Every test hears the engine in English, whatever the machine running it
+    says (PERSODUB_LOCALE, a kit.env's PERSODUB_LANG): the tests compare its
+    sentences with the English in the code. app/i18n.py keeps the language it
+    decided on, so a test that switches it must not leave it switched.
+    tests/test_i18n.py un-pins it where the deciding is what is tested."""
+    monkeypatch.setattr(i18n, "_language", "en")
+
+
+@pytest.fixture(autouse=True)
 def no_codex_prefetch(monkeypatch):
     """A test that enters the lifespan must not fetch 130 MB from npm."""
     monkeypatch.setattr(codex_fetch, "prefetch", lambda: None)
@@ -75,6 +86,16 @@ def chatgpt_signed_in(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def dub_on_this_computer(monkeypatch):
+    """Dubbing goes to Perso by default in the production edition (app/setup.py),
+    which a dub start without a key refuses. The tests that start one watch the
+    local path unless they choose a mode themselves, whatever edition the
+    machine running them names; tests/test_setup_api.py tests the default
+    itself and clears this."""
+    monkeypatch.setenv("DUB_MODE", "local")
+
+
+@pytest.fixture(autouse=True)
 def plenty_of_memory(monkeypatch):
     """Every test runs on a 24 GB computer unless it says otherwise.
 
@@ -83,6 +104,20 @@ def plenty_of_memory(monkeypatch):
     about something else is refused or warned. Tests about memory set theirs.
     """
     monkeypatch.setattr(room, "total_ram_bytes", lambda: 24 * room.GB)
+
+
+@pytest.fixture(autouse=True)
+def no_line_check(monkeypatch):
+    """Fast mode hears every Qwen line back with Whisper (app/qwen_pipeline
+    _check_fast_lines). No test may start Whisper on the machine it runs on:
+    the check is skipped unless a test puts its own transcriber in."""
+    from app import qwen_pipeline
+    monkeypatch.setattr(qwen_pipeline, "transcribe_batch", lambda paths, language=None, timeout=None: None)
+    # ...nor CAM++ for the voice check beside it: no reference voice is
+    # compared unless a test puts its own embedder in.
+    def no_embedder(paths):
+        raise RuntimeError("no CAM++ in tests")
+    monkeypatch.setattr(qwen_pipeline, "_embed_files", no_embedder)
 
 
 @pytest.fixture
@@ -99,3 +134,35 @@ def wav_factory():
         return str(path)
 
     return make
+
+
+@pytest.fixture
+def after_a_restart(monkeypatch):
+    """after_a_restart(start) -> the id start() returned, once the dub it
+    started has waited out an app restart in the line.
+
+    The test gets a job store of its own first, so no other test's job can
+    take the one local seat, and the job left waiting goes with that store
+    instead of being started by a later test. start() runs while another
+    dubbing holds the seat, so its dub is queued and its job.json says so.
+    Then the app closes and opens again: a new store read back from the
+    job.json files in the workspace, and the boot re-arm."""
+    from app.api import dub as dub_api
+    monkeypatch.setattr(state, "job_store", jobs.JobStore())
+
+    def run(start):
+        # A job the test ran first hands the seat on a moment after "done".
+        for _ in range(250):
+            if state.job_store._active is None:
+                break
+            time.sleep(0.02)
+        state.job_store._active = "ffffffff"   # another dubbing, on air
+        jid = start()
+        assert state.job_store.get(jid)["status"] == "queued"
+        reopened = jobs.JobStore()
+        reopened.restore(state.WORKSPACE)
+        monkeypatch.setattr(state, "job_store", reopened)
+        dub_api.rearm_queued_jobs()
+        return jid
+
+    return run

@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app import codex_fetch, config, state
@@ -30,12 +30,17 @@ from app.api import clips as clips_api
 from app.api import downloads as downloads_api
 from app.api import dub as dub_api
 from app.api import erase as erase_api
+from app.api import media as media_api
 from app.api import misc as misc_api
 from app.api import models as models_api
 from app.api import report as report_api
 from app.api import results as results_api
 from app.api import script as script_api
+from app.api import separate as separate_api
 from app.api import settings as settings_api
+from app.api import thumbs as thumbs_api
+from app.api import view as view_api
+from app.i18n import t
 from app.logging_setup import configure_logging
 from app.perso_client import APP_VERSION
 
@@ -109,7 +114,7 @@ async def unhandled_exception(request, exc):
     log.exception("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
     return JSONResponse(
         status_code=500,
-        content={"detail": "An internal error occurred. Details are in the app log."},
+        content={"detail": t("An internal error occurred. Details are in the app log.")},
     )
 
 
@@ -134,7 +139,7 @@ async def reject_cross_origin_writes(request, call_next):
         # The port too: another program on this computer serves pages from
         # 127.0.0.1 on a port of its own, and those are not ours either.
         if origin and not _same_origin(urlparse(origin), request.url):
-            return Response("Cross-origin requests are not allowed", status_code=403)
+            return Response(t("Cross-origin requests are not allowed"), status_code=403)
     return await call_next(request)
 
 
@@ -146,12 +151,16 @@ app.include_router(clips_api.router)
 app.include_router(downloads_api.router)
 app.include_router(dub_api.router)
 app.include_router(erase_api.router)
+app.include_router(separate_api.router)
+app.include_router(media_api.router)
 app.include_router(misc_api.router)
 app.include_router(models_api.router)
 app.include_router(report_api.router)
 app.include_router(results_api.router)
 app.include_router(script_api.router)
 app.include_router(settings_api.router)
+app.include_router(thumbs_api.router)
+app.include_router(view_api.router)
 
 
 # The page's ES modules (ui/src/*.mjs -- the screens, the API layer, the
@@ -181,14 +190,48 @@ def stamp_module_imports(text: str) -> str:
 @app.get("/js/{name}", include_in_schema=False)
 def page_module(name: str):
     if not _MODULE_NAME.match(name):
-        raise HTTPException(404, "No such module")
+        raise HTTPException(404, t("No such module"))
     path = os.path.join(_MODULE_DIR, name)
     if not os.path.isfile(path):
-        raise HTTPException(404, "No such module")
+        raise HTTPException(404, t("No such module"))
     with open(path, encoding="utf-8") as f:
         text = f.read()
     return Response(stamp_module_imports(text), media_type="text/javascript; charset=utf-8",
                     headers=_NO_CACHE)
+
+
+# The page's stylesheets (static/css: app.css, and agent.css for the Dub Agent
+# strip), linked from static/index.html where its <style> blocks used to be.
+# Uncacheable for the same reason as the modules: a sheet a browser kept from
+# the version before would dress the new page's markup in the old rules. No
+# token on the URL: these URLs are new, so no old entry can answer for them,
+# and no-cache sends the browser back to the app every time. A name only,
+# never a path.
+_CSS_DIR = os.path.join(state.STATIC_DIR, "css")
+_CSS_NAME = re.compile(r"^[a-z0-9-]+\.css$")
+
+
+@app.get("/css/{name}", include_in_schema=False)
+def page_stylesheet(name: str):
+    path = os.path.join(_CSS_DIR, name)
+    if not _CSS_NAME.match(name) or not os.path.isfile(path):
+        raise HTTPException(404, t("No such stylesheet"))
+    return FileResponse(path, media_type="text/css", headers=_NO_CACHE)
+
+
+# The page's translation tables (static/i18n/ui.<code>.json, read by
+# ui/src/i18n.mjs). Uncacheable like the stylesheets: a table kept from the
+# version before would miss every sentence the update added. A name only.
+_I18N_DIR = os.path.join(state.STATIC_DIR, "i18n")
+_I18N_NAME = re.compile(r"^ui\.[a-z]{2}\.json$")
+
+
+@app.get("/i18n/{name}", include_in_schema=False)
+def page_translations(name: str):
+    path = os.path.join(_I18N_DIR, name)
+    if not _I18N_NAME.match(name) or not os.path.isfile(path):
+        raise HTTPException(404, t("No such table"))
+    return FileResponse(path, media_type="application/json", headers=_NO_CACHE)
 
 
 @app.get("/", response_class=HTMLResponse)

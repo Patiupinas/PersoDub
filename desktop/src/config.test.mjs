@@ -41,7 +41,7 @@ test("a kit installed at the old location keeps being used", () => {
 });
 
 test("ignoreLegacy asks for the fresh-install location instead", () => {
-  // main.js uses this when the old kit exists but its version no longer
+  // bootFlow.js uses this when the old kit exists but its version no longer
   // matches: the replacement must not land back in the folder being abandoned.
   const home = mkdtempSync(join(tmpdir(), "odhome-"));
   mkdirSync(join(home, "persodub_full_mac"));

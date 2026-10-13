@@ -73,7 +73,7 @@ def test_a_disk_or_a_video_that_will_not_say_never_stops_a_job(monkeypatch, tmp_
 
 
 def test_memory_under_7_gb_is_refused_and_unknown_memory_is_not():
-    assert room.ram_refusal(6 * GB) == "This computer needs 8 GB of memory to dub."
+    assert room.ram_refusal(6 * GB) == "Dubbing needs 8 GB of memory on this computer."
     assert room.ram_refusal(7.8 * GB) is None   # an "8 GB" computer
     assert room.ram_refusal(None) is None
     assert room.ram_warning(None, "gemma") is None

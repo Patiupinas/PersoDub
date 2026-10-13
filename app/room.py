@@ -12,7 +12,9 @@ reason to refuse: every check below lets the job go when it cannot tell.
 import os
 import sys
 
+from app import engines_status
 from app import models as model_store
+from app.i18n import t
 
 # Subfolders too: a stage keeps some of its files in one (the per-line voices),
 # and leaving them out would count them as still to come.
@@ -45,11 +47,17 @@ def dub_need(video_bytes, seconds):
     return int(2 * video_bytes + PER_MINUTE * (seconds or 0) / 60 + MARGIN)
 
 
-def space_message(need, free):
-    return "Not enough space. Needs %.1f GB, %.1f GB free." % (need / GB, free / GB)
+def space_message(need, free, shown=False):
+    """In English, as a job's record and log keep it: the desktop app sorts
+    failures by these words. `shown`: in the user's language, for an answer
+    the page puts on screen."""
+    need, free = "%.1f" % (need / GB), "%.1f" % (free / GB)
+    if shown:
+        return t("Not enough space. Needs {need} GB, {free} GB free.", need=need, free=free)
+    return "Not enough space. Needs %s GB, %s GB free." % (need, free)
 
 
-def short_of_room(work_dir, video_path, seconds, floor=0):
+def short_of_room(work_dir, video_path, seconds, floor=0, shown=False):
     """The sentence to stop with when the rest of this job will not fit, or None.
 
     What the whole job needs, less what its folder already holds: the video is
@@ -57,6 +65,7 @@ def short_of_room(work_dir, video_path, seconds, floor=0):
     Counting those again would stop a long dub halfway that would have fit.
     The floor is for a start only: between stages it would stop a short dub
     that needs a few hundred MB more because the disk is under 3 GB.
+    `shown` as space_message's.
     """
     free = model_store.free_bytes_at(work_dir)
     if free is None:
@@ -65,7 +74,7 @@ def short_of_room(work_dir, video_path, seconds, floor=0):
         need = max(floor, dub_need(os.path.getsize(video_path), seconds)) - _folder_bytes(work_dir)
     except OSError:
         return None
-    return space_message(need, free) if free < need else None
+    return space_message(need, free, shown) if free < need else None
 
 
 def total_ram_bytes():
@@ -99,7 +108,7 @@ def total_ram_bytes():
 def ram_refusal(total):
     """The sentence to refuse a dub on this computer with, or None."""
     if total is not None and total < MIN_RAM:
-        return "This computer needs 8 GB of memory to dub."
+        return t("Dubbing needs 8 GB of memory on this computer.")
     return None
 
 
@@ -107,6 +116,7 @@ def ram_warning(total, translator):
     """A note that the dub will run but slowly, or None. Never a refusal."""
     if total is None:
         return None
-    if total < SLOW_RAM or (translator == "gemma" and total < SLOW_RAM_GEMMA):
+    info = engines_status.TRANSLATORS.get(translator)
+    if total < SLOW_RAM or (info is not None and info.big_model and total < SLOW_RAM_GEMMA):
         return "This may be slow on this computer."
     return None

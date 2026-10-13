@@ -5,14 +5,16 @@
 ## Troubleshooting
 
 **The first launch seems to take forever.** It is setting up the app — roughly 0.6 GB on
-macOS, 0.9 GB on Windows. The AI engine, translation runtime, and models download when
-you first dub. Later launches start immediately.
+macOS, 0.9 GB on Windows. The AI engine, translation runtime, and models download the
+first time you dub on this computer. Later launches start immediately.
 
-**A cloud engine is greyed out in the dropdown.** Save the corresponding API key in
-Settings, then restart the app. Engine availability is evaluated at startup.
+**The engine dropdowns are greyed out.** While **Dubbing** is set to **Perso API**, Perso
+does every step, so the other choices do not apply. Set **Dubbing** to **On this
+computer**, the default, to pick them. A cloud choice with no key saved asks for the key
+when you pick it.
 
-**I saved a key but nothing changed.** Keys are read when the engines start. Restart the
-app to apply them.
+**I saved a key but nothing changed.** Keys are read each time a dub starts, so a saved
+key applies to the next dub. No restart is needed.
 
 **A job failed and mentioned an engine by name.** The message names the stage that
 failed. Switching that stage to its local option (Whisper for transcription, Gemma for
@@ -42,15 +44,18 @@ Set `PERSODUB_DEBUG=1` before starting the app to record much more detail in
 ## FAQ
 
 **Does my video leave my computer?**
-Not with the default settings — every stage runs locally. It leaves only if you add a
-Perso key, which uploads the video for transcription. See
-[Data and privacy](privacy.md).
+By default, no: Start dubbing uses this computer. While a Perso key is saved, set
+**Advanced options > Speech-to-text** to **Whisper** to keep it here, or the video is
+uploaded for transcription. **Dubbing** set to **Perso API** uploads it to Perso's
+cloud, which makes the whole dub. Translation sends only the transcript text: to
+ChatGPT through your own sign-in on a new install, or nowhere with a local translator.
+See [Data and privacy](privacy.md).
 
 **Can I use PersoDub commercially?**
 Yes. It is AGPL-3.0: commercial use is allowed, and if you distribute a changed PersoDub
 or run one as a network service, the changed source must be shared under the same
 license. You remain responsible for holding the rights to the material you dub, and for
-the terms of any optional cloud service you enable.
+the terms of any optional online service you enable.
 
 **Why are Intel Macs not supported?**
 The Mac build targets Apple Silicon, whose built-in acceleration the pipeline relies on;
@@ -59,8 +64,9 @@ on the [roadmap](roadmap.md) but has no date.
 
 **Why is the first-run download so large?**
 The first setup downloads only the app and Python — roughly 0.6 GB on macOS, 0.9 GB on
-Windows. The AI engine, translation runtime, and models download when you first dub, so
-you get only what you choose. Everything still runs offline afterwards.
+Windows. The AI engine, translation runtime, and models download the first time you dub
+on this computer, so you get only what you choose. After that, a dub on this computer
+with Whisper and a local translator runs offline; Perso and ChatGPT need the network.
 
 **Do I need a GPU?**
 On a Mac, no — PersoDub uses the acceleration built into Apple Silicon. On Windows, an
@@ -71,7 +77,7 @@ comfortable.
 
 **Is the dubbed audio watermarked?**
 No. Please disclose AI-dubbed audio as synthetic wherever you publish it — see
-[Responsible use](../README.md#responsible-use).
+[Responsible use](responsible-use.md).
 
 **How is this different from subtitle translators?**
 Subtitles leave the original voice in place. PersoDub replaces the speech with a cloned
@@ -82,11 +88,13 @@ target language.
 
 ## Speed without a GPU
 
-PersoDub runs entirely on the processor when no supported GPU is present. Nothing
-breaks and no step is skipped — but two of the six stages, translation and voice
-synthesis, get noticeably slower, and the gap grows with the length of the video.
-Separating the background and transcribing don't use the GPU either way, so a short
-clip stays comfortable; a clip with dense dialogue takes a lot longer.
+On this computer, PersoDub runs entirely on the processor when no supported GPU is
+present. Nothing breaks and no step is skipped, but voice synthesis gets noticeably
+slower, and so do a local translator and Mel-Band RoFormer separation; the gap grows
+with the length of the video. Transcribing (Whisper) and Demucs separation run on the
+processor either way, so a short clip stays comfortable; a clip with dense dialogue
+takes a lot longer. A Perso API dub runs on Perso's side and does not depend on your
+hardware.
 
 **Without a GPU, stick to short clips.** Long videos are best left to a machine that has
 one. If you've measured how much slower on your own machine, an

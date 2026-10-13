@@ -6,6 +6,7 @@ PersoDub stands on these open-source projects.
 |---|---|
 | [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) | Voice-cloning speech synthesis |
 | [Demucs](https://github.com/adefossez/demucs) | Source separation — splits speech from background audio |
+| [Mel-Band RoFormer](https://huggingface.co/KimberleyJSN/melbandroformer) (network after [BS-RoFormer](https://github.com/lucidrains/BS-RoFormer)) | Source separation in place of Demucs, once its model is downloaded |
 | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | Speech recognition |
 | [CAM++ (3D-Speaker)](https://github.com/modelscope/3D-Speaker) | Speaker diarization |
 | [Ollama](https://github.com/ollama/ollama) + [Hunyuan](https://github.com/Tencent-Hunyuan) | Local translation model and runtime |
@@ -20,15 +21,18 @@ The full list of third-party components and their licenses is in [NOTICE](../NOT
 
 ```mermaid
 flowchart LR
-    A["Video"] --> B["Source separation<br/>(Demucs)"]
+    A["Video"] --> P["Perso API<br/>(if chosen: the whole dub)"]
+    A --> B["Source separation<br/>(Mel-Band RoFormer or Demucs)"]
     B --> C["Transcription<br/>(faster-whisper)"]
     C --> D["Speaker diarization<br/>(CAM++)"]
-    D --> E["Translation<br/>(Hunyuan via Ollama)"]
+    D --> E["Translation<br/>(ChatGPT, or a local model via Ollama)"]
     E --> F["Speech synthesis<br/>(Qwen3-TTS)"]
     F --> G["Mix &amp; mux<br/>(FFmpeg)"]
     G --> H["Finished video<br/>(.mp4 + .srt)"]
+    P --> H
 ```
 
-The app itself is a thin orchestrator. Each heavy stage runs as an isolated subprocess
-with its own Python environment, so a failure in one stage cannot take down the others.
-Architecture details are in [Development](development.md).
+The app itself is a thin orchestrator. By default each heavy stage runs on this computer
+as a separate process outside the app's own Python environment, so a failure in one
+stage fails that job, not the app; the Perso API, if chosen, makes the whole dub. Architecture details
+are in [Architecture](architecture.md#2-the-dubbing-pipeline).

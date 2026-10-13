@@ -1,7 +1,8 @@
 // Run with: node --test ui/src/modelsUi.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { gb, neededModelId, neededPackIds, modelStatusLine, dubStartDialog, overallProgress, allReady } from "./modelsUi.mjs";
+import { readFileSync } from "node:fs";
+import { gb, neededModelId, neededPackIds, modelStatusLine, dubStartDialog, overallProgress, allReady, groupModels } from "./modelsUi.mjs";
 
 test("neededModelId maps each dropdown choice to its catalog model", () => {
   assert.equal(neededModelId("stt", "local"), "whisper");
@@ -24,8 +25,9 @@ test("modelStatusLine covers the four states with the mockup's words", () => {
     { cls: "model-busy", text: "Waiting to download Whisper…", button: "cancel" });
   assert.deepEqual(modelStatusLine({ state: "paused" }),
     { cls: "model-busy", text: "Paused", button: "resume" });
-  assert.deepEqual(modelStatusLine({ state: "paused", error: "network died" }),
-    { cls: "model-busy", text: "Paused: network died", button: "resume" });
+  // The server's reason, then what to do: never the exception (Windows H9/H10, 2026-10-06).
+  assert.deepEqual(modelStatusLine({ state: "paused", error: "Connection lost." }),
+    { cls: "model-busy", text: "Connection lost. Press Resume to continue.", button: "resume" });
   assert.deepEqual(
     modelStatusLine({ state: "not_downloaded", bytes: 7.6e9 }),
     { cls: "", text: "7.6 GB", button: "download" });
@@ -35,17 +37,17 @@ test("dubStartDialog says only the size and what it is for", () => {
   const voice = dubStartDialog({ missing: [
     { id: "engine", kind: "pack", name: "Python + PyTorch", bytes: 2.0e9 },
   ] });
-  assert.equal(voice.title, "Download 2.0 GB to start dubbing?");
-  assert.equal(voice.line, "One-time download for making voices on this computer.");
+  assert.equal(voice.title, "Download 2.0 GB?");
+  assert.equal(voice.line, "One-time download for making voices.");
   assert.equal(voice.perso, true, "the voice parts point to Perso dubbing");
 
   const stt = dubStartDialog({ missing: [{ id: "whisper", kind: "model", name: "Whisper", bytes: 2.9e9 }] });
-  assert.equal(stt.line, "One-time download for transcribing on this computer.");
+  assert.equal(stt.line, "One-time download for transcribing.");
   assert.equal(stt.perso, false);
 
   const tr = dubStartDialog({ missing: [{ id: "gemma", name: "Gemma 3", bytes: 7.6e9 }] });
-  assert.equal(tr.title, "Download 7.6 GB to start dubbing?");
-  assert.equal(tr.line, "One-time download for translating on this computer.");
+  assert.equal(tr.title, "Download 7.6 GB?");
+  assert.equal(tr.line, "One-time download for translating.");
 });
 
 test("dubStartDialog splits packs from models and keeps the 409's order", () => {
@@ -56,7 +58,7 @@ test("dubStartDialog splits packs from models and keeps the 409's order", () => 
   assert.deepEqual(d.packs, ["engine"]);
   assert.deepEqual(d.models, ["whisper"]);
   assert.deepEqual(d.ids, ["engine", "whisper"]);
-  assert.equal(d.title, "Download 4.9 GB to start dubbing?");
+  assert.equal(d.title, "Download 4.9 GB?");
 });
 
 test("neededPackIds names the pack behind each dropdown choice", () => {
@@ -82,4 +84,58 @@ test("allReady flips only when every needed model is ready", () => {
   const rows = [{ id: "a", state: "ready" }, { id: "b", state: "downloading" }];
   assert.equal(allReady(rows, ["a"]), true);
   assert.equal(allReady(rows, ["a", "b"]), false);
+});
+
+test("a start that is not a dubbing's names its own purpose and offers no Perso dubbing", () => {
+  const d = dubStartDialog({ missing: [{ id: "engine", kind: "pack", bytes: 2e9 }], purpose: "separating audio" });
+  assert.equal(d.line, "One-time download for separating audio.");
+  assert.equal(d.perso, false);
+  assert.deepEqual(d.packs, ["engine"]);
+});
+
+// The rows /api/models serves today, in the catalog's order (packs first).
+const CATALOG_ROWS = [
+  { id: "engine", role: "pack", bytes: 2.0e9, state: "ready" },
+  { id: "ollama-runtime", role: "pack", bytes: 0.5e9, state: "not_downloaded" },
+  { id: "subtitle-eraser", role: "pack", bytes: 4.4e9, state: "ready" },
+  { id: "qwen3-tts", role: "tts", bytes: 4.5e9, state: "downloading", progress: 30 },
+  { id: "whisper", role: "stt", bytes: 3.1e9, state: "ready" },
+  { id: "vocal-separator", role: "sep", bytes: 0.9e9, state: "ready" },
+  { id: "gemma", role: "translate", bytes: 8.1e9, state: "paused" },
+  { id: "hunyuan", role: "translate", bytes: 1.1e9, state: "ready" },
+];
+
+test("groupModels puts each row under its purpose, in the order a dub uses them", () => {
+  assert.deepEqual(groupModels(CATALOG_ROWS).map((g) => [g.title, g.rows.map((r) => r.id)]), [
+    ["Audio separation", ["vocal-separator"]],
+    ["Speech-to-text", ["whisper"]],
+    ["Translation", ["gemma", "hunyuan"]],
+    ["Text-to-speech", ["qwen3-tts"]],
+    ["Erase subtitles", ["subtitle-eraser"]],
+    ["Base programs", ["engine", "ollama-runtime"]],
+  ]);
+  // A role with no group of its own is still listed, with the base programs.
+  const later = groupModels([...CATALOG_ROWS, { id: "lipsync", role: "lipsync", bytes: 1e9, state: "ready" }]);
+  assert.deepEqual(later.at(-1).rows.map((r) => r.id), ["engine", "ollama-runtime", "lipsync"]);
+});
+
+test("a group's size counts only what is on this computer", () => {
+  const bytes = Object.fromEntries(groupModels(CATALOG_ROWS).map((g) => [g.title, g.bytes]));
+  assert.equal(bytes["Translation"], 1.1e9, "paused Gemma does not count, ready Hunyuan does");
+  assert.equal(bytes["Text-to-speech"], 0, "a download under way does not count yet");
+  assert.equal(bytes["Base programs"], 2.0e9, "Ollama is not installed");
+});
+
+test("a group with no rows is left out", () => {
+  assert.deepEqual(groupModels([]), []);
+  const one = groupModels([{ id: "whisper", role: "stt", bytes: 3.1e9, state: "not_downloaded" }]);
+  assert.deepEqual(one.map((g) => [g.title, g.bytes]), [["Speech-to-text", 0]]);
+});
+
+test("every group title is in the page's tables, so Korean shows it in Korean", () => {
+  const titles = groupModels(CATALOG_ROWS).map((g) => g.title);
+  for (const code of ["en", "ko"]) {
+    const table = JSON.parse(readFileSync(new URL(`../../static/i18n/ui.${code}.json`, import.meta.url), "utf8"));
+    assert.deepEqual(titles.filter((s) => !Object.hasOwn(table, s)), [], `missing from ui.${code}.json`);
+  }
 });

@@ -1,0 +1,6 @@
+# Every text file is checked out with LF line endings, on Windows too.
+# Git for Windows turns LF into CRLF by default (core.autocrlf=true), and the
+# UI tests that read static/index.html and ui/src/*.mjs as text look for "\n":
+# 18 of them failed on a Windows checkout although the app itself ran fine
+# (Windows verification, 2026-10-03). Binary files are detected and left alone.
+* text=auto eol=lf

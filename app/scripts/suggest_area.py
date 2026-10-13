@@ -12,7 +12,7 @@ A dozen frames spread evenly through the video are read; the text boxes in the
 bottom 45% of the frame are grouped into horizontal bands, and the band seen
 in the most frames wins -- a subtitle is the writing that keeps coming back in
 the same place, while a shop sign or a name caption appears once. The winner is
-padded (6% of the height above and below, 4% of the width either side) because
+padded (3% of the height above and below, 2% of the width either side) because
 the eraser only touches what is inside the band, and a letter's tail hanging
 out of it would survive.
 
@@ -38,8 +38,13 @@ BOTTOM = 0.55
 # Two boxes belong to the same band when their rows are no further apart than
 # this much of the height -- one line of subtitles broken into several boxes.
 BAND_GAP = 0.02
-PAD_Y = 0.06
-PAD_X = 0.04
+# A text box taller than this much of the frame is not one line of writing,
+# and a band never grows past it either: without the cap a chain of boxes down
+# the frame joins into one band that covers half the picture.
+MAX_LINE = 0.15
+# Small margins: a letter's tail has to fit, nothing more.
+PAD_Y = 0.03
+PAD_X = 0.02
 
 
 def sample_frames(cv2, path, count):
@@ -67,16 +72,18 @@ def sample_frames(cv2, path, count):
     return frames, width, height
 
 
-def bands(boxes, gap):
+def bands(boxes, gap, max_h=float("inf")):
     """Group (frame_no, xmin, xmax, ymin, ymax) boxes into horizontal bands.
 
     Each band keeps the extent of everything in it and the frames it was seen
-    in -- the count of those frames is what picks the winner.
+    in -- the count of those frames is what picks the winner. A box that
+    would stretch a band past max_h starts a band of its own.
     """
     out = []
     for no, xmin, xmax, ymin, ymax in sorted(boxes, key=lambda b: b[3]):
         for band in out:
-            if ymin <= band["ymax"] + gap and ymax >= band["ymin"] - gap:
+            if (ymin <= band["ymax"] + gap and ymax >= band["ymin"] - gap
+                    and max(band["ymax"], ymax) - min(band["ymin"], ymin) <= max_h):
                 band["ymin"] = min(band["ymin"], ymin)
                 band["ymax"] = max(band["ymax"], ymax)
                 band["xmin"] = min(band["xmin"], xmin)
@@ -105,11 +112,19 @@ def suggest(path):
             if ymin >= height * BOTTOM:
                 boxes.append((no, xmin, xmax, ymin, ymax))
 
+    return pick_area(boxes, width, height, len(frames))
+
+
+def pick_area(boxes, width, height, frame_count):
+    """The box around the subtitle line, from (frame_no, xmin, xmax, ymin, ymax)
+    text boxes: the winning band's own extent plus a small margin."""
+    boxes = [b for b in boxes if b[4] - b[3] <= height * MAX_LINE]
     if not boxes:
         return {"found": False, "area": [int(height * 0.75), height, 0, width],
-                "width": width, "height": height, "frames": len(frames)}
+                "width": width, "height": height, "frames": frame_count}
 
-    best = max(bands(boxes, height * BAND_GAP), key=lambda b: (len(b["frames"]), b["ymax"] - b["ymin"]))
+    best = max(bands(boxes, height * BAND_GAP, height * MAX_LINE),
+               key=lambda b: (len(b["frames"]), b["ymax"] - b["ymin"]))
     pad_y, pad_x = int(height * PAD_Y), int(width * PAD_X)
     return {
         "found": True,
@@ -132,7 +147,7 @@ def main():
     # relative path, and its progress bar goes to a pipe the app is reading.
     os.chdir(vsr_dir)
     sys.path.insert(0, vsr_dir)
-    sys.__stdout__ = open(os.devnull, "w")
+    sys.__stdout__ = open(os.devnull, "w", encoding="utf-8")
 
     from backend.config import config, tr
     config.set(config.interface, "en")

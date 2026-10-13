@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import pipeline
+from app.api import _launch as launch_api
 from app.api import dub as dub_api
 from app.engines.base import SynthesisResult
 from app.main import app
@@ -63,6 +64,129 @@ def test_resume_refuses_a_cloud_dub(monkeypatch):
     state.job_store.update(jid, dub_mode="perso", status="error")
     r = client.post(f"/api/dub/jobs/{jid}/resume")
     assert r.status_code == 409 and "Start over" in r.json()["detail"]
+
+
+# --- Resume with another translator (ChatGPT's limit, owner 2026-10-03) ----
+
+def _stopped_at_chatgpt(monkeypatch):
+    """A dubbing whose ChatGPT translation stopped it; returns its id and the
+    run_dub calls (the second one is the resume)."""
+    calls = []
+
+    def fake_run_dub(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            raise RuntimeError("ChatGPT usage limit reached for now.")
+        return {"job_id": "x", "out_path": kw["out_path"], "num_segments": 1}
+
+    monkeypatch.setattr(dub_api, "run_dub", fake_run_dub)
+    jid = client.post("/api/dub/start", files={"video": ("v.mp4", b"vid", "video/mp4")},
+                      data={"language": "Korean", "language_code": "ko",
+                            "translate_engine": "chatgpt"}).json()["job_id"]
+    _wait_not_running(jid)
+    return jid, calls
+
+
+def test_resume_with_another_translator_translates_with_it_and_records_it(monkeypatch):
+    jid, calls = _stopped_at_chatgpt(monkeypatch)
+    r = client.post(f"/api/dub/jobs/{jid}/resume", json={"translator": "hunyuan"})
+    assert r.status_code == 200
+    _wait_not_running(jid)
+    job = client.get(f"/api/dub/jobs/{jid}").json()
+    assert job["status"] == "done" and job["translator"] == "hunyuan"
+    assert calls[1]["resume"] is True and calls[1]["translate_engine"] == "hunyuan"
+    assert "Translating with Hunyuan instead of ChatGPT." in job["logs"]
+
+
+def test_resume_without_a_translator_keeps_the_jobs_own(monkeypatch):
+    jid, calls = _stopped_at_chatgpt(monkeypatch)
+    assert client.post(f"/api/dub/jobs/{jid}/resume").status_code == 200
+    _wait_not_running(jid)
+    assert calls[1]["translate_engine"] == "chatgpt"
+    assert client.get(f"/api/dub/jobs/{jid}").json()["translator"] == "chatgpt"
+
+
+@pytest.mark.parametrize("name", ["chatgpt", "deepl"])
+def test_resume_refuses_the_same_translator_or_one_the_app_does_not_have(monkeypatch, name):
+    jid, calls = _stopped_at_chatgpt(monkeypatch)
+    r = client.post(f"/api/dub/jobs/{jid}/resume", json={"translator": name})
+    assert r.status_code == 422
+    assert client.get(f"/api/dub/jobs/{jid}").json()["status"] == "error" and len(calls) == 1
+
+
+def test_resume_with_a_translator_not_downloaded_asks_for_it_like_a_start(monkeypatch):
+    from app import engines_status
+    jid, calls = _stopped_at_chatgpt(monkeypatch)
+    monkeypatch.setattr(engines_status, "hunyuan_status", lambda: "model_missing")
+    asked = []
+
+    def missing(need_whisper, translate_missing_id, need_tts=True, **kw):
+        asked.append((need_whisper, translate_missing_id, need_tts))
+        return [{"id": translate_missing_id, "kind": "model", "name": "Hunyuan", "bytes": 1100000000, "hint": ""}]
+    monkeypatch.setattr(launch_api, "missing_models", missing)
+    monkeypatch.setattr(dub_api.model_store, "free_bytes_at", lambda p: 5e9)
+    r = client.post(f"/api/dub/jobs/{jid}/resume", json={"translator": "hunyuan"})
+    assert r.status_code == 409
+    assert r.json()["detail"]["missing"][0]["id"] == "hunyuan" and r.json()["detail"]["total_bytes"] == 1100000000
+    # Only the translator: separation and the transcript are on disk already.
+    assert asked == [(False, "hunyuan", False)]
+    job = client.get(f"/api/dub/jobs/{jid}").json()
+    assert job["status"] == "error" and job["translator"] == "chatgpt" and len(calls) == 1
+
+
+def test_resume_with_a_translator_that_cannot_run_now_is_refused_like_a_start(monkeypatch):
+    from app import engines_status
+    jid, calls = _stopped_at_chatgpt(monkeypatch)
+    monkeypatch.setattr(engines_status, "gemma_status", lambda: "unreachable")
+    r = client.post(f"/api/dub/jobs/{jid}/resume", json={"translator": "gemma"})
+    assert r.status_code == 422 and "Gemma" in r.json()["detail"]
+    monkeypatch.setattr(engines_status, "gemini_available", lambda: False)
+    r = client.post(f"/api/dub/jobs/{jid}/resume", json={"translator": "gemini"})
+    assert r.status_code == 422 and "Gemini API key" in r.json()["detail"]
+    assert client.get(f"/api/dub/jobs/{jid}").json()["status"] == "error" and len(calls) == 1
+
+
+def test_resume_with_another_translator_is_refused_once_the_translation_is_done(monkeypatch):
+    jid, calls = _stopped_at_chatgpt(monkeypatch)
+    work = client.get(f"/api/dub/jobs/{jid}").json()["work_dir"]
+    with open(os.path.join(work, "translated.srt"), "w", encoding="utf-8") as f:
+        f.write(SRT)
+    r = client.post(f"/api/dub/jobs/{jid}/resume", json={"translator": "hunyuan"})
+    assert r.status_code == 409 and len(calls) == 1
+
+
+# A model removed since the dub stopped: Resume ran without it and failed on the
+# stage that needed it, telling the user to check the video (Windows test C16,
+# 2026-10-10). It asks the way Start over asks.
+def _asking_for(monkeypatch, missing_ids):
+    asked = []
+
+    def missing(need_whisper, translate_missing_id, need_tts=True, **kw):
+        asked.append((need_whisper, translate_missing_id, need_tts))
+        return [{"id": i, "kind": "model", "name": i, "bytes": 3091000000, "hint": ""} for i in missing_ids]
+    monkeypatch.setattr(launch_api, "missing_models", missing)
+    monkeypatch.setattr(dub_api.model_store, "free_bytes_at", lambda p: 50e9)
+    return asked
+
+
+def test_resume_with_a_model_removed_since_asks_for_it_like_start_over(monkeypatch):
+    jid, calls = _stopped_at_chatgpt(monkeypatch)
+    asked = _asking_for(monkeypatch, ["whisper"])
+    r = client.post(f"/api/dub/jobs/{jid}/resume")
+    assert r.status_code == 409 and r.json()["detail"]["missing"][0]["id"] == "whisper"
+    assert client.get(f"/api/dub/jobs/{jid}").json()["status"] == "error" and len(calls) == 1
+    assert asked and asked[0][0] is True   # a local transcription job needs Whisper
+
+
+def test_resume_does_not_ask_for_the_translator_once_the_translation_is_done(monkeypatch):
+    jid, calls = _stopped_at_chatgpt(monkeypatch)
+    work = client.get(f"/api/dub/jobs/{jid}").json()["work_dir"]
+    with open(os.path.join(work, "translated.srt"), "w", encoding="utf-8") as f:
+        f.write(SRT)
+    asked = _asking_for(monkeypatch, [])
+    assert client.post(f"/api/dub/jobs/{jid}/resume").status_code == 200
+    _wait_not_running(jid)
+    assert asked == [(True, None, True)] and len(calls) == 2
 
 
 # --- what a stage leaves behind -------------------------------------------
@@ -156,7 +280,7 @@ def _stub_world(monkeypatch, tmp_path, fail=()):
     monkeypatch.setattr(pipeline, "leakage_gate", lambda mix, *a: mix)
     monkeypatch.setattr(pipeline, "_stage_finish", lambda *a: None)
     cues = [{"start": 0.0, "end": 1.5, "text": "hola"}, {"start": 1.5, "end": 3.0, "text": "adios"}]
-    for name, value in (("_stage_separate", (str(tmp_path / "vocals.wav"), str(tmp_path / "background.wav"), None)),
+    for name, value in (("_stage_separate", (str(tmp_path / "vocals.wav"), str(tmp_path / "background.wav"), None, None)),
                         ("_stage_transcribe_local", (cues, "es", None)),
                         ("_stage_diarize", None),
                         ("_stage_translate", ([{"start": 0.0, "end": 1.5, "text": "x"}], True))):
@@ -188,6 +312,21 @@ def test_resume_skips_every_finished_stage_and_keeps_voices(tmp_path, monkeypatc
     monkeypatch.setattr(pipeline, "_stage_transcribe_perso", lambda *a, **k: pytest.fail("Perso STT ran"))
     _run_dub(tmp_path, resume=True)
     assert seen["_stage_synthesize"]["reuse_lines"] is True
+
+
+def test_a_translation_that_stopped_half_way_is_made_again_by_the_new_translator(tmp_path, monkeypatch):
+    """ChatGPT stopped mid-stage: the answers it gave are on disk, but
+    translated.srt is only ever written whole (pipeline._auto_translate_srt),
+    so a half-written one is not taken as done."""
+    _earlier_run(tmp_path, translated=False)
+    (tmp_path / "translated.srt.part").write_text(SRT[:30], encoding="utf-8")
+    seen = _stub_world(monkeypatch, tmp_path, fail=("_stage_separate", "_stage_transcribe_local", "_stage_diarize"))
+    monkeypatch.setattr(pipeline, "_stage_transcribe_perso", lambda *a, **k: pytest.fail("Perso STT ran"))
+    pipeline.run_dub(video_path=str(tmp_path / "input.mp4"), out_path=str(tmp_path / "dubbed.mp4"),
+                     language="Spanish", language_code="es", stt_engine="perso", sep_engine="perso",
+                     translate_engine="hunyuan", resume=True, log=lambda m: None)
+    assert "_stage_translate" in seen
+    assert seen["_stage_synthesize"]["reuse_lines"] is False
 
 
 def test_a_stage_made_again_drops_the_reuse_of_everything_after_it(tmp_path, monkeypatch):

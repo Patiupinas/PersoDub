@@ -4,6 +4,7 @@ Nothing here touches the network. source_fetch._run is the only place that
 starts a process, and every test that needs a yt-dlp result replaces it.
 """
 import json
+import logging
 import sys
 
 import pytest
@@ -133,18 +134,77 @@ def test_probe_never_downloads(monkeypatch):
 
 
 def test_probe_raises_classified_error(monkeypatch):
-    monkeypatch.setattr(source_fetch, "_run", _fake_run(
-        code=1, stderr="ERROR: [youtube] abc: Sign in to confirm your age"))
+    upgrades = _count_upgrades(monkeypatch)
+    run = _fake_run(code=1, stderr="ERROR: [youtube] abc: Sign in to confirm your age")
+    monkeypatch.setattr(source_fetch, "_run", run)
     with pytest.raises(source_fetch.FetchError) as e:
         source_fetch.probe("https://youtu.be/abc")
     assert e.value.reason == "login"
+    assert upgrades["n"] == 1 and len(run.calls) == 2   # tried once more, then gave up
 
 
 def test_probe_raises_when_output_is_not_json(monkeypatch):
+    _count_upgrades(monkeypatch)
     monkeypatch.setattr(source_fetch, "_run", _fake_run(stdout="not json at all"))
     with pytest.raises(source_fetch.FetchError) as e:
         source_fetch.probe("https://youtu.be/abc")
     assert e.value.reason == "unknown"
+
+
+# A stale yt-dlp fails at the probe first, and every pasted link is probed
+# before it is downloaded: the download's upgrade-and-retry was never reached,
+# and a link that a new yt-dlp could read failed on the spot (Windows test B6,
+# 2026-10-10). The probe gets the same one retry.
+def test_probe_upgrades_once_then_succeeds(monkeypatch):
+    upgrades = _count_upgrades(monkeypatch)
+    seq = _Sequence(
+        (1, "", "ERROR: [youtube] abc: Incomplete YouTube ID abc"),
+        (0, json.dumps({"title": "Me at the zoo", "duration": 19}), ""),
+    )
+    monkeypatch.setattr(source_fetch, "_run", seq)
+    got = source_fetch.probe("https://youtu.be/abc")
+    assert got["title"] == "Me at the zoo"
+    assert upgrades["n"] == 1 and len(seq.calls) == 2
+
+
+def test_probe_skips_the_upgrade_on_network_errors(monkeypatch):
+    upgrades = _count_upgrades(monkeypatch)
+    seq = _Sequence((1, "", "ERROR: unable to download webpage"))
+    monkeypatch.setattr(source_fetch, "_run", seq)
+    with pytest.raises(source_fetch.FetchError) as e:
+        source_fetch.probe("https://youtu.be/abc")
+    assert e.value.reason == "network"
+    assert upgrades["n"] == 0 and len(seq.calls) == 1
+
+
+# The upgrade-and-retry left nothing in backend.log, so a log could not tell a
+# stale yt-dlp from a link no yt-dlp can read (Windows test B6, 2026-10-11).
+# Only the kind of failure: yt-dlp's own words name the video by its id, and
+# the app log goes out with a failure report (final review, 2026-10-12).
+def test_the_upgrade_and_retry_are_written_to_the_log(monkeypatch, caplog):
+    _count_upgrades(monkeypatch)
+    seq = _Sequence(
+        (1, "", "ERROR: [youtube] abc: Incomplete YouTube ID abc"),
+        (1, "", "ERROR: [youtube] abc: Video unavailable"),
+    )
+    monkeypatch.setattr(source_fetch, "_run", seq)
+    with caplog.at_level(logging.INFO, logger="persodub.source_fetch"), pytest.raises(source_fetch.FetchError):
+        source_fetch.probe("https://youtu.be/abc")
+    assert "yt-dlp failed (unknown); updating it and trying once more" in caplog.text
+    assert "yt-dlp failed again after the update (gone)" in caplog.text
+    assert "abc" not in caplog.text, "the video's id stays out of the log"
+
+
+def test_a_retry_that_works_is_written_to_the_log(monkeypatch, caplog):
+    _count_upgrades(monkeypatch)
+    seq = _Sequence(
+        (1, "", "ERROR: [youtube] abc: Incomplete YouTube ID abc"),
+        (0, json.dumps({"title": "Me at the zoo"}), ""),
+    )
+    monkeypatch.setattr(source_fetch, "_run", seq)
+    with caplog.at_level(logging.INFO, logger="persodub.source_fetch"):
+        source_fetch.probe("https://youtu.be/abc")
+    assert "worked after the update" in caplog.text
 
 
 # ---------------------------------------------------------------- fetch
@@ -216,6 +276,31 @@ def test_fetch_skips_the_upgrade_on_network_errors(monkeypatch, tmp_path):
     assert upgrades["n"] == 0
     assert len(seq.calls) == 1
     assert e.value.reason == "network"
+
+
+# Two installs into one venv at once can leave it half-written, and now a probe
+# and a download (or two pasted links) can both reach the upgrade together.
+def test_upgrades_never_run_two_at_once(monkeypatch):
+    import threading
+    import time
+    busy = {"now": 0, "most": 0}
+    lock = threading.Lock()
+
+    def slow_pip(*args, **kwargs):
+        with lock:
+            busy["now"] += 1
+            busy["most"] = max(busy["most"], busy["now"])
+        time.sleep(0.05)
+        with lock:
+            busy["now"] -= 1
+
+    monkeypatch.setattr(source_fetch.subprocess, "run", slow_pip)
+    threads = [threading.Thread(target=source_fetch._upgrade) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert busy["most"] == 1
 
 
 def test_fetch_reports_percentage_as_stage_zero(monkeypatch, tmp_path):

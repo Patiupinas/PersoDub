@@ -7,19 +7,24 @@ the Dub Agent's set_default is in force for the very next dub, no restart.
 One table below names every stage, its kit.env key, its choices and its
 fallback; the screen, the API and the agent's tools all read it.
 """
+import os
 from typing import Dict, Optional
 
 from app import config
+from app.engines_status import TRANSLATORS
+from app.i18n import t
 from app.settings_env import current_value, write_values
 
 # stage -> (kit.env key, allowed choices, fallback when kit.env says nothing).
-# A None fallback means "computed": see _fallback below.
+# A None fallback means "computed": see _fallback below. The translators are
+# the ones app/engines_status.py's TRANSLATORS offers, in its order.
 STAGES = {
-    "dub_mode": ("DUB_MODE", ("local", "perso"), "local"),
+    "dub_mode": ("DUB_MODE", ("local", "perso"), None),
     "separation": ("SEP_ENGINE", ("local", "perso"), "local"),
     "stt": ("STT_ENGINE", ("local", "perso"), None),
-    "translator": ("TRANSLATE_ENGINE", ("chatgpt", "hunyuan", "gemma", "gemini"), None),
+    "translator": ("TRANSLATE_ENGINE", tuple(t.name for t in TRANSLATORS.values() if t.offered), None),
     "voice_quality": ("VOICE_QUALITY", ("fast", "high"), "fast"),
+    "voice": ("TTS_ENGINE", ("qwen3",), "qwen3"),
 }
 
 # What the voice engine's best-of-N count is for each quality word (the same
@@ -40,6 +45,14 @@ def _fallback(stage: str) -> str:
         # one place the rule lives: config.default_stt_engine asks here and
         # only translates "local" into the "" its callers read.
         return "perso" if current_value("PERSO_API_KEY") else "local"
+    if stage == "dub_mode":
+        # One build, two defaults. The production edition, the company's
+        # build, dubs on Perso, key or no key: without one, Start says to save
+        # a key first (app/api/dub.py), which is how a new user is led to get
+        # one (owner, 2026-10-07). The open-source edition, and a plain server
+        # run, dub on this computer, which needs no key (owner, 2026-10-12).
+        # The desktop shell passes the edition (desktop/src/orchestrator.js).
+        return "perso" if os.environ.get("PERSODUB_EDITION") == "production" else "local"
     if stage == "translator":
         # ChatGPT for a new install; a machine that already has the local
         # Hunyuan model keeps translating locally after the update, so no
@@ -71,6 +84,21 @@ def default_n_takes() -> Optional[int]:
     return N_TAKES[default_for("voice_quality")]
 
 
+def checked_choice(stage: str, choice) -> str:
+    """One stage's choice the way it is saved: trimmed and lowercased, and one
+    the stage offers (ValueError otherwise, as for an unknown stage). The Dub
+    Agent's set_default reads a choice through here before it asks about a
+    paid one, so what it asks about is what is saved: it checked "Gemini" as
+    written, found nothing paid, and gemini was saved unasked (2026-10-10)."""
+    if stage not in STAGES:
+        raise ValueError(t("Unknown stage: {stage} (one of {stages})", stage=stage, stages=", ".join(STAGES)))
+    choices = STAGES[stage][1]
+    value = str(choice).strip().lower()
+    if value not in choices:
+        raise ValueError(t("{stage} must be one of: {choices}", stage=stage, choices=", ".join(choices)))
+    return value
+
+
 def set_defaults(changes: Dict[str, Optional[str]]) -> Dict[str, str]:
     """Save new choices for one or more stages. Unknown stages and choices
     are refused (ValueError) before anything is written; a None value leaves
@@ -79,12 +107,7 @@ def set_defaults(changes: Dict[str, Optional[str]]) -> Dict[str, str]:
     for stage, choice in changes.items():
         if choice is None:
             continue
-        if stage not in STAGES:
-            raise ValueError("Unknown stage: %s (one of %s)" % (stage, ", ".join(STAGES)))
-        key, choices, _ = STAGES[stage]
-        value = str(choice).strip().lower()
-        if value not in choices:
-            raise ValueError("%s must be one of: %s" % (stage, ", ".join(choices)))
-        to_write[key] = value
+        value = checked_choice(stage, choice)
+        to_write[STAGES[stage][0]] = value
     write_values(to_write)
     return defaults()

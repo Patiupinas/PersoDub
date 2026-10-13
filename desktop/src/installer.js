@@ -1,5 +1,7 @@
 import { existsSync } from "node:fs";
 import { win32 } from "node:path";
+import { errorText } from "./errorText.js";
+import { t } from "./i18n.js";
 
 // Step runner: skips steps whose isDone() is already true (resume), streams
 // progress events, and verifies each step actually produced its artifacts.
@@ -39,9 +41,11 @@ export async function runInstall(steps, {
         }
         break;
       } catch (err) {
-        const detail = String((err && err.message) || err);
+        const detail = errorText(err);
         const retry = attempt <= retryDelaysMs.length && worthRetrying(detail) && !stop();
         if (retry) {
+          // Left in English: the page knows a retry by this sentence's first
+          // words (ui/src/modelsDialog.mjs).
           onProgress({ stepId: step.id, title: step.title, state: "progress", pct: null, detail: `Connection problem, retrying (${attempt + 1}/${retryDelaysMs.length + 1})`, bytes: step.bytes });
           await sleep(retryDelaysMs[attempt - 1]);
         }
@@ -68,9 +72,10 @@ export async function runInstall(steps, {
 // A pack step's failure text as the dialog should show it. A download that
 // broke mid-way (Hugging Face reset it twice on a slow office line,
 // 2026-09-08) surfaced as a Python exception with byte counts; the person
-// only needs to know that pressing Download and Start resumes it. Anything
-// else keeps the tool's own last line (main.js lastReason).
-export const DOWNLOAD_INTERRUPTED = "The download was interrupted. Click Resume or Download and Start to pick up where it left off.";
+// only needs to know that pressing Download resumes it. Anything
+// else keeps the tool's own last line (lastReason below). In the user's
+// language, so read when it is said.
+export const downloadInterruptedReason = () => t("The download was interrupted. Click Resume or Download to pick up where it left off.");
 // The last two rows are no network at all, which each downloader says in its own
 // words and none of the rows above: the hf CLI ("LocalEntryNotFoundError ...
 // Please check your internet connection"), this app's own fetch ("fetch
@@ -87,6 +92,19 @@ export function downloadInterrupted(message) {
   return NETWORK_MARKS.test(String(message || ""));
 }
 
+// The last line a person can act on, out of a tool's whole transcript: the
+// page showed two screens of pip output in red (Windows, 2026-09-07).
+export function lastReason(message) {
+  const lines = String(message || "").split("\n").map((l) => l.trim())
+    // Traceback scaffolding names files, not causes.
+    .filter((l) => l && !/^File "/.test(l) && !/^Traceback/.test(l) && !/^\^+$/.test(l));
+  if (!lines.length) return t("The install could not finish.");
+  // The sentence that names the error: "ERROR: …", "OSError: …",
+  // "ConnectionResetError(…)" -- a path that merely contains "error" is not one.
+  const err = [...lines].reverse().find((l) => /^ERROR\b|[A-Za-z]+Error\b|\bError:/.test(l) && !/^WARNING/.test(l));
+  return (err || lines[lines.length - 1]).slice(0, 200);
+}
+
 // Windows without Microsoft's Visual C++ runtime (issues #45, #47, #101,
 // #103): torch's first import died with "[WinError 126] ... c10.dll", numpy's
 // with "DLL load failed while importing _multiarray_umath". The app ships none
@@ -94,7 +112,7 @@ export function downloadInterrupted(message) {
 // permalink is the one Microsoft Learn lists as the latest supported
 // (learn.microsoft.com/cpp/windows/latest-supported-vc-redist, 2026-09-19).
 export const VC_RUNTIME_URL = "https://aka.ms/vc14/vc_redist.x64.exe";
-export const VC_RUNTIME_MISSING = "Windows needs Microsoft Visual C++ to run Python + PyTorch. Install it, then try again.";
+export const vcRuntimeMissingReason = () => t("Windows needs Microsoft Visual C++ to run Python + PyTorch. Install it, then try again.");
 const VC_RUNTIME_MARKS = /Visual C\+\+ Redistributable|WinError 126|WinError 1114|c10\.dll|DLL load failed/;
 export function vcRuntimeFailure(message) {
   return VC_RUNTIME_MARKS.test(String(message || ""));

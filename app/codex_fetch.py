@@ -21,6 +21,8 @@ from typing import Optional
 
 import requests
 
+from app.i18n import t
+
 log = logging.getLogger("persodub.codex_fetch")
 
 VERSION = "0.157.1"
@@ -64,7 +66,7 @@ def fetch() -> str:
     Raises RuntimeError with a sentence fit for the screen."""
     pkg = package()
     if pkg is None:
-        raise RuntimeError("ChatGPT sign-in is not available on this computer.")
+        raise RuntimeError(t("ChatGPT sign-in is not available on this computer."))
     with _lock:
         exe = os.path.join(bin_dir(), "codex.exe" if sys.platform == "win32" else "codex")
         if os.path.isfile(exe):
@@ -92,11 +94,11 @@ def _fetch(pkg: tuple) -> str:
                     progress["got"] += len(chunk)
     except (requests.RequestException, OSError) as e:
         progress["stage"] = ""
-        raise RuntimeError("Couldn't download the ChatGPT sign-in. Check your internet and try again.") from e
+        raise RuntimeError(t("Could not download the ChatGPT sign-in. Check your internet and try again.")) from e
     progress["stage"] = "unpack"
     try:
         if base64.b64encode(digest.digest()).decode() != sha512:
-            raise RuntimeError("The ChatGPT sign-in download was damaged. Try again.")
+            raise RuntimeError(t("The ChatGPT sign-in download was damaged. Try again."))
         shutil.rmtree(staging, ignore_errors=True)
         prefix = f"package/vendor/{folder}/"
         with tarfile.open(part, "r:gz") as tar:
@@ -110,7 +112,7 @@ def _fetch(pkg: tuple) -> str:
         shutil.rmtree(root, ignore_errors=True)
         os.replace(staging, root)
     except OSError as e:
-        raise RuntimeError("Couldn't set up the ChatGPT sign-in. Check free space and try again.") from e
+        raise RuntimeError(t("Could not set up the ChatGPT sign-in. Check free space and try again.")) from e
     finally:
         progress["stage"] = ""
         for leftover in (part, staging):

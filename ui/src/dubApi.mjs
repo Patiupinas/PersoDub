@@ -8,6 +8,8 @@
 // No DOM code and no styling here on purpose -- this module stays usable
 // no matter which frontend framework (or no framework) the approved visual
 // design ends up using.
+import { modelLabel } from "./persoModels.mjs";
+import { t } from "./i18n.mjs";
 
 // The 10 languages the bundled Qwen3-TTS model supports -- read from the
 // model's own config.json (codec_language_id). English/Korean first (product
@@ -57,18 +59,22 @@ function qualityModeToNTakes(qualityMode) {
  * @param {"ko_to_en"|"en_to_ko"} [opts.direction] - legacy dubbing direction (fallback)
  * @param {"auto"|"perso"|"local"} [opts.sttEngine="auto"] - transcription engine choice
  * @param {"fast"|"high"} [opts.qualityMode="fast"] - fast = 1 take, high = 4 takes
+ * @param {string} [opts.persoModel] - the Perso voice model of a Perso dubbing (ui/src/persoModels.mjs)
  * @param {number} [opts.nTakesOverride] - advanced: explicit take count, overrides qualityMode
  * @param {number} [opts.numSpeakers] - advanced: known speaker count (omit = auto-detect)
  * @param {"auto"|"gemma"|"gemini"} [opts.translateEngine] - advanced: translation engine
  * @param {File|Blob} [opts.srt] - advanced: pre-translated subtitles (used as-is)
  * @param {File|Blob} [opts.sourceSrt] - advanced: source-language script (translated instead of STT)
  * @param {{start: number, end: number}} [opts.trim] - dub only this part of the video, in seconds
+ * @param {number[][]} [opts.ranges] - dub only these parts, [[start, end], ...] in seconds,
+ *        joined end to end (the timeline's cut tools); sent as one JSON field
  * @returns {FormData}
  */
 /**
  * The languages each dubbing path offers, from GET /api/languages:
- * {local: [{id, code, name, tag}], perso: [...]}. Perso's list is the one it
- * publishes (77 entries, 2026-09-08); the local one is the model's ten. When
+ * {local: [{id, code, name, tag}], perso: [{..., models}]}. Perso's list is
+ * the one it publishes (111 entries, 2026-10-02), each entry with the voice
+ * models that language has; the local one is the model's ten. When
  * the app cannot answer, both fall back to LANGUAGES so the dialog still works.
  */
 export async function fetchLanguages({ baseUrl = "" } = {}) {
@@ -86,21 +92,21 @@ export async function fetchLanguages({ baseUrl = "" } = {}) {
 
 export function buildDubFormData(opts) {
   if (!opts || (!opts.video && !opts.sourceUrl && !opts.downloadId)) {
-    throw new Error("A video file or a link is required.");
+    throw new Error(t("A video file or a link is required."));
   }
   let language, language_code, sourceCode = null;
   if (opts.targetLang) {
     // New source/target pair path (the Direction dropdown was split 2026-08-04).
     // sourceLang is optional -- "" means auto-detect, so only targetLang is required here.
     if (opts.sourceLang === opts.targetLang) {
-      throw new Error("Source and target languages must be different.");
+      throw new Error(t("Source and target languages must be different."));
     }
     // opts.languages is the list the dialog is showing for the chosen path
     // (Perso's own, or the model's ten); an entry's id is what the server
     // takes as language_code -- a region tag such as en-GB, else the code.
     const list = opts.languages || LANGUAGES;
     const target = list.find((l) => (l.id || l.code) === opts.targetLang);
-    if (!target) throw new Error(`Unsupported target language: ${opts.targetLang}`);
+    if (!target) throw new Error(t("Unsupported target language: {code}", { code: opts.targetLang }));
     language = target.name;
     language_code = target.id || target.code;
     sourceCode = opts.sourceLang;
@@ -131,6 +137,11 @@ export function buildDubFormData(opts) {
   // dialog's own choice must never be overridden by that (2026-09-04).
   fd.append("sep_engine", opts.sepEngine === "perso" ? "perso" : "local");
   fd.append("dub_mode", opts.dubMode === "perso" ? "perso" : "local");
+  // The Perso voice model of a Perso dubbing; a blank lets the server pick.
+  if (opts.dubMode === "perso" && opts.persoModel) fd.append("perso_model", opts.persoModel);
+  // The voice engine, when the caller has a choice to send; a blank keeps
+  // the saved default (app/setup.py "voice").
+  if (opts.ttsEngine) fd.append("tts_engine", opts.ttsEngine);
 
   if (opts.numSpeakers != null) fd.append("num_speakers", String(opts.numSpeakers));
   if (opts.translateEngine && opts.translateEngine !== "auto") {
@@ -149,6 +160,14 @@ export function buildDubFormData(opts) {
     fd.append("trim_start", String(opts.trim.start));
     fd.append("trim_end", String(opts.trim.end));
   }
+  // The parts kept on the timeline. One JSON field, because a form has no
+  // list of pairs; the server checks them and joins them before dubbing.
+  if (opts.ranges) fd.append("ranges", JSON.stringify(opts.ranges));
+  // Add language: the first dubbing of the project this one joins.
+  if (opts.projectId) fd.append("project_id", opts.projectId);
+  // A finished Separate audio job of this same cut: the server checks that it
+  // is, and then takes its voice and background instead of separating again.
+  if (opts.stemsFrom) fd.append("stems_from", opts.stemsFrom);
 
   return fd;
 }
@@ -183,7 +202,7 @@ export async function startDubJob(formData, { baseUrl = "" } = {}) {
   const res = await fetch(`${baseUrl}/api/dub/start`, { method: "POST", body: formData });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    const err = new Error(text || `Failed to start dubbing (HTTP ${res.status})`);
+    const err = new Error(text || t("Could not start dubbing (HTTP {status})", { status: res.status }));
     // The missing-models 409 carries a structured detail the caller renders
     // as the download dialog -- hand it over parsed, beside the status.
     err.status = res.status;
@@ -198,7 +217,7 @@ export async function startDubJob(formData, { baseUrl = "" } = {}) {
 export async function fetchJob(jobId, { baseUrl = "" } = {}) {
   const res = await fetch(`${baseUrl}/api/dub/jobs/${jobId}`);
   if (!res.ok) {
-    const err = new Error(`Failed to check job status (HTTP ${res.status})`);
+    const err = new Error(t("Could not check the project (HTTP {status})", { status: res.status }));
     // Carried so a caller can tell an answer from no answer: a server that is
     // not there throws before this, with no status on it at all.
     err.status = res.status;
@@ -230,7 +249,7 @@ export async function probeSource(url, { baseUrl = "" } = {}) {
   });
   if (!res.ok) {
     const detail = (await res.json().catch(() => ({}))).detail || {};
-    const err = new Error(detail.message || "Couldn't fetch the video.");
+    const err = new Error(detail.message || t("Could not fetch the video."));
     err.reason = detail.reason || "unknown";
     throw err;
   }
@@ -264,7 +283,7 @@ export async function startDownload(url, { baseUrl = "" } = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url }),
   });
-  if (!res.ok) throw await downloadError(res, "Couldn't fetch the video.");
+  if (!res.ok) throw await downloadError(res, t("Could not fetch the video."));
   return (await res.json()).id;
 }
 
@@ -274,13 +293,27 @@ export async function startDownload(url, { baseUrl = "" } = {}) {
  */
 export async function fetchDownload(id, { baseUrl = "" } = {}) {
   const res = await fetch(`${baseUrl}/api/downloads/${id}`);
-  if (!res.ok) throw await downloadError(res, "Lost track of the download.");
+  if (!res.ok) throw await downloadError(res, t("Lost track of the download."));
   return res.json();
 }
 
 /** Where the held video plays from, once its record says ready. */
 export function downloadVideoUrl(id, { baseUrl = "" } = {}) {
   return `${baseUrl}/api/downloads/${id}/video`;
+}
+
+/**
+ * POST /api/downloads/{id}/hold -- hold a kept draft's video again under the
+ * id it had (the app forgets what it holds when it restarts; the file stays).
+ * Throws when the file itself is gone.
+ */
+export async function holdDownload(id, { title = "", duration = 0 } = {}, { baseUrl = "" } = {}) {
+  const res = await fetch(`${baseUrl}/api/downloads/${id}/hold`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, duration_sec: duration }),
+  });
+  if (!res.ok) throw await downloadError(res, t("This video is no longer on this computer."));
+  return res.json();
 }
 
 /**
@@ -293,7 +326,7 @@ export async function uploadDownload(file, durationSec, { baseUrl = "" } = {}) {
   fd.append("video", file);
   if (durationSec) fd.append("duration_sec", String(durationSec));
   const res = await fetch(`${baseUrl}/api/downloads/upload`, { method: "POST", body: fd });
-  if (!res.ok) throw await downloadError(res, "Couldn't hold on to this file.");
+  if (!res.ok) throw await downloadError(res, t("Could not hold on to this file."));
   return res.json();
 }
 
@@ -302,13 +335,39 @@ export async function uploadDownload(file, durationSec, { baseUrl = "" } = {}) {
  * own: the chosen stretch, or all of it when there is no trim. Returns
  * {path, seconds}.
  */
-export async function saveDownloadClip(id, trim, { baseUrl = "" } = {}) {
+export async function saveDownloadClip(id, trim, { baseUrl = "", ratio = null } = {}) {
+  const body = trim ? { start: trim.start, end: trim.end } : {};
+  // A canvas to save it in (app/ratio.py); left out, the file is as it was.
+  if (ratio && ratio !== "original") body.ratio = ratio;
   const res = await fetch(`${baseUrl}/api/downloads/${id}/save`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(trim ? { start: trim.start, end: trim.end } : {}),
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw await downloadError(res, "Couldn't save the clip.");
+  if (!res.ok) throw await downloadError(res, t("Could not save the clip."));
+  return res.json();
+}
+
+/**
+ * POST /api/downloads/{id}/save -- what the Export dialog saves of a draft:
+ * the timeline's kept parts (`ranges`, [[start, end], ...], or null for the
+ * whole video) joined into one video, in the canvas of `ratio` when one is
+ * picked, or their sound alone when `audio` is "mp3" or "wav". Returns
+ * {path, seconds}.
+ */
+export async function saveDownloadParts(id, { ranges = null, audio = "", ratio = null } = {}, { baseUrl = "" } = {}) {
+  const body = {};
+  if (ranges) body.ranges = ranges;
+  if (audio) body.audio = audio;
+  // A canvas to save the video in (app/ratio.py); left out, the file is as it
+  // was. The sound alone has no picture to put in one.
+  else if (ratio && ratio !== "original") body.ratio = ratio;
+  const res = await fetch(`${baseUrl}/api/downloads/${id}/save`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await downloadError(res, audio ? t("Could not save the audio.") : t("Could not save the video."));
   return res.json();
 }
 
@@ -324,7 +383,7 @@ export async function suggestEraseArea(downloadId, { baseUrl = "" } = {}) {
   const fd = new FormData();
   fd.append("download_id", downloadId);
   const res = await fetch(`${baseUrl}/api/erase/suggest`, { method: "POST", body: fd });
-  if (!res.ok) throw await downloadError(res, "Couldn't look for the subtitles.");
+  if (!res.ok) throw await downloadError(res, t("Could not look for the subtitles."));
   return res.json();
 }
 
@@ -332,8 +391,10 @@ export async function suggestEraseArea(downloadId, { baseUrl = "" } = {}) {
  * POST /api/erase -- queue the erase; answers with the job id to follow.
  * `trim` is {start, end} in seconds, or null for the whole video: the app cuts
  * the video down first and the cut IS the job, exactly as it is for a dub.
+ * `ranges` is several kept parts, [[start, end], ...], joined the same way.
  */
-export async function startErase({ downloadId, area, project, trim = null }, { baseUrl = "" } = {}) {
+export async function startErase({ downloadId, area, project, trim = null, ranges = null },
+                                 { baseUrl = "" } = {}) {
   const fd = new FormData();
   fd.append("download_id", downloadId);
   fd.append("area", Array.isArray(area) ? JSON.stringify(area) : String(area || "whole"));
@@ -343,8 +404,9 @@ export async function startErase({ downloadId, area, project, trim = null }, { b
     fd.append("trim_start", String(trim.start));
     fd.append("trim_end", String(trim.end));
   }
+  if (ranges) fd.append("ranges", JSON.stringify(ranges));
   const res = await fetch(`${baseUrl}/api/erase`, { method: "POST", body: fd });
-  if (!res.ok) throw await downloadError(res, "Couldn't start erasing.");
+  if (!res.ok) throw await downloadError(res, t("Could not start erasing."));
   return (await res.json()).job_id;
 }
 
@@ -354,14 +416,14 @@ export async function startErase({ downloadId, area, project, trim = null }, { b
  */
 export async function retryErase(jid, { baseUrl = "" } = {}) {
   const res = await fetch(`${baseUrl}/api/erase/${jid}/retry`, { method: "POST" });
-  if (!res.ok) throw await downloadError(res, "Couldn't start it again.");
+  if (!res.ok) throw await downloadError(res, t("Could not start it again."));
   return (await res.json()).job_id;
 }
 
 /** GET /api/erase/{jid} -- the record, plus `percent` and `done`. */
 export async function fetchErase(jid, { baseUrl = "" } = {}) {
   const res = await fetch(`${baseUrl}/api/erase/${jid}`);
-  if (!res.ok) throw await downloadError(res, "Lost track of the erase.");
+  if (!res.ok) throw await downloadError(res, t("Lost track of the erase."));
   return res.json();
 }
 
@@ -370,14 +432,20 @@ export function eraseVideoUrl(jid, which = "erased", { baseUrl = "" } = {}) {
   return `${baseUrl}/api/erase/${jid}${which === "original" ? "/original" : "/video"}`;
 }
 
-/** POST /api/erase/{jid}/save -- write the cleaned video into Downloads. */
-export async function saveErased(jid, { baseUrl = "" } = {}) {
+/** POST /api/erase/{jid}/save -- write the cleaned video into Downloads
+    (inside the canvas of `ratio` when one is picked), or its sound alone when
+    `audio` is "mp3" or "wav". */
+export async function saveErased(jid, { baseUrl = "", audio = "", ratio = null } = {}) {
+  const body = {};
+  if (audio) body.audio = audio;
+  // The sound alone has no picture to put in a canvas.
+  else if (ratio && ratio !== "original") body.ratio = ratio;
   const res = await fetch(`${baseUrl}/api/erase/${jid}/save`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: "{}",
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw await downloadError(res, "Couldn't save the video.");
+  if (!res.ok) throw await downloadError(res, audio ? t("Could not save the audio.") : t("Could not save the video."));
   return res.json();
 }
 
@@ -388,7 +456,85 @@ export async function saveErased(jid, { baseUrl = "" } = {}) {
  */
 export async function eraseToDub(jid, { baseUrl = "" } = {}) {
   const res = await fetch(`${baseUrl}/api/erase/${jid}/dub`, { method: "POST" });
-  if (!res.ok) throw await downloadError(res, "Couldn't open the erased video.");
+  if (!res.ok) throw await downloadError(res, t("Could not open the erased video."));
+  return res.json();
+}
+
+// ---- Separate audio (app/api/separate.py) -----------------------------------
+
+/**
+ * POST /api/separate -- queue a separation of the kept parts of a held video;
+ * answers with the job id to follow. `engine` is "local" or "perso". A
+ * refusal is thrown with `status` and the server's `detail` beside it: the
+ * missing-pack 409 carries the download notice's own payload.
+ */
+export async function startSeparate({ downloadId, engine = "local", project = "", trim = null, ranges = null },
+                                    { baseUrl = "" } = {}) {
+  const fd = new FormData();
+  fd.append("download_id", downloadId);
+  fd.append("engine", engine);
+  if (project) fd.append("project", project);
+  if (trim) {
+    fd.append("trim_start", String(trim.start));
+    fd.append("trim_end", String(trim.end));
+  }
+  if (ranges) fd.append("ranges", JSON.stringify(ranges));
+  const res = await fetch(`${baseUrl}/api/separate`, { method: "POST", body: fd });
+  if (!res.ok) throw await separateError(res, t("Could not start separating."));
+  return (await res.json()).job_id;
+}
+
+async function separateError(res, fallback) {
+  const body = await res.json().catch(() => ({}));
+  const err = new Error(typeof body.detail === "string" ? body.detail : fallback);
+  err.status = res.status;
+  err.detail = body.detail;
+  return err;
+}
+
+/** POST /api/separate/{jid}/retry -- the same cut, the same way, again. */
+export async function retrySeparate(jid, { baseUrl = "" } = {}) {
+  const res = await fetch(`${baseUrl}/api/separate/${jid}/retry`, { method: "POST" });
+  if (!res.ok) throw await separateError(res, t("Could not start it again."));
+  return (await res.json()).job_id;
+}
+
+/** GET /api/separate/{jid} -- the record, plus `elapsed` (seconds it has been
+    separating) and `done` (both sounds are there). */
+export async function fetchSeparate(jid, { baseUrl = "" } = {}) {
+  const res = await fetch(`${baseUrl}/api/separate/${jid}`);
+  if (!res.ok) throw await separateError(res, t("Lost track of the separation."));
+  return res.json();
+}
+
+/** POST /api/separate/{jid}/open -- the job's video, held again for a draft:
+    {download_id, title, duration_sec, ranges}. */
+export async function openSeparated(jid, { baseUrl = "" } = {}) {
+  const res = await fetch(`${baseUrl}/api/separate/${jid}/open`, { method: "POST" });
+  if (!res.ok) throw await separateError(res, t("Could not open this video."));
+  return res.json();
+}
+
+/** Where one of a job's two sounds plays or downloads from: `which` is
+    "voice" or "background", `fmt` "mp3" or "wav". A dubbing's and a
+    separation's alike. */
+export function stemUrl(jid, which, fmt = "mp3", { baseUrl = "" } = {}) {
+  return `${baseUrl}/api/dub/result/${jid}/stem/${which}?format=${fmt}`;
+}
+
+/** Where the picture of one of a separation's two sounds is read from. */
+export function stemWaveUrl(jid, which, { baseUrl = "" } = {}) {
+  return `${baseUrl}/api/separate/${jid}/waveform/${which}`;
+}
+
+/**
+ * Add language: the video a dub was made from, held once more for a new draft
+ * (POST /api/dub/jobs/{id}/again). Resolves to {download_id, title,
+ * duration_sec, ranges}: ranges are the parts that dub kept, or null for all.
+ */
+export async function dubAgainSource(jid, { baseUrl = "" } = {}) {
+  const res = await fetch(`${baseUrl}/api/dub/jobs/${jid}/again`, { method: "POST" });
+  if (!res.ok) throw await downloadError(res, t("Could not open this video."));
   return res.json();
 }
 
@@ -440,11 +586,19 @@ export function stagePattern(stages) {
  * how the card and the percentages drift apart.
  */
 export function stepLabels(stages) {
+  // In the language of the moment (t(), ui/src/i18n.mjs). The table keeps its
+  // labels in English, as the key: tests/test_stage_tables_match.py reads them
+  // out of this file, and the counting below folds stages by them.
+  return stepNames(stages).map((label) => t(label));
+}
+
+// The same steps by their English labels.
+function stepNames(stages) {
   return stages.map((s) => s.label).filter((label, i, all) => label !== all[i - 1]);
 }
 
 // The bar's steps for the table this file parses for.
-const STEP_LABELS = stepLabels(STAGES);
+const STEP_LABELS = stepNames(STAGES);
 // Which step (1-based) each stage belongs to, by stage index.
 const STEP_OF = STAGES.map((s) => STEP_LABELS.indexOf(s.label) + 1);
 // Each step's share of the 100 percent, its stages' weights added up.
@@ -486,7 +640,7 @@ export function parseProgress(logs, { lineCount = null } = {}) {
     if (/Downloading the finished video/.test(l)) cloud = Math.max(cloud, 3);
   }
   if (cloud > 0) {
-    const label = cloud === 1 ? "Uploading to Perso" : cloud === 2 ? "Dubbing at Perso" : "Delivering";
+    const label = cloud === 1 ? t("Uploading to Perso") : cloud === 2 ? t("Dubbing at Perso") : t("Delivering");
     const percent = cloud === 1 ? 15 : cloud === 2 ? 55 : 90;
     return { stage: cloud, total: 3, label, percent, voiceDone: 0, voiceTotal: null, raw: 0 };
   }
@@ -508,7 +662,7 @@ export function parseProgress(logs, { lineCount = null } = {}) {
   for (let i = 0; i < Math.min(raw, STAGES.length); i++) {
     if (STAGES[i].floor) percent = Math.max(percent, STAGES[i].floor);
   }
-  return { stage, total: STEP_LABELS.length, label: STEP_LABELS[stage - 1] || "Waiting to start",
+  return { stage, total: STEP_LABELS.length, label: stage ? t(STEP_LABELS[stage - 1]) : t("Waiting to start"),
     percent, voiceDone, voiceTotal, raw };
 }
 
@@ -553,7 +707,7 @@ export async function pollDubJob(jobId, {
       // different one). Asking again every ten seconds would never bring it
       // back, and "still trying" would not be true.
       if (e.status === 404) {
-        throw new Error("This job is no longer on the app server -- it may have been deleted.");
+        throw new Error(t("This project is no longer here. It may have been deleted."));
       }
       if (onUnreachable) onUnreachable(e);
       await sleep(wait);
@@ -583,7 +737,9 @@ export async function cancelDubJob(jobId, { baseUrl = "" } = {}) {
   if (!res.ok) {
     let detail = "";
     try { detail = (await res.json()).detail || ""; } catch { /* ignore -- use the fallback message below */ }
-    throw new Error(detail || `Failed to cancel (HTTP ${res.status})`);
+    // The status rides along: 409 means the job was already over, which the
+    // running screen does not call a failure.
+    throw Object.assign(new Error(detail || t("Could not stop it (HTTP {status})", { status: res.status })), { status: res.status });
   }
   const data = await res.json();
   return data.status;
@@ -610,6 +766,19 @@ const ENGINE_LABELS = {
   qwen3: { label: "Qwen3-TTS", api: false },
 };
 
+/**
+ * A voice engine's name with the model behind it, from GET /api/engines'
+ * voice_models: "Qwen3-TTS · 1.7B" for the dropdown, and short for a job's
+ * engine line, "Qwen3-TTS 1.7B". The name alone when the model is not known
+ * (Qwen3-TTS not downloaded yet).
+ */
+export function voiceLabel(engine, voiceModels = {}, short = false) {
+  const name = (ENGINE_LABELS[engine] || {}).label || engine;
+  const model = (voiceModels || {})[engine];
+  if (!model) return name;
+  return short ? `${name} ${model}` : `${name} · ${model}`;
+}
+
 // 1 take is the fast path; anything more is the best-of-N selection. The words
 // are the New project dialog's own ("Fast" / "High quality"): a chip that
 // renamed the choice to "Standard" left the user looking for a setting by that
@@ -618,7 +787,7 @@ function qualityChip(quality) {
   if (quality == null) return null;
   const takes = Number(quality);
   if (!Number.isFinite(takes)) return null;
-  return { role: "", label: takes <= 1 ? "Fast mode" : "High quality mode", api: false };
+  return { role: "", label: takes <= 1 ? t("Fast mode") : t("High quality mode"), api: false };
 }
 
 /**
@@ -631,12 +800,14 @@ function qualityChip(quality) {
  * fields at all returns [].
  *
  * @param {Object} job - a job record (or list row) from the API
- * @param {{withQuality?: boolean, withTts?: boolean}} [opts]
+ * @param {{withQuality?: boolean, withTts?: boolean, voiceModels?: Object}} [opts]
  *   What a sidebar row leaves out: the quality chip is long enough to wrap a
  *   130px column on its own, and it is the finished screen that is about how
- *   the job was made.
+ *   the job was made. voiceModels is GET /api/engines' voice_models, which
+ *   puts the model beside the voice engine ("Qwen3-TTS 1.7B"). A job does not
+ *   record its model; each engine has only ever had the one it has now.
  */
-export function engineChips(job, { withQuality = true, withTts = true } = {}) {
+export function engineChips(job, { withQuality = true, withTts = true, voiceModels = {} } = {}) {
   const j = job || {};
   const chips = [];
   // The role is the field the id was read out of, which is the only place it
@@ -646,12 +817,35 @@ export function engineChips(job, { withQuality = true, withTts = true } = {}) {
     const known = key ? ENGINE_LABELS[String(key).toLowerCase()] : null;
     if (known) chips.push({ role, ...known });
   }
+  const tts = chips.find((c) => c.role === "TTS");
+  if (tts) tts.label = voiceLabel(String(j.tts).toLowerCase(), voiceModels, true);
+  // A Perso dubbing names the voice model it was made with: "Perso Oriole".
+  const dubbing = chips.find((c) => c.role === "Dubbing");
+  if (dubbing && modelLabel(j.perso_model)) dubbing.label += ` ${modelLabel(j.perso_model)}`;
   if (chips.length === 0) return [];   // nothing known -- say nothing at all
   const quality = withQuality ? qualityChip(j.quality) : null;
   // Quality leads the row: it is the one choice the user made by hand, where
   // the three engines below it are mostly whatever the app had installed.
   if (quality) chips.unshift(quality);
   return chips;
+}
+
+// The role words as a person reads them, in the language of the moment. The
+// chips keep the short ones, which the code compares.
+const ROLE_WORDS = {
+  get Dubbing() { return t("Dubbing"); }, get Separation() { return t("Separation"); },
+  get STT() { return t("Transcription"); }, get Translation() { return t("Translation"); },
+  get TTS() { return t("Voice"); },
+};
+
+/**
+ * One line naming what did each part of a dub: "Fast mode · Separation Perso ·
+ * Transcription Perso · Translation ChatGPT · Voice Qwen3-TTS 1.7B". A row of
+ * bare names ("Perso · Perso · ChatGPT") did not say which was which.
+ */
+export function engineLine(job, opts) {
+  return engineChips(job, opts)
+    .map((c) => [ROLE_WORDS[c.role] || c.role, c.label].filter(Boolean).join(" ")).join(" · ");
 }
 
 /** A job's start time as "YYYY-MM-DD HH:MM" in the user's own timezone. */

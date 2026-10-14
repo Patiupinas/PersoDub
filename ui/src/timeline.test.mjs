@@ -310,13 +310,15 @@ test("the ruler labels every 3 seconds at zoom 1 and thins out as the strip shri
   const h = harness({ room: 200 });
   t.after(h.log.restore);
   h.api.renderTimeline(LINES, 30);
-  // Fit a 30s video in 200px would be 6.7px a second; the floor is 10.
+  // Fit: 30s in the 120px left of the 80px tail is 4px a second, however
+  // small that is -- a 26-minute job has to fit too (owner, 2026-10-14).
   h.box.fire("click", evt({ "#tlZoomFit": {} }));
   const track = h.$("timelineTrack").innerHTML;
-  assert.match(track, /class="tl-inner" style="width:380px"/);
-  assert.ok(track.includes('style="left:0.0px;width:20.0px"\n    title="안녕"'));
-  assert.ok(track.includes('<span style="left:300.0px">00:30</span>'), "a label every 30s at 10px a second");
-  assert.ok(track.includes("--tl-step:30.00px"), "and ten small ticks between two");
+  assert.match(track, /class="tl-inner" style="width:200px"/);
+  assert.ok(track.includes('style="left:0.0px;width:8.0px"\n    title="안녕"'));
+  assert.equal(labelEvery(4), 60, "a label every minute at 4px a second");
+  assert.ok(track.includes('<span style="left:0.0px">00:00</span>'));
+  assert.ok(track.includes("--tl-step:24.00px"), "and ten small ticks between two");
 });
 
 test("a line too short to draw is still wide enough to see and to grab", (t) => {
@@ -1357,4 +1359,29 @@ test("while a draft is being separated its cuts are locked", (t) => {
   h.api.showAudio({ locked: false, stems: null });
   h.api.paintTimeline(5, 10, "clock");
   assert.equal(h.$("tlSplit").disabled, false);
+});
+
+test("a long video's film strip keeps every frame its own size and draws only the part near the view", async (t) => {
+  // 1,000 seconds at zoom 1 is 77,000px: boxes widened to fit a cap of 400
+  // stretched every frame sideways (owner, 2026-10-14). Now a box is always
+  // 69px, and only a screen either side of the view is in the page.
+  const h = harness({ media: { kind: "job", id: "long", name: "long.mp4" } });
+  t.after(h.log.restore);
+  h.api.renderTimeline(LINES, 1000);
+  await settle();
+  let track = h.$("timelineTrack").innerHTML;
+  assert.ok(track.includes("--strip-w:828.0px"), "the strip image at its own size");
+  const boxes = track.match(/<i style="left:[0-9.]+px;width:69\.0px;/g) || [];
+  assert.equal(boxes.length, Math.ceil(1200 / 69), "the view (600px) and the screen after it");
+  assert.ok(!/width:(?!69\.0px)[0-9.]+px;background-position/.test(track), "no box wider than a frame");
+
+  // Scrolled to the middle, the boxes there are drawn and the first ones let go.
+  const el = h.$("timelineTrack");
+  el.scrollLeft = 38500;
+  const film = { dataset: { film: "0" }, innerHTML: "" };
+  el.qs[".tl-film[data-film]"] = [film];
+  h.box.fire("scroll", { target: el });
+  for (const frame of h.log.frames.splice(0)) frame();   // the queued animation frame
+  assert.ok(film.innerHTML.startsWith('<i style="left:37881.0px;width:69.0px;'), film.innerHTML.slice(0, 60));
+  assert.equal((film.innerHTML.match(/<i /g) || []).length, Math.ceil((38500 + 1200) / 69) - Math.floor((38500 - 600) / 69));
 });

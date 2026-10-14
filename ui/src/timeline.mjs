@@ -136,9 +136,10 @@ export function initTimelineUi({ $, getVideo, getClock, getMedia = () => null, g
                                  videos = () => [getVideo()],
                                  onStemMute = () => {},
                                  loadImage = defaultLoadImage, fetchJson = defaultFetchJson }) {
-  // The smallest a second of video may be drawn. Without a floor a long job
-  // squeezes into slivers nobody can read; with it the track scrolls instead.
-  const TL_MIN_PPS = 10;
+  // There is no floor under the scale: Fit has to show the whole video at
+  // once however long it is. A floor of 10px a second kept a 26-minute job
+  // from ever fitting (owner, 2026-10-14); past Fit the lines are slivers, but
+  // the zoom buttons bring them back.
   // The room left past the end of the strip, so the last clip's edge is not
   // flush with the scrollbar's.
   const TL_TAIL_PX = 80;
@@ -160,7 +161,7 @@ export function initTimelineUi({ $, getVideo, getClock, getMedia = () => null, g
   // way instead of being thrown back to the start.
   let timelineAt = 0;
   // How far in the viewer has zoomed: 1 is 77px a second, steps of 1.5 up to
-  // 8, and down as far as fitting the whole video (never under 10px a second).
+  // 8, and down as far as fitting the whole video.
   let timelineZoom = 1;
   const TL_ZOOM_STEP = 1.5, TL_ZOOM_MAX = 8;
 
@@ -210,22 +211,65 @@ export function initTimelineUi({ $, getVideo, getClock, getMedia = () => null, g
     return getMedia();
   }
 
-  // The film strip for [a, b] of the video, drawn `w` pixels wide and `h` tall.
-  function filmHtml(media, a, b, w, h) {
+  // The film strips on the track right now, so a scroll can draw the frames
+  // that came into view (drawFilms) without drawing the whole track again.
+  let films = [];
+
+  // The film strip for [a, b] of the video, drawn `w` pixels wide and `h`
+  // tall, standing `x` pixels into the track. Every frame box is a frame's own
+  // size: a 26-minute job at zoom 1 is 1,800 boxes, so only the ones within a
+  // screen of the part on show are in the page, and a scroll draws the rest as
+  // they come. (Widening the boxes to fit a cap of 400 stretched every frame
+  // sideways on a long video -- owner, 2026-10-14.)
+  function filmHtml(media, a, b, w, h, x) {
     const url = `/api/media/${media.kind}/${encodeURIComponent(media.id)}/filmstrip`;
     const strip = picture(url, (u) => loadImage(u).then((img) => ({ n: Math.max(1, Math.round(img.width / FRAME_W)) })));
     if (!strip || !(b > a)) return '<div class="tl-film"></div>';
-    const full = videoLength();
     const fw = FRAME_W * h / FRAME_H;
-    const count = Math.max(1, Math.min(MAX_TILES, Math.ceil(w / fw)));
-    const tw = Math.max(fw, w / count);
+    const f = { strip, a, w, x, fw, k0: -1, k1: -1 };
+    const i = films.push(f) - 1;
+    const [k0, k1] = filmRange(f);
+    return `<div class="tl-film" data-film="${i}" style="--strip:url('${url}');--strip-w:${(strip.n * fw).toFixed(1)}px">${filmTiles(f, k0, k1)}</div>`;
+  }
+
+  // The frame boxes of a strip worth drawing: the part on show and a screen
+  // either side of it, as box numbers [k0, k1).
+  function filmRange(f) {
+    const viewL = timelineAt * timelinePps - f.x;
+    const k0 = Math.max(0, Math.floor((viewL - timelineRoom) / f.fw));
+    const k1 = Math.min(Math.ceil(f.w / f.fw), Math.ceil((viewL + 2 * timelineRoom) / f.fw), k0 + MAX_TILES);
+    return [k0, Math.max(k0, k1)];
+  }
+
+  function filmTiles(f, k0, k1) {
+    const full = videoLength();
+    f.k0 = k0; f.k1 = k1;
     let tiles = "";
-    for (let k = 0; k * tw < w; k++) {
-      const mid = a + ((k + 0.5) * tw) / timelinePps;
-      const idx = Math.min(strip.n - 1, Math.max(0, Math.floor((mid / full) * strip.n)));
-      tiles += `<i style="left:${(k * tw).toFixed(1)}px;width:${tw.toFixed(1)}px;background-position:-${(idx * tw).toFixed(1)}px 0"></i>`;
+    for (let k = k0; k < k1; k++) {
+      const mid = f.a + ((k + 0.5) * f.fw) / timelinePps;
+      const idx = Math.min(f.strip.n - 1, Math.max(0, Math.floor((mid / full) * f.strip.n)));
+      tiles += `<i style="left:${(k * f.fw).toFixed(1)}px;width:${f.fw.toFixed(1)}px;background-position:-${(idx * f.fw).toFixed(1)}px 0"></i>`;
     }
-    return `<div class="tl-film" style="--strip:url('${url}');--strip-w:${(strip.n * tw).toFixed(1)}px">${tiles}</div>`;
+    return tiles;
+  }
+
+  // After a scroll: every strip whose boxes on show have changed gets them again.
+  function drawFilms() {
+    const track = $("timelineTrack");
+    if (!track || !track.querySelectorAll) return;
+    for (const el of track.querySelectorAll(".tl-film[data-film]")) {
+      const f = films[+el.dataset.film];
+      if (!f) continue;
+      const [k0, k1] = filmRange(f);
+      if (k0 !== f.k0 || k1 !== f.k1) el.innerHTML = filmTiles(f, k0, k1);
+    }
+  }
+  let filmsQueued = false;
+  function scheduleFilms() {
+    if (filmsQueued) return;
+    filmsQueued = true;
+    const run = () => { filmsQueued = false; drawFilms(); };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run); else run();
   }
 
   // The loudness of [a, b] of the video as bars, one per value.
@@ -470,13 +514,13 @@ export function initTimelineUi({ $, getVideo, getClock, getMedia = () => null, g
     title="${escapeHtml(text || t("Line {n}", { n: l.line }))}">${inner}</button>`;
   }
 
-  // The scale for the room there is: 77px a second times the zoom, never under
-  // the floor. Fit is the zoom that shows the whole length at once, the tail
-  // past the end included, so there is nothing left to scroll.
+  // The scale for the room there is: 77px a second times the zoom. Fit is the
+  // zoom that shows the whole length at once, the tail past the end included,
+  // so there is nothing left to scroll.
   function fitZoom() {
     const len = mode === "draft" ? totalOf(clips || []) : timelineDuration;
     const room = Math.max(1, timelineRoom - TL_TAIL_PX);
-    return len > 0 ? Math.min(TL_ZOOM_MAX, Math.max(TL_MIN_PPS / TL_PPS, room / len / TL_PPS)) : 1;
+    return len > 0 ? Math.min(TL_ZOOM_MAX, room / len / TL_PPS) : 1;
   }
   // Fit starts the strip at 00:00. Zooming around the playhead as the other
   // zoom buttons do left it scrolled, and the first seconds cut off.
@@ -487,7 +531,7 @@ export function initTimelineUi({ $, getVideo, getClock, getMedia = () => null, g
   }
   // As far out as fitting the whole video, and for a short one that already
   // fits at zoom 1, out to half of it still.
-  const minZoom = () => Math.max(TL_MIN_PPS / TL_PPS, Math.min(0.5, fitZoom()));
+  const minZoom = () => Math.min(0.5, fitZoom());
 
   // The ruler: a label every few seconds and ten small ticks between two.
   function rulerHtml(width) {
@@ -513,6 +557,7 @@ export function initTimelineUi({ $, getVideo, getClock, getMedia = () => null, g
     }
     timelineZoom = Math.min(TL_ZOOM_MAX, Math.max(minZoom(), timelineZoom));
     timelinePps = TL_PPS * timelineZoom;
+    films = [];
     const lanes = mode === "draft" ? draftLanesHtml() : jobLanesHtml();
     const len = mode === "draft" ? totalOf(clips || []) : timelineDuration;
     // At least the room, so the ruler runs the whole way across; a bit past the
@@ -536,7 +581,7 @@ export function initTimelineUi({ $, getVideo, getClock, getMedia = () => null, g
     const name = media ? escapeHtml(media.name || "") : "";
     const video = `<div class="tl-lane tl-lane-video"><div class="tl-vclip" style="left:0;width:${w.toFixed(1)}px">
       <div class="tl-vcap">${name}<b>${fmtLength(timelineDuration)}</b></div>
-      ${media ? filmHtml(media, 0, timelineDuration, w, 39) : ""}
+      ${media ? filmHtml(media, 0, timelineDuration, w, 39, 0) : ""}
       <div class="tl-wave">${media ? waveHtml(media, 0, timelineDuration) : ""}</div></div></div>`;
 
     // Each speaker wears a colour on the top edge of their lines.
@@ -598,7 +643,7 @@ export function initTimelineUi({ $, getVideo, getClock, getMedia = () => null, g
     clips.forEach(([a, b], i) => {
       const w = (b - a) * timelinePps;
       html += `<div class="tl-vclip tl-cut${i === selected ? " sel" : ""}" data-i="${i}"
-      style="left:${x.toFixed(1)}px;width:${Math.max(1, w - 2).toFixed(1)}px">${media ? filmHtml(media, a, b, w, 55) : ""}<div class="tl-wave">${media ? waveHtml(media, a, b) : ""}</div></div>`;
+      style="left:${x.toFixed(1)}px;width:${Math.max(1, w - 2).toFixed(1)}px">${media ? filmHtml(media, a, b, w, 55, x) : ""}<div class="tl-wave">${media ? waveHtml(media, a, b) : ""}</div></div>`;
       x += w;
       // Where this piece meets the next: the 2px gap above is otherwise too
       // faint to read as a cut (two near-identical video frames either side
@@ -808,6 +853,7 @@ export function initTimelineUi({ $, getVideo, getClock, getMedia = () => null, g
   $("timeline").addEventListener("scroll", (e) => {
     if (e.target.id === "timelineTrack" && timelinePps) {
       timelineAt = e.target.scrollLeft / timelinePps;
+      scheduleFilms();
       // Anything that did not come from followPlayhead is the viewer scrolling,
       // and following gets out of the way for a while.
       if (Math.abs(e.target.scrollLeft - followedTo) >= 1) followUntil = Date.now() + FOLLOW_PAUSE_MS;

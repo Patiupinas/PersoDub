@@ -34,7 +34,7 @@ from app import codex_fetch
 from app.agents import base as agent_base
 from app.agents import claude as claude_agent
 from app.agents import codex as codex_agent
-from app.config import PERSODUB_LOG_DIR
+from app.config import DEFAULT_LOG_DIR
 from app.i18n import t
 from app.translate import CHATGPT_DEFAULT_MODEL
 
@@ -79,8 +79,11 @@ AGENTS = {
 }
 
 # Where the assistant's own files live. Never the user's global CLI config:
-# their everyday setup has to keep working exactly as it did.
-AGENT_DIR = os.path.join(PERSODUB_LOG_DIR, "agent")
+# their everyday setup has to keep working exactly as it did. Nor wherever the
+# logs are sent (PERSODUB_LOG_DIR): the CLI runs in this folder, and Claude's
+# -c continues the conversation of the folder it runs in, so a folder that
+# moved would start every thread over. The app's own logs/agent, as always.
+AGENT_DIR = os.path.join(DEFAULT_LOG_DIR, "agent")
 
 # --- Which account each CLI is signed in with -------------------------------
 # Asking costs a process, so the answer is kept for a minute -- and the asking
@@ -144,6 +147,19 @@ def _models_of(driver) -> list:
             logger.debug("Could not read %s's model", getattr(driver, "__name__", "?"))
             return []
     return list(getattr(driver, "MODELS", []))
+
+
+def _model_states_of(driver) -> list:
+    """The whole list with where each model's check stands, from a driver that
+    checks its models against the account (Codex); [] from the rest."""
+    finder = getattr(driver, "model_states", None) if driver else None
+    if not callable(finder):
+        return []
+    try:
+        return list(finder())
+    except Exception:  # noqa: BLE001 -- a bad config file is not a broken app
+        logger.debug("Could not read %s's model checks", getattr(driver, "__name__", "?"))
+        return []
 
 
 def _login_of(key: str, binary: str, ask: bool) -> dict:
@@ -240,6 +256,9 @@ def agent_status(login: int = 0):
             "models": (list(meta["models"]) if "models" in meta
                        else _models_of(driver) if state["logged_in"] is True or not callable(getattr(driver, "models", None))
                        else []),
+            # Codex's whole list, each model with its check, shown at once
+            # (ui/src/agentStrip.mjs); "models" above stays the pickable ones.
+            "model_states": _model_states_of(driver) if state["logged_in"] is True else [],
             # A sign-in the app keeps (ChatGPT for translation), not an assistant.
             "sign_in_only": bool(meta.get("sign_in_only")),
         })

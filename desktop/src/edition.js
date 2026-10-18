@@ -36,22 +36,13 @@ export function buildEdition(env) {
   return name;
 }
 
-// The running app's edition: the installer's EDITION mark in the app's user
-// data folder when there is one, else the payload's EDITION file, else the
-// environment. An unknown name is the default, since a running app has no
-// build to stop.
-//
-// The mark: one signed Windows installer serves both editions. A copy of it
-// whose file name ends in "-production.exe" writes the mark as it installs
-// (desktop/build/installer.nsh), so the company hands out that copy and the
-// public release carries the plain name, and the file is signed once.
-export function readEdition({ payloadDir, env, userDataDir }) {
+// The running app's edition: the payload's EDITION file when there is one,
+// otherwise the environment. An unknown name is the default, since a running
+// app has no build to stop.
+export function readEdition({ payloadDir, env }) {
   let name = env.PERSODUB_EDITION;
   if (payloadDir) {
     try { name = readFileSync(join(payloadDir, "EDITION"), "utf8").trim(); } catch { /* no EDITION file: the environment's */ }
-  }
-  if (userDataDir) {
-    try { name = readFileSync(join(userDataDir, "EDITION"), "utf8").trim(); } catch { /* no mark: the build's */ }
   }
   return Object.hasOwn(EDITIONS, name) ? name : DEFAULT_EDITION;
 }
@@ -77,4 +68,21 @@ export function rememberedEdition(kitDir, build) {
   const sep = text === "" || text.endsWith("\n") ? "" : "\n";
   appendFileSync(path, `${sep}# The edition this kit first ran as. Updates do not change it.\nPERSODUB_EDITION=${build}\n`);
   return build;
+}
+
+// The kit's remembered edition, read only: null while kit.env has none (a
+// kit's first run, before rememberedEdition writes it) or names no edition.
+export function kitEdition(kitDir) {
+  const path = kitDir ? join(kitDir, KIT_ENV) : null;
+  if (!path || !existsSync(path)) return null;
+  const name = parseEnvFile(readFileSync(path, "utf8")).PERSODUB_EDITION;
+  return Object.hasOwn(EDITIONS, name) ? name : null;
+}
+
+// shell.log's EDITION line: the edition this kit runs as, what that decides
+// (where a dub runs when nothing is chosen, app/setup.py), and where it came
+// from -- `how` -- beside the edition this app file was built as.
+export function editionLine(runEdition, build, how) {
+  const dubs = runEdition === "production" ? "the Perso API" : "this computer";
+  return `EDITION ${runEdition}: dubs default to ${dubs} (${how}; app file: ${build} build)`;
 }

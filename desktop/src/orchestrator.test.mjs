@@ -49,9 +49,22 @@ test("applyBinDir prepends PERSODUB_BIN_DIR to PATH when present", () => {
 
 test("starts fakes, reports url, stopAll kills everything", async () => {
   const logDir = mkdtempSync(join(tmpdir(), "odlog-"));
-  const { url, pids, stopAll } = await startEngines(fakeCfg(), { logDir });
+  const lines = [];
+  const { url, pids, stopAll, processes } = await startEngines(fakeCfg(), { logDir, log: (line) => lines.push(line) });
   const res = await fetch(url);
   assert.ok((await res.text()).includes("PersoDub"));
+  // shell.log's account of the start: the voice engine, then the backend,
+  // each under a banner, numbered and timed.
+  assert.match(lines[0], /^ENGINES START: kit=.+ packs=engine$/);
+  assert.equal(lines.filter((l) => l === "#".repeat(30)).length, 2);
+  const engineLines = lines.filter((l) => l.startsWith("[Engine"));
+  assert.equal(engineLines.length, 4, lines.join("\n"));
+  [/^\[Engine 1\/2\] engine START \(port \d+\)$/, /^\[Engine 1\/2\] engine READY \(\d+\.\ds\)$/,
+   /^\[Engine 2\/2\] backend START \(port \d+\)$/, /^\[Engine 2\/2\] backend READY \(\d+\.\ds\)$/]
+    .forEach((shape, i) => assert.match(engineLines[i], shape));
+  // What the memory line measures: both live processes, the backend first.
+  assert.deepEqual(processes().map((p) => p.name), ["backend", "engine"]);
+  assert.deepEqual(processes().map((p) => p.pid).sort(), [...pids].sort());
   stopAll();
   assert.ok(await waitGone(pids), "engine processes should die after stopAll");
 });
@@ -79,13 +92,21 @@ test("sidecar never ready -> the app still starts, the engine is stopped and mar
     sidecarCmd: [process.execPath, join(FAKE, "fake_sidecar.mjs"), "{port}", "--never-ready"],
     sidecarHealthTimeoutMs: 1500,
   });
-  const engines = await startEngines(cfg, { logDir });
+  // What the last launch announced: its address and process id must not outlive it.
+  writeFileSync(join(cfg.kitDir, "runtime.json"), JSON.stringify({ tts_url: "http://127.0.0.1:1", tts_pid: 4242 }));
+  const logged = [];
+  const engines = await startEngines(cfg, { logDir, log: (line, level = "INFO") => logged.push([level, line]) });
   try {
     assert.ok((await (await fetch(engines.url)).text()).includes("PersoDub"), "the backend is up");
     assert.deepEqual(engines.failed.map((f) => f.pack), ["engine"]);
     assert.match(engines.failed[0].message, /timed out/);
+    const failedLine = logged.find(([, line]) => line.includes("engine FAILED"));
+    assert.ok(failedLine, logged.map(([, line]) => line).join("\n"));
+    assert.equal(failedLine[0], "ERROR");
+    assert.match(failedLine[1], /^\[Engine 1\/2\] engine FAILED \(\d+\.\ds\): Health check timed out after \d+ms: http:\/\/127\.0\.0\.1:\d+\/health/);
     const rt = readRuntime(cfg.kitDir);
     assert.equal(rt.tts_url, undefined, "a sidecar that never answered is not announced");
+    assert.equal(rt.tts_pid, undefined, "nor is its process id");
     assert.equal(rt.tts_state, "failed");
     assert.equal(engines.pids.length, 1, "only the backend is left running");
   } finally {
@@ -102,7 +123,11 @@ test("a sidecar that exits while starting is noticed at once, with its own last 
     sidecarHealthTimeoutMs: 60000,   // the old wait: a dead engine must not sit it out
   });
   const t0 = Date.now();
-  const engines = await startEngines(cfg, { logDir });
+  const lines = [];
+  const levels = [];
+  let exits = 0;
+  const log = (line, level = "INFO") => { lines.push(line); levels.push(level); };
+  const engines = await startEngines(cfg, { logDir, log, onExit: () => { exits++; } });
   try {
     assert.ok(Date.now() - t0 < 10000, `took ${Date.now() - t0} ms`);
     const { message } = engines.failed[0];
@@ -111,6 +136,14 @@ test("a sidecar that exits while starting is noticed at once, with its own last 
     assert.ok(!message.includes("EARLIER LAUNCH LINE"), message);
     assert.ok(!message.includes(homedir()), "the home folder is masked");
     assert.equal(readRuntime(cfg.kitDir).tts_state, "failed");
+    // The end is in shell.log too, and bootFlow.js is told, for its memory line.
+    assert.ok(lines.includes("engine EXITED (exit code 3)"), lines.join("\n"));
+    assert.equal(exits, 1);
+    // Under the FAILED line, what the engine itself said, indented, at ERROR.
+    const failed = lines.findIndex((l) => l.startsWith("[Engine 1/2] engine FAILED"));
+    assert.deepEqual(lines.slice(failed + 1, failed + 3), ["  Last lines of sidecar.log:", "  Traceback (most recent call last):"]);
+    assert.ok(lines[failed + 3].startsWith("  RuntimeError: fake engine could not load (~/"), lines[failed + 3]);
+    assert.deepEqual(levels.slice(failed, failed + 4), ["ERROR", "ERROR", "ERROR", "ERROR"]);
   } finally {
     engines.stopAll();
   }
@@ -207,9 +240,10 @@ test("hands the backend its desktop identity, overriding a stale kit.env", async
   const logDir = mkdtempSync(join(tmpdir(), "odlog-"));
   // Inherited from the environment here, the way a stale value in the kit's kit.env would
   // reach the same merge -- what this build is must win over what it once was told.
-  const prior = { client: process.env.PERSODUB_CLIENT, edition: process.env.PERSODUB_EDITION };
+  const prior = { client: process.env.PERSODUB_CLIENT, edition: process.env.PERSODUB_EDITION, logs: process.env.PERSODUB_LOG_DIR };
   process.env.PERSODUB_CLIENT = "server";
   process.env.PERSODUB_EDITION = "production";
+  process.env.PERSODUB_LOG_DIR = "/stale/logs";
   let stop = () => {};
   try {
     const { url, stopAll } = await startEngines(fakeCfg(), { logDir, appVersion: "1.2.3", locale: "ko", edition: "opensource" });
@@ -220,13 +254,15 @@ test("hands the backend its desktop identity, overriding a stale kit.env", async
       // What "auto" means to the backend's language (app/i18n.py).
       PERSODUB_LOCALE: "ko",
       PERSODUB_EDITION: "opensource",
+      // The engine's own logs go in the shell's log folder, beside shell.log.
+      PERSODUB_LOG_DIR: logDir,
     });
   } finally {
     stop();
-    if (prior.client === undefined) delete process.env.PERSODUB_CLIENT;
-    else process.env.PERSODUB_CLIENT = prior.client;
-    if (prior.edition === undefined) delete process.env.PERSODUB_EDITION;
-    else process.env.PERSODUB_EDITION = prior.edition;
+    for (const [name, value] of [["PERSODUB_CLIENT", prior.client], ["PERSODUB_EDITION", prior.edition], ["PERSODUB_LOG_DIR", prior.logs]]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 });
 
@@ -258,11 +294,15 @@ test("the sidecar's address is announced in the kit's runtime.json, and the hand
   const engines = await startEngines(cfg, { logDir });
   const rt = readRuntime(cfg.kitDir);
   assert.match(rt.tts_url, /^http:\/\/127\.0\.0\.1:\d+$/);
+  // Its process id beside it, so the backend can measure the engine's memory.
+  assert.equal(rt.tts_pid, engines.processes().find((p) => p.name === "engine").pid);
   assert.equal(rt.ollama_url, undefined);
+  assert.equal(rt.ollama_pid, undefined);
   assert.equal(typeof engines.startPack, "function");
   assert.equal(typeof engines.stopPack, "function");
   engines.stopPack("engine");
   assert.equal(readRuntime(cfg.kitDir).tts_url, undefined, "stopPack withdraws the address");
+  assert.equal(readRuntime(cfg.kitDir).tts_pid, undefined, "and the process id with it");
   engines.stopAll();
   assert.ok(await waitGone(engines.pids));
 });
@@ -281,7 +321,8 @@ test("startPack's liveness rule: a process that exited or was killed by a signal
 test("a sidecar that exits asking to be started again comes back, announced afresh, and stopAll still ends it", async () => {
   const cfg = fakeCfg();
   const logDir = mkdtempSync(join(tmpdir(), "odlog-"));
-  const engines = await startEngines(cfg, { logDir });
+  const lines = [];
+  const engines = await startEngines(cfg, { logDir, log: (line) => lines.push(line) });
   const before = readRuntime(cfg.kitDir).tts_url;
   await fetch(before + "/restart", { method: "POST" });
   // The old address is withdrawn as the process goes, and a new one announced
@@ -297,6 +338,11 @@ test("a sidecar that exits asking to be started again comes back, announced afre
     } catch { /* not up yet */ }
   }
   assert.ok(after, "a fresh sidecar is announced after the restart exit");
+  assert.equal(readRuntime(cfg.kitDir).tts_pid, engines.processes().find((p) => p.name === "engine").pid,
+    "the new process's id, not the old one's");
+  // shell.log: the end that asked for it, then the engine started on its own.
+  assert.ok(lines.includes("engine EXITED (exit code 75), restarting"), lines.join("\n"));
+  assert.ok(lines.some((l) => /^engine READY \(\d+\.\ds\)$/.test(l)), lines.join("\n"));
   const pids = JSON.parse(readFileSync(join(logDir, "pids.json"), "utf8"));
   engines.stopAll();
   assert.ok(await waitGone(pids), "the restarted sidecar is stopped with the rest");

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { loadConfig, DEFAULTS, defaultKitDir, kitPathTooLong, notEnoughSpace, freeSpaceAt, inEnglish } from "./config.js";
 import { checkKit, readKitVersion } from "./engineCheck.js";
 import { startEngines } from "./orchestrator.js";
-import { rememberedEdition } from "./edition.js";
+import { rememberedEdition, kitEdition, editionLine } from "./edition.js";
 import { buildSteps, bytesStillNeeded, bootSteps, packInstallingMarker, PACKS } from "./installSpec.js";
 import { runInstall, openSteps } from "./installer.js";
 import { classifyError } from "./analytics.js";
@@ -15,6 +15,9 @@ import { errorText } from "./errorText.js";
 import { hasPersoKey } from "./usageIpc.js";
 import { useLanguage, systemLocale, t } from "./i18n.js";
 import { screenFile } from "./screenText.js";
+import { detailLines, secondsSince } from "./logLine.js";
+import { memoryLine } from "./memoryLine.js";
+import { writeTimeline } from "./timeline.js";
 
 // Packaged builds carry the payload under Resources/; a dev checkout may have
 // one at desktop/resources/payload after running collect-payload. Exported
@@ -65,6 +68,15 @@ export function createBoot({ app, ctx, appDir, edition, shellLog, countUsage, se
   function showScreen(win, name, query = {}) {
     const file = screenFile(join(appDir, "screens"), name, join(app.getPath("userData"), "screens"));
     return win.loadFile(file, { query: { v: app.getVersion(), ...query } });
+  }
+
+  // One line of memory figures in shell.log (memoryLine.js): once the engines
+  // are up, every five minutes after, and whenever one of their processes ends.
+  // timeline.log is rewritten right after it (timeline.js), and no more often.
+  function logMemory() {
+    return memoryLine(ctx.engines ? ctx.engines.processes() : [])
+      .then((line) => shellLog(line), () => { /* a missed figure never breaks the app */ })
+      .then(() => writeTimeline(join(app.getPath("userData"), "logs"), shellLog));
   }
 
   // Prefer an existing kit (e.g. a mac_kit install); otherwise install into
@@ -128,7 +140,10 @@ export function createBoot({ app, ctx, appDir, edition, shellLog, countUsage, se
     // ollama-runtime keep being refreshed the way they always were; a pack
     // that was never installed is left alone here -- the page installs one on
     // demand through src/packIpc.js.
-    ctx.installCtx = payload ? { kitDir: cfg.kitDir, payloadDir: payload, download, extract: extractTarGz, run, abandonedKitDir } : null;
+    // log: every file the steps download, or have a tool download, gets its
+    // DOWNLOAD lines in shell.log (installSpec.js) -- a pack's too, since the
+    // pack IPC builds its steps from this same context.
+    ctx.installCtx = payload ? { kitDir: cfg.kitDir, payloadDir: payload, download, extract: extractTarGz, run, log: shellLog, abandonedKitDir } : null;
     // A pack's "installing" stamp left by a crash would read as downloading forever.
     for (const p of PACKS) rmSync(packInstallingMarker(cfg.kitDir, p.id), { force: true });
     const all = ctx.installCtx ? buildSteps(ctx.installCtx) : null;
@@ -169,31 +184,47 @@ export function createBoot({ app, ctx, appDir, edition, shellLog, countUsage, se
         await showScreen(win, "error.html", { title: t("Not enough space to install"), message: noRoom });
         return false;
       }
+      // Same kit again (an update) or a first install: the screen's title.
+      const mode = existsSync(join(cfg.kitDir, KIT_ENV)) ? "update" : "install";
       await showScreen(win, "installing.html", {
-        // Same kit again (an update) or a first install: the screen's title.
-        mode: existsSync(join(cfg.kitDir, KIT_ENV)) ? "update" : "install",
+        mode,
         // What the steps still to run add up to -- the figure the title shows.
         bytes: String(stillNeeded),
       });
+      // What this run was given, before its steps' own lines (installer.js).
+      shellLog(`INSTALL START (${mode}): ${toRun.length} steps, ${(stillNeeded / 1024 ** 3).toFixed(1)} GB to download`);
+      shellLog(`Inputs: ${JSON.stringify({
+        kitDir: cfg.kitDir, edition, appVersion: app.getVersion(), kitVersion,
+        platform: `${process.platform}-${process.arch}`, steps: toRun.map((s) => s.id),
+      })}`);
       // runInstall already reports which step failed; without keeping it the
       // count says only "somewhere in ten steps", which is what made the first
-      // four real install failures unactionable.
-      let failedStep;
+      // four real install failures unactionable. Its title names it on screen.
+      let failedStep, failedTitle;
+      const from = Date.now();
       try {
         await runInstall(toRun, {
+          log: shellLog,
           onProgress: (p) => {
-            if (p.state === "error") failedStep = p.stepId;
+            if (p.state === "error") { failedStep = p.stepId; failedTitle = p.title; }
             win.webContents.send("shell:install-progress", p);
           },
         });
       } catch (err) {
         const message = errorText(err);
         const code = classifyError(message, { install: true });
+        const place = toRun.findIndex((s) => s.id === failedStep) + 1;
+        shellLog(`INSTALL FAILED at step ${place}/${toRun.length} ${failedStep} (${secondsSince(from)}s): ${code}`, "ERROR");
+        // ...and under it what the tool said: its own last lines (exec.js), or the download's error.
+        for (const line of detailLines(message)) shellLog(line, "ERROR");
         countUsage("install_failure", cfg.kitDir, code, failedStep);
         sendReport({ kind: "install", kitDir: cfg.kitDir, code, step: failedStep, message });
-        await showScreen(win, "error.html", { title: t("The install could not finish"), message, logDir: cfg.kitDir });
+        const title = failedTitle ? t("The install stopped at {step}", { step: failedTitle }) : t("The install could not finish");
+        // The folder shell.log is in: the kit holds no log of its install.
+        await showScreen(win, "error.html", { title, message, logDir: join(app.getPath("userData"), "logs") });
         return false;
       }
+      shellLog(`INSTALL ALL DONE (${secondsSince(from)}s)`);
     }
     return true;
   }
@@ -201,17 +232,31 @@ export function createBoot({ app, ctx, appDir, edition, shellLog, countUsage, se
   // The engines, then the app page in the window.
   async function startApp(win, cfg) {
     await showScreen(win, "loading.html");
-    // The kit's own edition, remembered from its first run (src/edition.js).
+    // The kit's own edition, remembered from its first run (src/edition.js),
+    // and where this run's came from: the kit's memory, or this app file.
+    const kept = kitEdition(cfg.kitDir);
     const runEdition = rememberedEdition(cfg.kitDir, edition);
-    shellLog(`PERSODUB_EDITION kit runs as ${runEdition}`);
+    const how = kept ? "kept in kit.env"
+      : kitEdition(cfg.kitDir) ? "first run of this kit, written to kit.env" : "no kit.env to keep it in";
+    shellLog(editionLine(runEdition, edition, how));
     try {
+      const from = Date.now();
       ctx.engines = await startEngines(cfg, {
         logDir: join(app.getPath("userData"), "logs"),
         appVersion: app.getVersion(), // desktop/package.json -- the one place the version lives
         locale: systemLocale(),
         edition: runEdition, // where a dub runs by default (app/setup.py)
         preferredBackendPort: readRememberedPorts().backend,
+        log: shellLog,
+        onExit: logMemory,
       });
+      const failedPacks = ctx.engines.failed.map((f) => f.pack);
+      if (failedPacks.length) shellLog(`ENGINES READY WITH FAILURES (${secondsSince(from)}s): ${failedPacks.join(", ")}`, "ERROR");
+      else shellLog(`ENGINES ALL READY (${secondsSince(from)}s)`);
+      // A memory line now and every five minutes until quit (one timer a run,
+      // however often the boot is retried): a leak shows as a figure that only grows.
+      void logMemory();
+      ctx.memoryTimer ??= setInterval(logMemory, 5 * 60 * 1000).unref();
       rememberPorts({ backend: ctx.engines.port });
       await win.loadURL(ctx.engines.url);
       shellLog(`PERSODUB_READY ${ctx.engines.url}`);

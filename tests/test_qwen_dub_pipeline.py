@@ -3,11 +3,13 @@ that replaced the old container client's upload()/import_srt() (fakes only -- no
 container, no ffmpeg, no GPU). Qwen3-TTS is the app's only TTS engine now.
 """
 import os
+import re
 
 import pytest
 
 from app import pipeline
 from app.jobs import JobCancelled
+from app.stages import progress_of
 from app.translate import TranslationEngine
 
 
@@ -455,3 +457,109 @@ def test_voice_samples_come_from_the_transcript_lines_not_the_merged_ones(monkey
                      language="Korean", language_code="ko", qwen_engine=_FakeQwenEngine(), log=[].append)
     assert len(captured["ref_cues"]) == 1                      # merged: one 4 s line
     assert [c["text"] for c in captured["sample_cues"]] == ["First sentence.", "Second one."]
+
+
+# --- the job's file: every stage between START and DONE ----------------------
+
+def _traced_log():
+    """A log shaped like JobStore's: what it is called with is the screen's,
+    what its .trace is called with goes to the job's file only."""
+    def log(msg):
+        log.screen.append(msg)
+
+    log.screen, log.traced = [], []
+    log.trace = lambda msg, level="INFO": log.traced.append((level, msg))
+    return log
+
+
+def _no_seconds(traced):
+    return [(level, re.sub(r"\(\d+\.\ds\)", "(Ns)", msg)) for level, msg in traced]
+
+
+def test_every_stage_is_written_between_start_and_done_in_order(monkeypatch, tmp_path, fixed_memory):
+    _stub_qwen_io(monkeypatch)
+    monkeypatch.setattr(pipeline, "_video_duration", lambda path: 2.0)
+    monkeypatch.setattr(pipeline, "_mux", _fake_mux)
+    monkeypatch.setattr(pipeline, "ensure_video_length", lambda *a, **k: None)
+    # CAM++ names one speaker, whose voice the synthesis then clones.
+    monkeypatch.setattr(pipeline, "diarize", lambda vocals, cues, num_speakers=None, video_duration=None:
+                        [{"speaker": "SPEAKER_00"} for _ in cues])
+    video, out, srt = _write_inputs(tmp_path)
+    log = _traced_log()
+    pipeline.run_dub(video_path=video, out_path=out, srt_path=srt, language="Korean", language_code="ko",
+                     translate_engine="gemma", source_language_code="en", num_speakers=2, n_takes=1,
+                     qwen_engine=_FakeQwenEngine(), log=log)
+
+    mem = ("INFO", "Mem[Host total 24576M avail 11376M | backend 310M]")
+    # What each stage was given, under its START; the last two have nothing to say.
+    given = {"separate": "resume=False duration=2.0",
+             "transcribe": "stt_engine=whisper source=en diar_engine=campplus num_speakers=2",
+             "translate": "translate_engine=gemma lines=1 target=Korean source=en srt_given=True",
+             "synthesize": "lines=1 n_takes=1 speakers=1 resume=False"}
+    expected = []
+    for i, (name, _label) in enumerate(pipeline.STAGES, 1):
+        expected += [("INFO", "#" * 30), ("INFO", f"[Step {i}/6] {name} START")]
+        if name in given:
+            expected.append(("INFO", f"[Step {i}/6] {name} Context: {given[name]}"))
+        expected += [mem, ("INFO", f"[Step {i}/6] {name} DONE (Ns)"), mem]
+    assert _no_seconds(log.traced) == expected
+    # The screen keeps the lines it always had, so its bar reads the same.
+    assert not any(m.startswith(("#", "[Step")) for m in log.screen)
+    assert log.screen[-1] == "Done!"
+    assert progress_of(log.screen) == {"stage": 4, "label": "Dubbing", "percent": 97}
+    assert progress_of(log.screen + [m for _level, m in log.traced]) == progress_of(log.screen)
+
+
+def test_the_transcribe_context_names_what_runs_when_nothing_was_chosen(monkeypatch, tmp_path):
+    # Every value None (local Whisper, auto language, the default diarizer)
+    # left the step with no Context line at all (Windows, 2026-10-16).
+    _stub_qwen_io(monkeypatch)
+    monkeypatch.setattr(pipeline, "_video_duration", lambda path: 2.0)
+    monkeypatch.setattr(pipeline, "_mux", _fake_mux)
+    monkeypatch.setattr(pipeline, "ensure_video_length", lambda *a, **k: None)
+    video, out, srt = _write_inputs(tmp_path)
+
+    def transcribe_context(**kw):
+        log = _traced_log()
+        pipeline.run_dub(video_path=video, out_path=out, srt_path=srt, language="Korean", language_code="ko",
+                         qwen_engine=_FakeQwenEngine(), log=log, **kw)
+        return [m for _level, m in log.traced if m.startswith("[Step 2/6] transcribe Context: ")]
+
+    assert transcribe_context() == ["[Step 2/6] transcribe Context: stt_engine=whisper source=auto diar_engine=campplus"]
+    # Perso's transcript names its own speakers: CAM++ does not run after it.
+    monkeypatch.setattr(pipeline, "_stage_transcribe_perso",
+                        lambda *a, **k: ([{"start": 0.0, "end": 2.0, "text": "hi", "speaker_id": "A"}], None))
+    assert transcribe_context(stt_engine="perso") == [
+        "[Step 2/6] transcribe Context: stt_engine=perso source=auto diar_engine=perso"]
+
+
+def test_a_stage_that_fails_says_so_and_the_failure_carries_its_step(monkeypatch, tmp_path, fixed_memory):
+    _stub_qwen_io(monkeypatch)
+    monkeypatch.setattr(pipeline, "_video_duration", lambda path: 2.0)
+
+    def broken(*a, **k):
+        raise ValueError("no reference voice")
+
+    monkeypatch.setattr(pipeline, "run_qwen_dub", broken)
+    video, out, srt = _write_inputs(tmp_path)
+    log = _traced_log()
+    with pytest.raises(ValueError, match="no reference voice") as caught:
+        pipeline.run_dub(video_path=video, out_path=out, srt_path=srt, language="Korean",
+                         language_code="ko", qwen_engine=_FakeQwenEngine(), log=log)
+    # The job's own FAILED line names the step from this (app/jobs.py).
+    assert caught.value.persodub_step == "4/6 synthesize"
+    mem = ("INFO", "Mem[Host total 24576M avail 11376M | backend 310M]")
+    # Where it broke, innermost first: the fake that raised is a test's, so
+    # the places named are the two in app/ that called it.
+    assert [(level, re.sub(r":\d+ in ", ":N in ", msg)) for level, msg in _no_seconds(log.traced)[-10:]] == [
+        ("INFO", "[Step 3/6] translate DONE (Ns)"),
+        mem,
+        ("INFO", "#" * 30),
+        ("INFO", "[Step 4/6] synthesize START"),
+        ("INFO", "[Step 4/6] synthesize Context: lines=1 resume=False"),
+        mem,
+        ("ERROR", "[Step 4/6] synthesize FAILED (Ns): ValueError: no reference voice"),
+        ("ERROR", "  At: app/pipeline.py:N in _stage_synthesize"),
+        ("ERROR", "  At: app/pipeline.py:N in run_dub"),
+        mem,
+    ]

@@ -5,10 +5,12 @@ import { readKitVersion } from "./engineCheck.js";
 import { packInstalled, torchVariantFor, PACKS } from "./installSpec.js";
 import { loadState, saveState } from "./analytics.js";
 import { probesFor, runProbes } from "./diagnostics.js";
-import { buildReport, collectEnvironment, maskText, resolveReportMode, worthReporting } from "./report.js";
+import { buildReport, collectEnvironment, maskText, resolveReportMode, withoutEncodedNames, worthReporting } from "./report.js";
 import { buildLogArchive } from "./reportLogs.js";
 import { ARCHIVE_EXT, REPORT_EXT, partitionQueue, pendingWork, queueBase } from "./reportQueue.js";
 import { envWithKit } from "./kitEnv.js";
+import { kitEdition } from "./edition.js";
+import { readFileEnd } from "./fileEnd.js";
 
 // Automatic failure reports. The usage count (usageIpc.js) says a dub failed;
 // this says why -- the machine, the step, the error, and the logs -- and it
@@ -21,16 +23,10 @@ export const REPORT_ENDPOINT = "https://persodub-report.persodub.workers.dev";
 // produced it, and a user who deletes a kit is done with its failures too.
 const reportsDir = (kitDir) => join(kitDir, "reports");
 
-// The last lines of a file, as text. Reads the whole file: shell.log is the
-// shell's own, written a line at a time, and has never been large.
-function readFileText(path, maxBytes = 8 * 1024 * 1024) {
-  try {
-    const text = readFileSync(path, "utf8");
-    return text.length > maxBytes ? text.slice(-maxBytes) : text;
-  } catch {
-    return "";
-  }
-}
+// The engines' console logs, beside shell.log (orchestrator.js): where a voice
+// engine or Ollama that crashed says why. Their last 2 MB is plenty of history.
+const ENGINE_LOGS = { backend: "backend.log", sidecar: "sidecar.log", ollama: "ollama.log" };
+const ENGINE_LOG_BYTES = 2 * 1024 * 1024;
 
 /** Write a report (and its archive) into the kit's queue for the next launch. */
 function queueReport(kitDir, entry, archive) {
@@ -120,7 +116,11 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
     const home = app.getPath("home");
     const bundle = await fetchBundle(jobId);
     const job = (bundle && bundle.job) || {};
-    const shellLogText = maskText(readFileText(join(app.getPath("userData"), "logs", "shell.log")), { home, kit: kitDir });
+    const logsDir = join(app.getPath("userData"), "logs");
+    const shellLogText = maskText(readFileEnd(join(logsDir, "shell.log")), { home, kit: kitDir });
+    // The encoded names out first, so that the masks see every path in them.
+    const engineLogs = Object.fromEntries(Object.entries(ENGINE_LOGS)
+      .map(([key, file]) => [key, withoutEncodedNames(readFileEnd(join(logsDir, file), ENGINE_LOG_BYTES))]));
     const packs = (bundle && bundle.packs)
       || Object.fromEntries(PACKS.map((p) => [p.id, packInstalled(kitDir, p.id) ? "ready" : "missing"]));
     // What this machine can say about this kind of failure (diagnostics.js):
@@ -150,11 +150,15 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
         torchVariant: torchVariantFor(kitDir),
         packs,
         freeDiskBytes: await freeSpaceAt(kitDir),
+        edition: kitEdition(kitDir) || "",
       }),
       logTails: {
         shell: shellLogText,
         app: (bundle && bundle.logTails && bundle.logTails.app) || "",
-        job: (bundle && bundle.logTails && bundle.logTails.job) || "",
+        // The job's whole log when the backend sent it, not its tail: the
+        // report keeps the log's first lines too (report.js maskTail).
+        job: (bundle && bundle.logs && bundle.logs.job) || (bundle && bundle.logTails && bundle.logTails.job) || "",
+        ...engineLogs,
       },
       diagnostics,
     });
@@ -162,6 +166,7 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
       shell: shellLogText,
       app: (bundle && bundle.logs && bundle.logs.app) || "",
       job: (bundle && bundle.logs && bundle.logs.job) || "",
+      ...Object.fromEntries(Object.entries(engineLogs).map(([key, text]) => [key, maskText(text, { home, kit: kitDir })])),
       // The probes' answers in full, for the dashboard: the issue body keeps
       // only the first report of a fingerprint, so the second machine's
       // security product or certificate signer would otherwise be lost.

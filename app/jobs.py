@@ -10,7 +10,9 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
 import threading
+import time
 import traceback
 import uuid
 from datetime import datetime
@@ -18,6 +20,10 @@ from enum import StrEnum
 from typing import Any, Callable, Dict, List, Optional
 
 from app.config import PERSODUB_LOG_DIR
+from app.memline import mem_line
+from app.netlog import CUT as _CUT
+from app.netlog import described as _described
+from app.netlog import no_query as _no_query
 
 logger = logging.getLogger("persodub.jobs")
 
@@ -104,6 +110,16 @@ SAVED_FIELDS = ("id", "status", "kind", "language", "language_code", "source_lan
 # every row would be for nothing.
 LIST_FIELDS = tuple(f for f in SAVED_FIELDS if f not in ("work_dir", "source_url"))
 
+# What a job's "Inputs:" line (JobStore._launch) says the job was given: the
+# record's settings, without its state (id, status, the error), without the two
+# paths LIST_FIELDS already leaves out, and without the video's names (project,
+# title) or the Perso workspace number. The job's log goes out with a failure
+# report, which docs/privacy.md says never carries a project name or a
+# filename, and the report's masker takes the workspace number out of every
+# line it recognises (app/report_mask.py).
+_INPUT_FIELDS = tuple(f for f in LIST_FIELDS if f not in (
+    "id", "status", "error", "error_shown", "project", "title", "perso_space_seq"))
+
 
 class JobStatus(StrEnum):
     """Where a job stands, in the words job.json, every HTTP answer and the
@@ -165,6 +181,143 @@ def raise_if_cancelled(cancel_check: Optional[Callable[[], bool]], log: Callable
     if cancel_check is not None and cancel_check():
         log("Cancelled by user request")
         raise JobCancelled("cancelled by user")
+
+
+def _trace_memory(trace) -> None:
+    """A memory line (app/memline.py) through `trace`, when there is one."""
+    line = mem_line()
+    if line:
+        trace(line)
+
+
+# The app/ package. A failure's "At:" places are named from the folder above
+# it, as the repository names them ("app/pipeline.py").
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _chain(exc: Optional[BaseException], most: int = 6) -> list:
+    """The exception and the ones it came from, walked as Python's traceback
+    walks them: __cause__, else __context__ unless `from None` hid it."""
+    found = []
+    while exc is not None and len(found) < most:
+        found.append(exc)
+        exc = exc.__cause__ if exc.__cause__ is not None else (
+            None if exc.__suppress_context__ else exc.__context__)
+    return found
+
+
+def _http_line(exc: BaseException) -> str:
+    """"HTTP 503 GET https://host/path: <the answer's first words>". The
+    address goes without its query string, which can carry a key or a name."""
+    response = exc.response
+    words = ["HTTP", str(response.status_code)]
+    for owner in (exc, response):
+        with contextlib.suppress(Exception):   # httpx raises when none was set
+            if owner.request is not None:
+                words += [str(owner.request.method), str(owner.request.url).split("?", 1)[0]]
+                break
+    body = ""
+    with contextlib.suppress(Exception):   # an answer that was never read
+        body = " ".join(_no_query(response.text).split())[:_CUT]
+    return " ".join(words) + (f": {body}" if body else "")
+
+
+def _output_lines(exc: subprocess.CalledProcessError) -> list:
+    """The last 20 lines a program that failed printed: its errors, else its output."""
+    out = exc.stderr or exc.output or ""
+    if isinstance(out, bytes):
+        out = out.decode("utf-8", "replace")
+    tail = [_no_query(line.rstrip())[:_CUT] for line in out.strip().splitlines()[-20:]]
+    return ["  Output:"] + ["    " + line for line in tail] if tail else []
+
+
+def _app_places(chain: list) -> list:
+    """Up to three "app/pipeline.py:812 in _stage_finish", innermost first,
+    from the deepest error in the chain that passed through app/: where it
+    broke, not where it was put into words. Nothing from this file: the step
+    timer's own frame sits in every step's traceback."""
+    root, here = os.path.dirname(_APP_DIR), os.path.abspath(__file__)
+    for exc in reversed(chain):
+        frames = [(os.path.abspath(f.filename), f) for f in traceback.extract_tb(exc.__traceback__)]
+        frames = [(path, f) for path, f in frames if path.startswith(_APP_DIR + os.sep) and path != here]
+        if frames:
+            return ["%s:%s in %s" % (os.path.relpath(path, root).replace(os.sep, "/"), f.lineno, f.name)
+                    for path, f in reversed(frames[-3:])]
+    return []
+
+
+def _failure_lines(exc: BaseException) -> list:
+    """The block under a step's FAILED line, each part only when it applies:
+    the errors it came from, the HTTP answer or the program output behind it,
+    and where in app/ it broke."""
+    chain = _chain(exc)
+    lines = [f"  Caused by: {_described(c)}" for c in chain[1:]]
+    answered = next((c for c in chain
+                     if getattr(getattr(c, "response", None), "status_code", None) is not None), None)
+    if answered is not None:
+        lines.append("  " + _http_line(answered))
+    ran = next((c for c in chain if isinstance(c, subprocess.CalledProcessError)), None)
+    if ran is not None:
+        lines += _output_lines(ran)
+    return lines + [f"  At: {place}" for place in _app_places(chain)]
+
+
+@contextlib.contextmanager
+def timed_step(log, step: str, name: str, **context):
+    """One step of a job between a START line and a DONE, CANCELLED or FAILED
+    line with its seconds ("[Step 1/6] separate DONE (12.3s)"), each followed
+    by a memory line, so the job's file reads like an operations log.
+
+    Written through log.trace, the file-only line JobStore's log carries
+    (_launch below): the screen keeps exactly the progress lines it parses. A
+    log without one (a test's list) is handed them as plain lines. `context`
+    is what the step was given -- settings and counts, never a file name or a
+    path -- for a Context line under START; None is left out. A failure says
+    what it was and, under that, why and where (_failure_lines), and leaves
+    with the step it stopped in (persodub_step), which the job's own FAILED
+    line names.
+    """
+    trace = getattr(log, "trace", None) or (lambda msg, level="INFO": log(msg))
+    label = f"[Step {step}] {name}"
+    trace("#" * 30)
+    trace(f"{label} START")
+    given = " ".join(f"{key}={value}" for key, value in context.items() if value is not None)
+    if given:
+        trace(f"{label} Context: {given}")
+    _trace_memory(trace)
+    began = time.monotonic()
+    try:
+        yield
+    except JobCancelled:
+        trace(f"{label} CANCELLED ({time.monotonic() - began:.1f}s)")
+        _trace_memory(trace)
+        raise
+    except Exception as e:
+        trace(f"{label} FAILED ({time.monotonic() - began:.1f}s): {_described(e)}", level="ERROR")
+        # Describing a failure must never become the failure.
+        with contextlib.suppress(Exception):
+            for line in _failure_lines(e):
+                trace(line, level="ERROR")
+        _trace_memory(trace)
+        # An exception that takes no attributes still fails the job; its
+        # FAILED line just cannot say where.
+        with contextlib.suppress(AttributeError):
+            e.persodub_step = f"{step} {name}"
+        raise
+    trace(f"{label} DONE ({time.monotonic() - began:.1f}s)")
+    _trace_memory(trace)
+
+
+def _failed_step(exc: Optional[BaseException]) -> str:
+    """The step a failure stopped in (timed_step's persodub_step), looked for
+    down the exception's chain too: the cloud dub re-raises Perso's error as a
+    sentence of its own (app/dub_launch.py), and that is what reaches the job.
+    "?" for a failure between steps."""
+    for e in _chain(exc):
+        step = getattr(e, "persodub_step", None)
+        if step:
+            return step
+    return "?"
 
 
 # The exception types whose message was WRITTEN for the user, and so can go
@@ -288,24 +441,34 @@ class JobStore:
     def _update(self, jid: str, **kw):
         return self.update(jid, **kw)
 
-    def _write_log_line(self, jid: str, msg: str):
-        """Mirror a log line to log_dir/job-<jid>.log. Best-effort: a logging
-        problem must never fail the dub it is describing."""
+    def _write_log_line(self, jid: str, msg: str, level: Optional[str] = None):
+        """Mirror a log line to log_dir/job-<jid>.log, stamped the way the app's
+        own log is (app/logging_setup.py LOG_FORMAT): the time, the job, the
+        level (ERROR for an "Error:" line or a traceback unless told otherwise), the line.
+        Best-effort: a logging problem must never fail the dub it is describing."""
+        level = level or ("ERROR" if msg.lstrip().startswith(("Error:", "Traceback (")) else "INFO")
+        now = datetime.now()
+        stamp = now.strftime("%Y-%m-%d %H:%M:%S") + ",%03d" % (now.microsecond // 1000)
         try:
             os.makedirs(self.log_dir, exist_ok=True)
             with open(os.path.join(self.log_dir, "job-%s.log" % jid), "a", encoding="utf-8") as f:
-                f.write(msg + "\n")
+                f.write("%s - job-%s - %s - %s\n" % (stamp, jid, level, msg))
         except Exception as e:
             # The type only: this line's own message is a job log line, which
             # can carry a file name the user chose.
             logger.debug("Could not mirror a log line for job %s (%s)", jid, type(e).__name__)
 
-    def append_log(self, jid: str, msg: str):
+    def append_log(self, jid: str, msg: str, screen: bool = True, level: Optional[str] = None):
+        """A line of the job's log: always into its file, and into the list the
+        screen reads only when `screen`. log.trace (_launch) writes the
+        structural lines with screen=False, so the screen shows what it always
+        has. `level` is the file's level for a line that cannot say it itself."""
         with self._lock:
             if jid not in self._jobs:
                 return
-            self._jobs[jid]["logs"].append(msg)
-        self._write_log_line(jid, msg)
+            if screen:
+                self._jobs[jid]["logs"].append(msg)
+        self._write_log_line(jid, msg, level)
 
     def append_notice(self, jid: str, notice: dict):
         """Record a structured mid-job event (e.g. {"type": "perso_credit_exhausted",
@@ -601,8 +764,27 @@ class JobStore:
         def log(msg: str):
             self.append_log(jid, msg)
 
+        def trace(msg: str, level: str = "INFO"):
+            # A structural line -- a step's banner, the inputs, how the job
+            # ended: the job's file and the app log only, never the screen,
+            # whose progress bar is read off its own lines.
+            self.append_log(jid, msg, screen=False, level=level)
+            (logger.error if level == "ERROR" else logger.info)("job-%s: %s", jid, msg)
+
+        log.trace = trace
+
         def _wrap():
+            began = time.monotonic()
             try:
+                rec = self.get(jid) or {}
+                trace("JOB START (%s)" % kind_of(rec))
+                # The edition first: it decides where a dub runs when nothing
+                # is chosen (app/setup.py), and the desktop shell hands it over
+                # (desktop/src/orchestrator.js). A plain server run has none.
+                given = {"edition": os.environ.get("PERSODUB_EDITION") or "opensource",
+                         **{k: rec[k] for k in _INPUT_FIELDS if k in rec}}
+                trace("Inputs: " + json.dumps(given, ensure_ascii=False, default=str))
+                _trace_memory(trace)
                 result = target(log)
                 # A job left on auto-detect only learns its source language by
                 # running, and the answer arrives inside the result. Copying it
@@ -615,8 +797,13 @@ class JobStore:
                 # the shell reads them off the job the moment it sees "done".
                 spent = {k: result[k] for k in ("perso_credits", "duration", "separation_model")
                          if isinstance(result, dict) and result.get(k) is not None}
+                # The memory line before the status flips, as on the other two
+                # endings: measuring takes a moment, and a job that reads "done"
+                # while it still holds the air leaves the next one queued behind it.
+                _trace_memory(trace)
                 with self._lock:
-                    if self._jobs[jid]["status"] == JobStatus.CANCELLING:
+                    cancelled = self._jobs[jid]["status"] == JobStatus.CANCELLING
+                    if cancelled:
                         self._jobs[jid]["status"] = JobStatus.CANCELLED
                     else:
                         self._jobs[jid].update(spent)
@@ -624,7 +811,11 @@ class JobStore:
                         self._jobs[jid]["result"] = result
                         if detected and not self._jobs[jid].get("source_lang"):
                             self._jobs[jid]["source_lang"] = detected
+                # Cancel pressed while the work ran to its end: still a cancel.
+                trace("JOB %s (%.1fs)" % ("CANCELLED" if cancelled else "ALL DONE", time.monotonic() - began))
             except JobCancelled:
+                _trace_memory(trace)
+                trace("JOB CANCELLED (%.1fs)" % (time.monotonic() - began))
                 self.update(jid, status=JobStatus.CANCELLED)
             except Exception as e:
                 # The class name stays in the log for debugging; the stored
@@ -635,10 +826,19 @@ class JobStore:
                 # An unexpected failure also gets its traceback in the job's
                 # own log, where the "see the job log" sentence is pointing;
                 # a failure with a written-out message (credits used up, no
-                # dialogue found) is not a bug and gets none, so the friendly
-                # sentence stays the last thing under the red bar.
+                # dialogue found) is not a bug and gets none on the screen, so
+                # the friendly sentence stays the last thing under the red bar.
                 if not isinstance(e, USER_FACING_ERRORS):
                     log(traceback.format_exc())
+                else:
+                    # A failure worded for the user still came from somewhere:
+                    # its traceback goes to the file, never the screen, and the
+                    # errors it quotes keep their links but not their queries.
+                    trace(_no_query("".join(traceback.format_exception(e))).rstrip(), level="ERROR")
+                _trace_memory(trace)
+                trace("JOB FAILED at step %s (%.1fs): %s: %s" % (
+                    _failed_step(e), time.monotonic() - began, type(e).__name__, error_text_for_ui(e)),
+                    level="ERROR")
                 self.update(jid, status=JobStatus.ERROR, error=error_text_for_ui(e),
                             error_shown=shown_text_for_ui(e))
             # However it ended, the file beside the video now says so -- this is

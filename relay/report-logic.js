@@ -43,6 +43,7 @@ export const ERROR_CODES = [
   "unknown",
 ];
 export const PLATFORM_KEYS = ["mac", "win-gpu", "win-cpu"];
+export const EDITIONS = ["opensource", "production"];
 
 const ID_RE = /^[0-9a-f]{32}$/;
 const FINGERPRINT_RE = /^[0-9a-f]{12}$/;
@@ -107,6 +108,13 @@ export function maskAgain(text) {
 
 function str(value, max) {
   return typeof value === "string" ? maskAgain(value).slice(0, max) : "";
+}
+
+// A log tail cut to fit keeps its end, which is the part that says what
+// happened: cut from the start, a long tail lost its failure lines. A job
+// log's opening lines, which the app keeps above a "...", go first.
+function tailStr(value, max) {
+  return typeof value === "string" ? maskAgain(value).slice(-max) : "";
 }
 
 // The app's error text is the tail of a job log, and a job log opens with
@@ -205,13 +213,19 @@ export function validateReport(raw, { maxBytes = MAX_REPORT_BYTES } = {}) {
       appVersion: str(env.appVersion, 20),
       kitVersion: str(env.kitVersion, 20),
       torch: str(env.torch, 20),
+      // The edition the kit runs as (desktop/src/edition.js), one of the two.
+      edition: oneOf(env.edition, EDITIONS, ""),
     },
     packs: flatMap(raw.packs),
     diagnostics: diagnosticsOf(raw.diagnostics),
     logTails: {
-      shell: str(tails.shell, 20000),
-      app: str(tails.app, 20000),
-      job: str(tails.job, 20000),
+      shell: tailStr(tails.shell, 20000),
+      app: tailStr(tails.app, 20000),
+      job: tailStr(tails.job, 20000),
+      // The engines' own console logs (desktop/src/reporting.js).
+      backend: tailStr(tails.backend, 20000),
+      sidecar: tailStr(tails.sidecar, 20000),
+      ollama: tailStr(tails.ollama, 20000),
     },
   };
   if (JSON.stringify(report).length > maxBytes) return { ok: false, reason: "too large" };
@@ -286,6 +300,109 @@ export function logSummary(report, issue) {
   };
 }
 
+// --- the summary ---------------------------------------------------------
+// The few facts an issue is opened for, above everything else: where the run
+// stopped, after how long, the error, what the run was given, how memory
+// stood and what the probes found. Read off the masked log tails the app
+// sends, whose structured lines (desktop/src/logLine.js, app/jobs.py) read
+// "2026-10-15 22:31:05,494 - job-ab12cd34 - INFO - [Step 3/6] translate START".
+// A tail from an older build has none of them, and its summary is the error.
+
+// A tail's lines without their time, source and level. The head is matched
+// whole rather than cut at the last " - ", which a message can contain; a
+// line with no head (an older build's) is all message.
+const LINE_HEAD = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} - \S+ - [A-Z]+ - /;
+export function tailMessages(text) {
+  return String(text ?? "").split(/\r?\n/).map((l) => l.replace(LINE_HEAD, "").trim()).filter(Boolean);
+}
+
+// "3/6 translate": where the run stopped -- the last step that started and
+// neither finished nor was cancelled, or that FAILED. Past a "..." line (the
+// app keeps a job log's first lines above one) the end of an earlier step may
+// be among the lines left out, so a step open before it counts for nothing.
+const STEP_LINE = /\[Step (\d+\/\d+)\] (\S+) (START|DONE|CANCELLED|FAILED)\b/;
+export function openStep(messages) {
+  let open = "";
+  for (const m of messages) {
+    if (m === "...") { open = ""; continue; }
+    const hit = STEP_LINE.exec(m);
+    if (!hit) continue;
+    const step = `${hit[1]} ${hit[2]}`;
+    if (hit[3] === "START" || hit[3] === "FAILED") open = step;
+    else if (step === open) open = "";
+  }
+  return open;
+}
+
+// The seconds a failure took ("12.3"): the failed step's or engine's own
+// FAILED line, else the whole run's JOB FAILED or INSTALL FAILED line.
+export function failedAfter(messages) {
+  const last = (re) => messages.map((m) => re.exec(m)).filter(Boolean).at(-1)?.[1] ?? "";
+  return last(/FAILED \((\d+(?:\.\d+)?)s\)/) || last(/^(?:JOB|INSTALL) FAILED\b.*?\((\d+(?:\.\d+)?)s\)/);
+}
+
+// The last line that begins with `start` ("Inputs: ", "Mem["), whole.
+export function lastStarting(messages, start) {
+  return messages.filter((m) => m.startsWith(start)).at(-1) ?? "";
+}
+
+// What a job's log says under its failure (app/jobs.py): the error the failure
+// was chained from, "Caused by: ValueError: y", and the stopped step's own
+// Context line, "[Step 3/6] translate Context: translate_engine=gemma lines=12".
+export function lastCause(messages) {
+  return lastStarting(messages, "Caused by: ").slice("Caused by: ".length);
+}
+export function stepContext(messages, step) {
+  const hit = /^(\d+\/\d+) (\S+)$/.exec(step || "");
+  if (!hit) return "";
+  const start = `[Step ${hit[1]}] ${hit[2]} Context: `;
+  return lastStarting(messages, start).slice(start.length);
+}
+
+// The line of a message that names the error, else its first: a dub's message
+// is the tail of its log, which opens with a stage line, not the error.
+const ERROR_LINE = /^ERROR\b|[A-Za-z]+Error\b|\bError:/;
+
+// A value set as code, so nothing a log line carries can turn into markup.
+function inline(text) {
+  return `\`${String(text).replaceAll("`", "'")}\``;
+}
+
+/** The Summary's bullets, each only when there is something to say. A job's
+ *  report reads its own log; an install's, and an engine that did not start
+ *  (reported as one), the shell's. Never the other's: an install's Inputs line
+ *  is not a dub's. */
+export function summaryLines(report) {
+  const shellRun = report.kind === "install" || report.code === "engine-start";
+  const jobTail = tailMessages(report.logTails.job);
+  const tail = shellRun ? tailMessages(report.logTails.shell) : jobTail;
+  const where = openStep(tail) || (whereFailed(report) === "unknown" ? "" : whereFailed(report));
+  const after = failedAfter(tail);
+  const inputs = lastStarting(tail, "Inputs: ").slice("Inputs: ".length);
+  const memory = lastStarting(tail, "Mem[");
+  // A job's own words about its failure; an install has no job log to say them.
+  const cause = lastCause(jobTail);
+  const context = stepContext(jobTail, where);
+  const lines = String(report.message || "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const error = lines.filter((l) => ERROR_LINE.test(l)).at(-1) || lines[0] || "";
+  const diagnostics = Object.keys(report.diagnostics || {}).length ? JSON.stringify(report.diagnostics) : "";
+  return [
+    where && `- Stopped at: ${inline(where)}`,
+    after && `- After: ${after}s`,
+    `- Error: ${report.code}${error ? ` · ${inline(error)}` : ""}`,
+    cause && `- Cause: ${inline(cause)}`,
+    inputs && `- Inputs: ${inline(inputs)}`,
+    context && `- Context: ${inline(context)}`,
+    memory && `- Memory: ${inline(memory)}`,
+    diagnostics && `- Diagnostics: ${inline(diagnostics)}`,
+  ].filter(Boolean);
+}
+
+// GitHub refuses an issue body over 65,536 characters, and a report it
+// refuses is never posted. Six tails can add up to that, so issueBody holds
+// the body under this, leaving room for the tally line that grows into it.
+export const MAX_BODY_CHARS = 60000;
+
 /** The issue a first sighting opens. */
 export function issueBody(report, { logsRef = "" } = {}) {
   const e = report.env;
@@ -296,11 +413,16 @@ export function issueBody(report, { logsRef = "" } = {}) {
     ["RAM", e.ramGb == null ? "?" : `${e.ramGb} GB`],
     ["Free disk", e.freeDiskGb == null ? "?" : `${e.freeDiskGb} GB`],
     ["App / kit", `${e.appVersion || "?"} / ${e.kitVersion || "?"}`],
+    ["Edition", e.edition || "?"],
     ["Torch", e.torch || "?"],
     ["Packs", packs.length ? packs.map(([id, s]) => `${id}=${s}`).join(", ") : "none"],
   ];
-  return [
+  const top = [
     `${article(report.kind)} ${report.kind} failed on PersoDub ${report.version}. Reported automatically by the app.`,
+    "",
+    "### Summary",
+    "",
+    ...summaryLines(report),
     "",
     "### Environment",
     "",
@@ -321,14 +443,33 @@ export function issueBody(report, { logsRef = "" } = {}) {
     ...(Object.keys(report.diagnostics || {}).length
       ? ["### Diagnostics", "", "```json", JSON.stringify(report.diagnostics, null, 2), "```", ""]
       : []),
-    details("shell.log (tail)", report.logTails.shell),
-    details("persodub.log (tail)", report.logTails.app),
-    details("job log (tail)", report.logTails.job),
+  ];
+  const bottom = [
     "",
     logsRef ? logsLine(logsRef) : "",
     `Fingerprint: \`${report.fingerprint}\``,
     "",
-  ].join("\n");
+  ];
+  const tails = [
+    ["shell.log (tail)", report.logTails.shell],
+    ["persodub.log (tail)", report.logTails.app],
+    ["job log (tail)", report.logTails.job],
+    ["backend.log (tail)", report.logTails.backend],
+    ["sidecar.log (tail)", report.logTails.sidecar],
+    ["ollama.log (tail)", report.logTails.ollama],
+  ].map(([title, text]) => [title, String(text || "")]);
+  const body = () => [...top, ...tails.map(([title, text]) => details(title, text)), ...bottom].join("\n");
+  // Over the limit, the longest tail loses a fifth of its lines, oldest first,
+  // until the body fits; everything above and below the tails is kept whole.
+  let out = body();
+  while (out.length > MAX_BODY_CHARS) {
+    const longest = tails.reduce((a, b) => (b[1].length > a[1].length ? b : a));
+    if (!longest[1]) break;
+    const lines = longest[1].split("\n");
+    longest[1] = lines.slice(Math.max(1, Math.ceil(lines.length * 0.2))).join("\n");
+    out = body();
+  }
+  return out;
 }
 
 // --- the tally -----------------------------------------------------------

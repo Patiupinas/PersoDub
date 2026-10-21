@@ -250,6 +250,24 @@ def test_a_failed_job_keeps_its_error_in_english_and_shows_it_in_korean(korean_c
     assert listed["error_shown"] == job["error_shown"]
 
 
+def test_a_failure_with_its_cause_apart_keeps_the_cause_on_the_job(korean_computer, tmp_path):
+    """shown_error's detail: the screen writes it under the sentence, whole,
+    and job.json keeps it so a restart still shows it."""
+    from app.jobs import JobStore, shown_error
+    store = JobStore(log_dir=str(tmp_path / "logs"))
+    jid = store.create()
+    store.update(jid, work_dir=str(tmp_path))
+
+    def target(log):
+        raise shown_error("ChatGPT translation failed. (Reason: no reply)", "ChatGPT 번역에 실패했어요.", "이유: no reply")
+
+    store.start(jid, target)
+    job = _failed(store, jid)
+    assert (job["error_shown"], job["error_detail"]) == ("ChatGPT 번역에 실패했어요.", "이유: no reply")
+    saved = json.loads((tmp_path / "job.json").read_text(encoding="utf-8"))
+    assert saved["error_detail"] == "이유: no reply"
+
+
 def test_a_failure_with_no_twin_shows_its_english(korean_computer, tmp_path):
     from app.jobs import JobStore
     store = JobStore(log_dir=str(tmp_path / "logs"))
@@ -266,7 +284,8 @@ def test_a_failure_with_no_twin_shows_its_english(korean_computer, tmp_path):
 def test_a_perso_refusal_is_english_in_the_error_and_the_notice_and_korean_beside_them(korean_computer):
     """raise_notice: the error, the log line and the notice's message stay
     English (the Dub Agent and the reports read them); message_shown and the
-    exception's twin are the user's language, Perso's own words kept as they came."""
+    exception's twin are the user's language. Perso's own words stay in the
+    English error; on screen only its code, under our sentence."""
     from app import pipeline
     from app.perso_client import PersoProjectFailedError
     lines, notices = [], []
@@ -276,11 +295,14 @@ def test_a_perso_refusal_is_english_in_the_error_and_the_notice_and_korean_besid
     english = ("Perso could not finish this job. Try again, or check the project on Perso. "
                "Perso said: Audio is too short (VT5001) Ask Perso if it keeps happening.")
     ko = _table("ko")
-    korean = " ".join([ko["Perso could not finish this job. Try again, or check the project on Perso."],
-                       ko["Perso said: {said}"].replace("{said}", "Audio is too short"), "(VT5001)",
-                       ko["Ask Perso if it keeps happening."]])
+    sentence = ko["Perso could not finish this job. Try again, or check the project on Perso."]
+    code = ko["Error code {code}"].replace("{code}", "VT5001")
+    asked = ko["Ask Perso if it keeps happening."]
+    korean = " ".join([sentence, code, asked])
     assert str(caught.value) == english
-    assert caught.value.shown == korean
+    # The failed job's screen: our sentence whole, and Perso's code under it.
+    assert caught.value.shown == f"{sentence} {asked}"
+    assert caught.value.detail == code == "오류 코드 VT5001"
     assert lines == ["   Error: " + english]
     assert notices == [{"type": "perso_project_failed", "message": english, "message_shown": korean}]
 

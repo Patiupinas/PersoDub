@@ -11,7 +11,7 @@
 //
 // A single 2s poll runs only while something is downloading (same cadence as
 // the dub-progress poll).
-import { gb, modelStatusLine, dubStartDialog, overallProgress, allReady, groupModels } from "./modelsUi.mjs";
+import { gb, modelStatusLine, dubStartDialog, overallProgress, downloadStopped, allReady, groupModels } from "./modelsUi.mjs";
 import { t } from "./i18n.mjs";
 
 /** The desktop app's "Connection problem, retrying (2/3)" in the page's
@@ -36,7 +36,7 @@ export function retryLine(detail) {
  *        and labelled in the returned object, so pruning this surface later
  *        does not have to guess which member has a caller off the page.
  */
-export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = () => {}, onRowsChanged, shell = null, keepPolling = () => false }) {
+export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = () => {}, onRowsChanged, shell = null, keepPolling = () => false, ramOk = () => true }) {
   // Every element this file names is required markup (index.html always has
   // it), so nothing here null-checks what $ returns -- same as
   // ui/src/settingsDialog.mjs. A missing id is a broken page, and a crash on
@@ -292,7 +292,32 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
     repaint();
   }
 
+  // No rebuild under a finger. Each paint throws the buttons away, and one that
+  // landed between pointerdown and click (the 2s poll, or the refresh that a
+  // click into the window from behind starts on focus) took the pressed Cancel
+  // with it: the click reached no button, and the download went on (Windows
+  // C18, 2026-10-20). The paint waits for the release instead. The keyboard
+  // needs none of this: Enter and Space click with no pointer before it.
+  let pressed = false;
+  let paintWaiting = false;
+  $("modelsList").addEventListener("pointerdown", () => { pressed = true; });
+  function release() {
+    if (!pressed) return;
+    pressed = false;
+    // A tick later: the click comes after pointerup, and painting now would
+    // still take its button away.
+    if (paintWaiting) setTimeout(renderModelsList, 0);
+  }
+  // On the whole page, so a press let go off the list ends too; and one the
+  // window loses (switched away from, hidden) must not hold the list for good.
+  document.addEventListener("pointerup", release);
+  document.addEventListener("pointercancel", release);
+  document.addEventListener("visibilitychange", release);
+  window.addEventListener("blur", release);
+
   function renderModelsList() {
+    if (pressed) { paintWaiting = true; return; }
+    paintWaiting = false;
     const list = $("modelsList");
     list.replaceChildren();
     let onDisk = 0;
@@ -379,13 +404,19 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
 
   // -- the dub-start dialog (dub_start's 409) ------------------------------
   function showModelsDialog(detail) {
-    const d = dubStartDialog(detail);
-    pendingDub = { ids: d.ids, packs: d.packs, models: d.models, downloading: false };
+    const d = dubStartDialog(detail, ramOk());
+    // The memory note rides on the one line a small confirm has; a computer
+    // short of memory gets its sentence in red, as the dialog's error
+    // instead: the download could not end in a dub here, so its button is off.
+    const line = d.ram && !d.ramLow ? `${d.line} ${d.ram}` : d.line;
+    // The opening words are kept: a download that stops puts them back.
+    pendingDub = { ids: d.ids, packs: d.packs, models: d.models, downloading: false, title: d.title, line };
     $("mnTitle").textContent = d.title;
-    $("mnLine").textContent = d.line;
+    $("mnLine").textContent = line;
+    $("mnDownload").disabled = d.ramLow;
     // The way round it is the link under the line: Perso dubbing makes the
     // voices itself, so nothing here has to download (user, 2026-09-28).
-    $("mnError").textContent = "";
+    $("mnError").textContent = d.ramLow ? d.ram : "";
     $("mnProgress").hidden = true;
     $("mnDownload").hidden = false;
     $("mnSettings").hidden = !d.perso;
@@ -396,12 +427,20 @@ export function initModelsUi({ $, onStartDubbing, onOpenSettings, onUsePerso = (
     if (!pendingDub || !pendingDub.downloading) return;
     // The painted rows, not the raw ones: a pack's percent lives on the
     // painted row (rowsToPaint), the engine's own row has none.
-    const pct = overallProgress(rowsToPaint(), pendingDub.ids);
-    $("mnBar").style.width = pct + "%";
+    const rows = rowsToPaint();
+    const pct = overallProgress(rows, pendingDub.ids);
+    // Stopped -- a pack the desktop app could not install, a model paused --
+    // the dialog's opening words come back, without the bar: "Downloading 0%"
+    // stayed above the reason and the Download button (click-through, 2026-10-21).
+    const stopped = downloadStopped(rows, pendingDub.ids);
+    $("mnProgress").hidden = stopped;
+    $("mnBar").style.width = (pct ?? 0) + "%";
     // One number, where the eye lands. Which file or step it is on is left
-    // out: nobody downloading asked (user, 2026-09-28).
-    $("mnTitle").textContent = t("Downloading {pct}%", { pct });
-    $("mnLine").textContent = "";
+    // out: nobody downloading asked (user, 2026-09-28). No number before
+    // there is one (overallProgress).
+    $("mnTitle").textContent = stopped ? pendingDub.title
+      : pct == null ? t("Getting ready…") : t("Downloading {pct}%", { pct });
+    $("mnLine").textContent = stopped ? pendingDub.line : "";
     if (packBusy) return;
     // A model whose download stopped: paused with its pieces on disk, or --
     // an Ollama pull that failed before it began -- not_downloaded with the

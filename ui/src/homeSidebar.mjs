@@ -1,8 +1,8 @@
 // The Home screen's left sidebar and the Dub Agent card beside the banner
 // (the mockup's first screen, user 2026-09-30).
 //
-// Owns the sidebar's buttons (#homeGhName, #homeGhStar, #homeNavDub,
-// #homeNavAudio, #homeNavErase, #homeNavSave, #homeNavProjects, #homeNavSettings,
+// Owns the sidebar's buttons (#homeGhName, #homePerso, #homeNavDub,
+// #homeNavAudio, #homeNavErase, #homeNavSave, #homeNavSettings,
 // #homeHelp, #homeFeedback, #homeWhatsNew/#homeWhatsNewTitle) and the row of cards under
 // the banner (#homeAgentCard with its [data-prompt] chips, #homeDubCard,
 // #homeAudioCard, #homeEraseCard, #homeSaveCard). Every one of them opens something the page
@@ -44,6 +44,7 @@ export function whatsNewTitle(version) {
  * @param {(id: string) => any} deps.$
  * @param {object} deps.body            document.body
  * @param {string} deps.repoUrl         the project's GitHub page
+ * @param {() => string} deps.persoUrl  Perso's workspace, UTM-tagged once the settings have loaded
  * @param {(url: string) => void} deps.openUrl   opens in the system browser
  * @param {() => void} deps.onDubbing     a new project on its Dubbing tab (file or link)
  * @param {() => void} deps.onErase
@@ -53,22 +54,23 @@ export function whatsNewTitle(version) {
  * @param {() => void} deps.onHelp        the Help dialog: what each tool does
  * @param {() => Promise<{version?: string}>} deps.loadWhatsNew
  */
-export function initHomeSidebar({ $, body, repoUrl, openUrl, onDubbing, onErase,
+export function initHomeSidebar({ $, body, repoUrl, persoUrl, openUrl, onDubbing, onErase,
                                   onAudio = () => {}, onSaveVideo, onSettings, onHelp, loadWhatsNew }) {
   const on = (id, fn) => $(id).addEventListener("click", fn);
 
   on("homeGhName", () => openUrl(repoUrl));
-  on("homeGhStar", () => openUrl(repoUrl));
+  on("homePerso", () => openUrl(persoUrl()));
   on("homeNavDub", onDubbing);
   on("homeNavAudio", onAudio);
   on("homeNavErase", onErase);
   on("homeNavSave", onSaveVideo);
-  on("homeNavProjects", () => $("projectsHead").scrollIntoView({ behavior: "smooth", block: "start" }));
   on("homeNavSettings", () => onSettings());
   on("homeHelp", onHelp);
   // The app has no feedback form of its own; the issues page is where it goes.
   on("homeFeedback", () => openUrl(`${repoUrl}/issues`));
-  // The update module listens for this event and opens its window.
+  // The update module listens for this event and opens its window: the
+  // running version's list, or the update on offer (ui/src/updateWindow.mjs,
+  // which also marks this card while one downloads or waits).
   on("homeWhatsNew", () => window.dispatchEvent(new CustomEvent("persodub:open-update")));
 
   on("homeDubCard", onDubbing);
@@ -83,7 +85,10 @@ export function initHomeSidebar({ $, body, repoUrl, openUrl, onDubbing, onErase,
     openHomeAgent($, body, chip ? t(chip.dataset.prompt) : "");
   });
 
+  // Not over an update's "ready" title, should that have come in first.
   loadWhatsNew()
-    .then((info) => { $("homeWhatsNewTitle").textContent = whatsNewTitle(info && info.version); })
+    .then((info) => {
+      if (!$("homeWhatsNew").classList.contains("ready")) $("homeWhatsNewTitle").textContent = whatsNewTitle(info && info.version);
+    })
     .catch(() => { /* the card keeps its plain title */ });
 }

@@ -32,7 +32,7 @@ function makeEl(id) {
 
 /** A page, a fetch log and a stopped clock. `fetchModels` is the rows the next
  * GET /api/models answers with; `write` records every other call. */
-function harness({ rows = [], shell = null } = {}) {
+function harness({ rows = [], shell = null, ramOk = true } = {}) {
   const els = new Map();
   const $ = (id) => {
     if (!els.has(id)) els.set(id, makeEl(id));
@@ -42,8 +42,10 @@ function harness({ rows = [], shell = null } = {}) {
 
   const realFetch = globalThis.fetch;
   const realDocument = globalThis.document;
+  const realWindow = globalThis.window;
   const realSetTimeout = globalThis.setTimeout;
-  globalThis.document = { createElement: (tag) => makeEl(tag) };
+  globalThis.document = Object.assign(makeEl("document"), { createElement: (tag) => makeEl(tag) });
+  globalThis.window = makeEl("window");
   globalThis.setTimeout = (fn, ms) => { state.timers.push({ fn, ms }); return state.timers.length; };
   globalThis.fetch = async (url, opts) => {
     state.calls.push(`${(opts && opts.method) || "GET"} ${url}`);
@@ -53,6 +55,7 @@ function harness({ rows = [], shell = null } = {}) {
   state.restore = () => {
     globalThis.fetch = realFetch;
     globalThis.document = realDocument;
+    globalThis.window = realWindow;
     globalThis.setTimeout = realSetTimeout;
   };
 
@@ -64,6 +67,7 @@ function harness({ rows = [], shell = null } = {}) {
     onRowsChanged: (r) => { state.painted.push(r); },
     shell,
     keepPolling: () => state.keepPolling === true,
+    ramOk: () => ramOk,
   });
   return { $, api, state };
 }
@@ -91,6 +95,11 @@ const settle = () => new Promise((r) => setImmediate(r));
 
 /** The Settings catalog's model rows, without the group headings between them. */
 const listRows = (h) => h.$("modelsList").children.filter((c) => c.className.includes("model-row"));
+
+/** What the browser does when an event reaches `el`: its listeners run. */
+const fire = (el, ev) => { for (const fn of el.listeners[ev] || []) fn({}); };
+/** The timers set for the next tick -- not the 2s poll's. */
+const nextTick = (h) => h.state.timers.filter((x) => x.ms === 0);
 
 const DETAIL_TWO = {
   missing: [{ id: "whisper", name: "Whisper", bytes: 1.5e9 },
@@ -132,12 +141,43 @@ test("showModelsDialog paints the 409's title and line and opens the overlay", a
   h.api.showModelsDialog(DETAIL_TWO);
 
   assert.equal(h.$("mnTitle").textContent, "Download 4.0 GB?");
-  assert.equal(h.$("mnLine").textContent, "One-time download for making voices.");
+  assert.equal(h.$("mnLine").textContent,
+    "One-time download for making voices. Needs 8 GB of memory (16 GB recommended).");
   assert.equal(h.$("mnError").textContent, "");
   assert.equal(h.$("mnProgress").hidden, true);
   assert.equal(h.$("mnDownload").hidden, false);
   assert.equal(h.$("mnHide").hidden, true);
   assert.equal(h.$("modelsNeededOverlay").classList.contains("open"), true);
+});
+
+test("the dub's download says the memory it needs, and Download and Start is on", (t) => {
+  const h = harness();
+  t.after(h.state.restore);
+  h.api.showModelsDialog(DETAIL_TWO);
+  assert.equal(h.$("mnLine").textContent,
+    "One-time download for making voices. Needs 8 GB of memory (16 GB recommended).");
+  assert.equal(h.$("mnError").textContent, "");
+  assert.equal(h.$("mnDownload").disabled, false);
+});
+
+test("a computer short of memory gets the red line instead, and no download", (t) => {
+  const h = harness({ ramOk: false });
+  t.after(h.state.restore);
+  h.api.showModelsDialog(DETAIL_TWO);
+  assert.equal(h.$("mnLine").textContent, "One-time download for making voices.");
+  assert.equal(h.$("mnError").textContent,
+    "This computer does not have enough memory to dub on this computer. Try the Perso API.");
+  assert.equal(h.$("mnDownload").disabled, true);
+  assert.equal(h.$("mnSettings").hidden, false);   // Use Perso API is the way round
+});
+
+test("a download that is not a dub's (Separate audio) says nothing about memory", (t) => {
+  const h = harness({ ramOk: false });
+  t.after(h.state.restore);
+  h.api.showModelsDialog({ ...PACK_409, purpose: "separating audio" });
+  assert.equal(h.$("mnLine").textContent, "One-time download for separating audio.");
+  assert.equal(h.$("mnError").textContent, "");
+  assert.equal(h.$("mnDownload").disabled, false);
 });
 
 test("Download and Start fetches only what is missing and swaps the buttons", async (t) => {
@@ -392,6 +432,74 @@ test("downloadModel and cancelModel hit their endpoints and start the poll", asy
 });
 
 
+// A refresh that rebuilt the list between pointerdown and click took the
+// pressed button away, so the click reached no button: the second Cancel on
+// Gemma sent nothing and the download went on (Windows C18, 2026-10-20).
+test("a refresh during a press keeps the pressed Cancel, and its click still stops the download", async (t) => {
+  const h = harness({ rows: [downloading("gemma", "Gemma 3", 8e9, 7)] });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  const cancel = listRows(h)[0].children[3];
+  assert.equal(cancel.textContent, "Cancel");
+
+  fire(h.$("modelsList"), "pointerdown");
+  h.state.rows = [downloading("gemma", "Gemma 3", 8e9, 24)];
+  await h.api.refreshModels();   // the focus refresh a click into a background window starts
+  assert.equal(listRows(h)[0].children[3], cancel, "the button under the finger is still on screen");
+
+  fire(document, "pointerup");
+  cancel.onclick();
+  await settle();
+  assert.equal(h.state.calls.includes("POST /api/models/gemma/cancel"), true);
+});
+
+test("the refresh a press held back is drawn just after the release, however the press ends", async (t) => {
+  const h = harness({ rows: [downloading("gemma", "Gemma 3", 8e9, 7)] });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  const status = () => listRows(h)[0].children[2].textContent;
+
+  let pct = 7;
+  for (const [el, ev] of [[document, "pointerup"], [document, "pointercancel"],
+                          [window, "blur"], [document, "visibilitychange"]]) {
+    fire(h.$("modelsList"), "pointerdown");
+    pct += 1;
+    h.state.rows = [downloading("gemma", "Gemma 3", 8e9, pct)];
+    await h.api.refreshModels();
+    assert.equal(status(), `Downloading Gemma 3… ${pct - 1}%`, `held back until ${ev}`);
+
+    assert.equal(nextTick(h).length, 0);
+    fire(el, ev);
+    // A tick later, so the click that follows pointerup lands first.
+    const later = nextTick(h);
+    assert.equal(later.length, 1, `${ev} sends the repaint`);
+    h.state.timers.splice(h.state.timers.indexOf(later[0]), 1);
+    later[0].fn();
+    assert.equal(status(), `Downloading Gemma 3… ${pct}%`, `drawn after ${ev}`);
+  }
+});
+
+test("a refresh with no press rebuilds the list at once, and a keyboard click still cancels", async (t) => {
+  const h = harness({ rows: [downloading("gemma", "Gemma 3", 8e9, 7)] });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  const before = listRows(h)[0].children[3];
+
+  h.state.rows = [downloading("gemma", "Gemma 3", 8e9, 24)];
+  await h.api.refreshModels();
+  assert.equal(listRows(h)[0].children[2].textContent, "Downloading Gemma 3… 24%");
+  assert.notEqual(listRows(h)[0].children[3], before, "rebuilt, as it always was");
+  assert.deepEqual(nextTick(h), [], "nothing waits for a release");
+  // A release with no press before it schedules nothing either.
+  fire(document, "pointerup");
+  assert.deepEqual(nextTick(h), []);
+
+  // Enter or Space on the focused button: a click with no pointer before it.
+  listRows(h)[0].children[3].onclick();
+  await settle();
+  assert.equal(h.state.calls.includes("POST /api/models/gemma/cancel"), true);
+});
+
 // ── packs: the desktop app installs them, then the models download ─────────
 test("Download and Start installs the packs through the desktop app first, then downloads the models", async (t) => {
   const shell = fakeShell({ install: async (id) => {
@@ -422,6 +530,12 @@ test("while a pack installs the dialog shows its progress line, and Cancel stops
   h.api.showModelsDialog({ missing: [PACK_409.missing[0]] });
   h.$("mnDownload").click();
   await settle();
+  // Before a byte counts the shell sends no percent: no number, where 0% held
+  // for seconds read as stuck (Windows C2). The Settings row says the same.
+  shell.progress({ pack: "engine", stepId: "venv-engines", title: "Installing Python + PyTorchs", state: "start", pct: null });
+  assert.equal(h.$("mnTitle").textContent, "Getting ready…");
+  assert.equal(h.$("mnBar").style.width, "0%");
+  assert.equal(listRows(h)[0].children[2].textContent, "Getting ready… · Installing Python + PyTorchs");
   shell.progress({ pack: "engine", stepId: "venv-engines", title: "Installing Python + PyTorchs", state: "progress", detail: "torch 40%", pct: 40 });
   assert.equal(h.$("mnBar").style.width, "40%", "the bar follows the pack's percent, not the engine's row");
   // Only the percent: which file or step it is on is not shown (user, 2026-09-28).
@@ -465,6 +579,23 @@ test("a pack the desktop app could not install stops the dub and says why, with 
   assert.equal(h.$("mnError").textContent, "Python + PyTorch: Not enough space: needs 2.0 GB.");
   assert.equal(h.$("mnDownload").hidden, false);
   assert.ok(!h.state.calls.some((c) => c.startsWith("POST")), "no model download was started");
+});
+
+// The dev build's refusal comes right after Start: the title stayed
+// "Downloading 0%" above the reason and the Download button (click-through, 2026-10-21).
+test("a pack that fails at once puts the dialog's opening words back, without the bar or a percent", async (t) => {
+  const shell = fakeShell({ install: async () => ({ ok: false, reason: "This build carries no bundled files to install from." }) });
+  const h = harness({ rows: [ENGINE, WHISPER], shell });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  h.api.showModelsDialog(PACK_409);
+  const opening = [h.$("mnTitle").textContent, h.$("mnLine").textContent];
+  h.$("mnDownload").click();
+  await settle(); await settle(); await settle();
+  assert.equal(h.$("mnError").textContent, "Python + PyTorch: This build carries no bundled files to install from.");
+  assert.deepEqual([h.$("mnTitle").textContent, h.$("mnLine").textContent], opening);
+  assert.equal(h.$("mnProgress").hidden, true);
+  assert.equal(h.$("mnDownload").hidden, false);
 });
 
 test("without the desktop app a pack cannot be installed from the page, and the dialog says so", async (t) => {

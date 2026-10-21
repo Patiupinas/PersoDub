@@ -16,6 +16,7 @@ from app import pipeline
 from app.text.srt import parse_srt
 from app.translate import (
     GEMINI_UPGRADE_URL,
+    GeminiInvalidKeyError,
     GeminiQuotaExhaustedError,
     GeminiUnavailableError,
     TranslationEngine,
@@ -339,7 +340,7 @@ def _stub_run_dub_until_translation(monkeypatch):
     monkeypatch.setattr(
         pipeline, "transcribe_local",
         lambda video, language=None, word_timestamps=False, log=None, on_language=None, video_duration=None,
-        vocals_path=None: [{"start": 0.0, "end": 2.0, "text": "hi"}],
+        vocals_path=None, cancel_check=None: [{"start": 0.0, "end": 2.0, "text": "hi"}],
     )
     monkeypatch.setattr(pipeline, "diarize", lambda path, cues, num_speakers=None, video_duration=None: cues)
 
@@ -389,6 +390,46 @@ def test_gemini_unavailable_fails_the_job_with_a_try_later_notice(monkeypatch, t
     assert "link" not in notices[0]
 
 
+class _WrongKeyTranslator(FakeTranslator):
+    def _ask(self, prompt):
+        raise GeminiInvalidKeyError("Gemini rejected the API key (HTTP 400)")
+
+
+def test_a_refused_gemini_key_sends_the_user_to_settings_not_to_google(monkeypatch, tmp_path):
+    _stub_run_dub_until_translation(monkeypatch)
+    video = tmp_path / "in.mp4"; video.write_bytes(b"vid")
+    notices = []
+    with pytest.raises(RuntimeError) as e:
+        pipeline.run_dub(
+            video_path=str(video), out_path=str(tmp_path / "out.mp4"),
+            srt_path=None, language="Korean", language_code="ko",
+            translator=_WrongKeyTranslator(), on_notice=notices.append,
+        )
+    assert str(e.value) == "Gemini rejected the API key. Open Settings and check the key."
+    assert [n["type"] for n in notices] == ["gemini_invalid_key"]
+    assert "Google" not in notices[0]["message"]
+
+
+class _RequestsBoom(FakeTranslator):
+    display_name = "Gemini"
+
+    def _ask(self, prompt):
+        raise RuntimeError("400 Client Error: Bad Request for url: "
+                           "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent")
+
+
+def test_a_failed_translations_reason_has_no_address_or_library_words(monkeypatch, tmp_path):
+    _stub_run_dub_until_translation(monkeypatch)
+    video = tmp_path / "in.mp4"; video.write_bytes(b"vid")
+    with pytest.raises(RuntimeError) as e:
+        pipeline.run_dub(
+            video_path=str(video), out_path=str(tmp_path / "out.mp4"),
+            srt_path=None, language="Korean", language_code="ko",
+            translator=_RequestsBoom(),
+        )
+    assert e.value.detail == "Reason: 400 Bad Request"
+
+
 class _GeminiBoom(FakeTranslator):
     """A Gemini failure that is neither quota nor 503 -- a bad gateway, say."""
     display_name = "Gemini"
@@ -416,9 +457,12 @@ def test_an_unexpected_gemini_failure_names_the_part_and_sends_them_to_google(
             srt_path=None, language="Korean", language_code="ko",
             translator=_GeminiBoom(),
         )
-    assert str(e.value).startswith("Translation failed (Gemini:")
-    assert "502 Bad Gateway" in str(e.value)
-    assert str(e.value).endswith("Ask Google if it keeps happening.")
+    assert str(e.value) == ("Gemini translation failed. Ask Google if it keeps happening. "
+                            "(Reason: Server error '502 Bad Gateway')")
+    # The screen's two lines: the sentence whole, and the reason under it. In
+    # one sentence the screen cut "(Gemini: ...)" at the colon, advice and all.
+    assert e.value.shown == "Gemini translation failed. Ask Google if it keeps happening."
+    assert e.value.detail == "Reason: Server error '502 Bad Gateway'"
 
 
 class _CursedLineTranslator(TranslationEngine):
@@ -484,7 +528,7 @@ def test_a_local_translator_failing_points_at_settings_not_at_google(
             srt_path=None, language="Korean", language_code="ko",
             translator=_LocalBoom(),
         )
-    assert str(e.value).startswith("Translation failed (Gemma:")
+    assert str(e.value).startswith("Gemma translation failed.")
     assert "Google" not in str(e.value)
     assert "pick another translator in Settings" in str(e.value)
 

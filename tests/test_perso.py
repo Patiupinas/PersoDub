@@ -519,9 +519,10 @@ def test_version_is_not_a_second_hardcoded_copy():
 
 def test_outbound_links_carry_the_running_identity():
     # The UTM source must be the exact host the API headers send, so Perso can line up
-    # "API usage by this app" with "visits from this app"; utm_content separates the two links.
+    # "API usage by this app" with "visits from this app"; utm_content separates the links.
     for link, kind in ((perso_client_module.SIGNUP_LINK, "signup"),
-                       (perso_client_module.RECHARGE_LINK, "recharge")):
+                       (perso_client_module.RECHARGE_LINK, "recharge"),
+                       (perso_client_module.WORKSPACE_LINK, "home")):
         assert "utm_source=%s" % perso_client_module.CLIENT_HOST in link
         assert "utm_content=%s" % kind in link
         assert "utm_term=v%s" % perso_client_module.APP_VERSION in link
@@ -1032,6 +1033,17 @@ def test_a_shown_reason_never_ends_in_an_address():
     assert short_reason("Server error 502 for url https://api.perso.ai/x") == "Server error 502"
 
 
+def test_a_shown_reason_drops_requests_words_and_stays_short():
+    assert short_reason("400 Client Error: Bad Request for url: "
+                        "https://generativelanguage.googleapis.com/v1beta/models/x:generateContent") \
+        == "400 Bad Request"
+    said = short_reason("HTTPSConnectionPool(host='generativelanguage.googleapis.com', port=443): "
+                        "Max retries exceeded with url: /v1beta/models/x (Caused by NewConnectionError('x'))")
+    assert said == "Max retries exceeded"
+    long = short_reason("word " * 60)
+    assert len(long) <= 91 and long.endswith("word…")
+
+
 def test_a_reason_with_no_address_is_left_alone():
     assert short_reason("timed out") == "timed out"
     assert short_reason(TimeoutError("timed out")) == "timed out"
@@ -1069,6 +1081,34 @@ def test_a_refusal_in_plain_text_or_with_nothing_to_say():
     with pytest.raises(httpx.HTTPStatusError) as e:
         perso_client_module._raise_for_status(_refusal(400, ""))
     assert "Perso said" not in str(e.value)
+
+
+def test_a_video_longer_than_the_plan_gets_its_own_error():
+    """F4008: the free plan stops at one minute. About thirty reports came from
+    this one refusal (2026-10-19); it gets its own popup and is not filed."""
+    r = _refusal(400, {"message": "영상 길이가 60000ms를 초과했습니다.", "code": "F4008"})
+    with pytest.raises(perso_client_module.PersoDurationLimitError) as e:
+        perso_client_module._raise_for_status(r)
+    assert e.value.limit_seconds == 60
+    assert e.value.code == "F4008"
+    assert e.value.reason == "영상 길이가 60000ms를 초과했습니다"
+    assert e.value.link.startswith("https://perso.ai/pricing?utm_source=")
+    # Another code is still a plain refusal with Perso's reason.
+    with pytest.raises(httpx.HTTPStatusError):
+        perso_client_module._raise_for_status(_refusal(400, {"message": "no", "code": "F4001"}))
+
+
+def test_a_model_the_plan_does_not_cover_is_not_a_wrong_key():
+    """VT40314 comes as a 403: FINCH and NIGHTINGALE need Pro. It read as a
+    rejected key, which sends the user to fix a key that is fine."""
+    r = _refusal(403, {"message": "Pro plan required", "code": "VT40314"})
+    with pytest.raises(perso_client_module.PersoPlanRequiredError) as e:
+        perso_client_module._raise_for_status(r)
+    assert e.value.reason == "Pro plan required"
+    assert e.value.code == "VT40314"
+    assert e.value.link.startswith("https://perso.ai/pricing?utm_source=")
+    with pytest.raises(perso_client_module.PersoInvalidKeyError):
+        perso_client_module._raise_for_status(_refusal(403, {"message": "invalid key"}))
 
 
 # ── note_credits: the line, the running total, and never a failure ─────────

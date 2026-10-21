@@ -5,7 +5,7 @@
 // Run with: node --test ui/src/format.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { modKey, plainFailure, rawLogLines, fmtLength, videoCard, videoCardHtml } from "./format.mjs";
+import { modKey, plainFailure, rawLogLines, restartFailure, fmtLength, videoCard, videoCardHtml } from "./format.mjs";
 import {
   fmtClock,
   fmtClockTenths,
@@ -184,6 +184,11 @@ test("a failure's plain sentence is shown, and a program's own words are not", (
     "Could not look for subtitles in this video.");
   assert.equal(plainFailure("local STT reported an error ([Errno 2] No such file)"), "Local STT reported an error.");
   assert.equal(plainFailure("Qwen dub mux failed: Conversion failed! /tmp/x.mp4"), "Qwen dub mux failed.");
+  // A menu path is a person's words; the path in parentheses is not.
+  assert.equal(plainFailure("내 컴퓨터에서 받아쓰기에 실패했어요. 받아쓰기에 쓰는 Whisper 파일이 없거나 손상됐어요. 설정 > 모델에서 Whisper를 다시 받아 주세요. "
+    + "(local STT script missing: /Users/x/kit/app/scripts/whisper_transcribe.py)"),
+    "내 컴퓨터에서 받아쓰기에 실패했어요. 받아쓰기에 쓰는 Whisper 파일이 없거나 손상됐어요. 설정 > 모델에서 Whisper를 다시 받아 주세요.");
+  assert.equal(plainFailure("Could not run x->y"), "");
   // A program's words through and through: nothing for the screen.
   assert.equal(plainFailure("[Errno 28] No space left on device: '/Users/x/y'"), "");
   assert.equal(plainFailure("Traceback (most recent call last):"), "");
@@ -191,6 +196,20 @@ test("a failure's plain sentence is shown, and a program's own words are not", (
   assert.equal(plainFailure("'NoneType' object has no attribute 'get'"), "");
   assert.equal(plainFailure("interrupted"), "");
   assert.equal(plainFailure(""), "");
+});
+
+test("why the voice engine did not start again is said in plain words, never the engine's own line", () => {
+  // Issue #187's engine, as the shell hands it back (desktop/src/packIpc.js).
+  assert.equal(restartFailure("Installed, but it could not start: OSError: �� �۾��� �Ϸ��ϱ� ���� ����¡ ������ �ʹ� �۽��ϴ�. (os error 1455)"),
+    "Starting it again did not work: this computer ran out of memory.");
+  assert.equal(restartFailure("Installed, but it could not start: Health check timed out after 300000ms: http://127.0.0.1:5/health"),
+    "Starting it again did not work: it took too long to start.");
+  // The shell's own sentence is said as it is.
+  assert.equal(restartFailure("Windows needs Microsoft Visual C++ to run Python + PyTorch. Install it, then try again."),
+    "Starting it again did not work. Windows needs Microsoft Visual C++ to run Python + PyTorch. Install it, then try again.");
+  // A program's words, or nothing at all: only that it did not work.
+  assert.equal(restartFailure("Installed, but it could not start: RuntimeError: boom"), "Starting it again did not work.");
+  assert.equal(restartFailure(undefined), "Starting it again did not work.");
 });
 
 test("Raw log holds the failure's own text when the screen did not show it whole", () => {

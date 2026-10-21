@@ -26,7 +26,7 @@ from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app import engines_status, languages
+from app import engines_status, languages, room
 from app.engines.base import (
     SynthesisRequest,
     get_engine,
@@ -133,6 +133,20 @@ def logo():
                         media_type="image/png")
 
 
+@router.get("/perso-dubbing.svg")
+def perso_logo():
+    """Perso's wordmark (static/perso-dubbing.svg), in the Home sidebar's perso.ai button."""
+    return FileResponse(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "static", "perso-dubbing.svg"),
+                        media_type="image/svg+xml")
+
+
+@router.get("/mascot.png")
+def mascot():
+    """The mascot (static/mascot.png), at the head of the Home screen's Dub Agent card."""
+    return FileResponse(os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "static", "mascot.png"),
+                        media_type="image/png")
+
+
 # The interface's own fonts (static/fonts: fonts.css and its woff2 files), so
 # the page looks the same with no network. A name only, never a path.
 _FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "static", "fonts")
@@ -203,6 +217,11 @@ def engines_status_route():
         # that failed to start leaves the rest of the app working, and this
         # is how the page knows which local work is off and why.
         "local_engines": {w: engines_status.local_engine(w) for w in ("voice", "translation")},
+        # False when this computer has too little memory to dub on it -- the
+        # same rule a start refuses by (app/room.py) -- so the download dialog
+        # can say so before 3 GB are fetched for nothing. A size the computer
+        # will not give counts as enough, as it does there.
+        "ram_ok": room.ram_refusal(room.total_ram_bytes()) is None,
     }
 
 

@@ -11,9 +11,12 @@ from app.perso_client import PersoCreditExhaustedError
 
 
 def _wait(store, jid):
-    for _ in range(100):
+    # Through queued as well as running: a job started while the one before
+    # it is still on air waits in line first, and a slow runner (CI's Windows,
+    # 2026-10-21) handed back "queued" where the test expected its ending.
+    for _ in range(300):
         j = store.get(jid)
-        if j and j["status"] != "running":
+        if j and j["status"] not in ("running", "queued"):
             return j
         time.sleep(0.02)
     return store.get(jid)
@@ -685,6 +688,36 @@ def test_run_async_lifts_perso_credits_and_duration_onto_the_record():
     assert j["duration"] == 150.2
     saved = JobStore._saved(j)
     assert saved["perso_credits"] == 7 and saved["duration"] == 150.2
+
+
+def test_a_finished_or_failed_job_says_when_it_started_and_how_long_each_step_took():
+    # Whole numbers for the usage count (desktop/src/analytics.js dubFacts),
+    # on the record before the status flips; a step that did not run is not
+    # named, and none of it is saved with the job.
+    store = JobStore()
+
+    def work(log):
+        with timed_step(log, "1/6", "separate"):
+            pass
+        with timed_step(log, "2/6", "transcribe"):
+            pass
+        return {"ok": True}
+
+    j = _wait(store, store.run_async(work))
+    assert j["status"] == "done"
+    assert j["stage_seconds"] == {"separate": 0, "transcribe": 0}
+    assert j["elapsed_seconds"] == 0
+    assert j["started_hour"] in range(24)
+    assert "stage_seconds" not in JobStore._saved(j)
+
+    def fails(log):
+        with timed_step(log, "3/6", "translate"):
+            raise RuntimeError("Translation failed.")
+
+    j = _wait(store, store.run_async(fails))
+    assert j["status"] == "error"
+    assert j["stage_seconds"] == {"translate": 0}
+    assert isinstance(j["elapsed_seconds"], int) and j["started_hour"] in range(24)
 
 
 def test_run_async_leaves_the_record_alone_when_the_result_says_nothing():

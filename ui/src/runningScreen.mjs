@@ -61,11 +61,34 @@ export function stoppedMark(status) {
 // `choose` popup's message is a function: it names the button to press once
 // that is dealt with (Resume, or Translate again), and the other translators
 // when there are some to offer.
+// "1 min" for a whole number of minutes, "90 s" otherwise: a plan's limit.
+function limitText(seconds) {
+  return seconds % 60 === 0 ? t("{n} min", { n: seconds / 60 }) : t("{n} s", { n: seconds });
+}
+
 const CREDIT_MODALS = {
   perso_credit_exhausted: {
     get title() { return t("Out of credits"); },
     get message() { return t("Recharge, then try again."); },
     get button() { return t("Recharge"); },
+  },
+  // Perso refused the video as longer than the plan allows (F4008). The one
+  // who meets it is almost always on the free plan, so the button is the
+  // public plan page, and the limit is the one Perso named.
+  perso_duration_limit: {
+    get title() { return t("Video too long"); },
+    message: (notice) => (notice && notice.limit_seconds
+      ? t("Your Perso plan dubs videos up to {limit}. Upgrade your plan, or set Dubbing to This computer.",
+        { limit: limitText(notice.limit_seconds) })
+      : t("Your Perso plan does not take a video this long. Upgrade your plan, or set Dubbing to This computer.")),
+    get button() { return t("See plans"); },
+  },
+  // A voice model the plan does not cover (VT40314: FINCH and NIGHTINGALE
+  // need Pro). It came as a 403 and read as a wrong key until 2026-10-19.
+  perso_plan_required: {
+    get title() { return t("Higher plan needed"); },
+    get message() { return t("This dubbing model needs a higher Perso plan. Upgrade your plan, or choose another dubbing model."); },
+    get button() { return t("See plans"); },
   },
   perso_invalid_key: {
     get title() { return t("Check your Perso key"); },
@@ -261,14 +284,21 @@ export function initRunningScreenUi({ $, parseProgress, trimLabel, homeNoticeAnd
     // sentence in the page's language when it sent one (error_shown, a
     // notice's message_shown); error and message stay English for the
     // desktop app and the failure reports.
+    // A failure the engine sent with its cause apart (error_detail: "Reason:
+    // no reply", "Perso said: ... (code)") is its own sentence through and
+    // through, so it is shown whole, advice and all, and the cause goes under
+    // it -- plainFailure cut such a sentence at its first colon.
     const said = n && (n.message_shown || n.message);
+    const detail = failed ? (job.error_detail || "") : "";
     const message = failed
-      ? (ERROR_SENTENCES[job.error] || plainFailure(job.error_shown || job.error) || said || failedAt(job))
+      ? (ERROR_SENTENCES[job.error] || (detail && job.error_shown)
+         || plainFailure(job.error_shown || job.error) || said || failedAt(job))
       : said;
     const linkText = n && CREDIT_MODALS[n.type] ? CREDIT_MODALS[n.type].button : t("Recharge");
-    const html = (n && n.link && linkText)
+    const html = ((n && n.link && linkText)
       ? `${escapeHtml(message)} <a href="${escapeHtml(n.link)}" target="_blank" rel="noopener">${linkText}</a>`
-      : escapeHtml(message || "");
+      : escapeHtml(message || ""))
+      + (detail ? `<span class="notice-detail">${escapeHtml(detail)}</span>` : "");
     for (const id of ["jobNotice", "doneNotice"]) {
       const el = $(id);
       // "danger" only ever comes from the poll loop's own failure
@@ -310,7 +340,7 @@ export function initRunningScreenUi({ $, parseProgress, trimLabel, homeNoticeAnd
   // once there are translators to offer, the line says they are there.
   // Opened by Translate again, the button to press later is that one.
   function creditMessage(notice, cfg, canSwitch) {
-    if (!cfg.choose) return cfg.message;
+    if (!cfg.choose) return typeof cfg.message === "function" ? cfg.message(notice) : cfg.message;
     const button = modalPick ? t("Translate again") : t("Resume");
     const resets = resetsSentence(notice.message);
     if (!resets) return cfg.message(button, canSwitch);

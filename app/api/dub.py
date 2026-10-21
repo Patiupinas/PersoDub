@@ -584,7 +584,7 @@ def dub_job_resume(jid: str, body: Optional[ResumeRequest] = None):
     _require_local_models(engines, None if translator or translated else engines.get("translator"))
     check_space(state.WORKSPACE)
     if not state.job_store.claim(jid, RESUMABLE, status=JobStatus.QUEUED, error=None, error_shown=None,
-                                 cancel_requested=False, notices=[],
+                                 error_detail=None, cancel_requested=False, notices=[],
                                  **({"translator": translator} if translator else {})):
         raise HTTPException(status_code=409, detail=t("This project is already running again."))
     state.job_store.append_log(jid, "Resuming from where it stopped…")
@@ -1175,8 +1175,8 @@ def dub_start(
     tts_engine = "qwen3" (this computer); omitted uses the saved default
     (app/setup.py "voice").
     stt_engine = "perso" for cloud STT+diarization (best quality); if omitted, the
-    server default applies (see app.config.default_stt_engine) — "perso" when a
-    PERSO_API_KEY is configured, else local Whisper. A Perso failure FAILS the
+    server default applies (see app.config.default_stt_engine) — the saved
+    STT_ENGINE, else local Whisper, key or no key. A Perso failure FAILS the
     job with an actionable message (no silent local substitute — the engine was
     chosen for a reason); pick Whisper explicitly for the free offline path.
     trim_start/trim_end = dub only these seconds of the video. Both or neither:
@@ -1192,8 +1192,9 @@ def dub_start(
     separation stage is not run again (app/separate_launch.py stems_for).
     project_id = the first dubbing of the project this one joins (Add
     language): one video's languages are one project on Home.
-    perso_model = the Perso voice model of a Perso cloud dubbing ("NIGHTINGALE",
-    "ORIOLE" or "WREN"), which the target language must have; omitted, ORIOLE
+    perso_model = the Perso voice model of a Perso cloud dubbing, any one Perso's
+    language list names ("ORIOLE", "LINNET_4", "FINCH", ...), which the target
+    language must have; omitted, ORIOLE
     when the language has it, else the first it has (app/languages.py model_for).
     """
     try:

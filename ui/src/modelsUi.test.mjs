@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { gb, neededModelId, neededPackIds, modelStatusLine, dubStartDialog, overallProgress, allReady, groupModels } from "./modelsUi.mjs";
+import { gb, neededModelId, neededPackIds, modelStatusLine, downloadChipText, dubStartDialog, overallProgress, downloadStopped, allReady, groupModels } from "./modelsUi.mjs";
 
 test("neededModelId maps each dropdown choice to its catalog model", () => {
   assert.equal(neededModelId("stt", "local"), "whisper");
@@ -21,8 +21,12 @@ test("modelStatusLine covers the four states with the mockup's words", () => {
     modelStatusLine({ state: "downloading", name: "Whisper", progress: 41 }),
     { cls: "model-busy", text: "Downloading Whisper… 41%", button: "cancel" });
   assert.deepEqual(
-    modelStatusLine({ state: "downloading", name: "Whisper", progress: null }),
+    modelStatusLine({ state: "downloading", name: "Whisper", progress: null, queued: true }),
     { cls: "model-busy", text: "Waiting to download Whisper…", button: "cancel" });
+  // A pack is never queued: no figure yet is its set-up (Windows C2).
+  assert.deepEqual(
+    modelStatusLine({ state: "downloading", role: "pack", name: "Python + PyTorch", progress: null }),
+    { cls: "model-busy", text: "Getting ready…", button: "cancel" });
   assert.deepEqual(modelStatusLine({ state: "paused" }),
     { cls: "model-busy", text: "Paused", button: "resume" });
   // The server's reason, then what to do: never the exception (Windows H9/H10, 2026-10-06).
@@ -31,6 +35,16 @@ test("modelStatusLine covers the four states with the mockup's words", () => {
   assert.deepEqual(
     modelStatusLine({ state: "not_downloaded", bytes: 7.6e9 }),
     { cls: "", text: "7.6 GB", button: "download" });
+});
+
+test("a download says Getting ready… until its first byte, then its percent, 0 included", () => {
+  // "Downloading… 0%" from the press on, held 4 s before the first percent,
+  // read as stuck (Windows C2, 2026-10-21).
+  const row = { state: "downloading", name: "Mel-Band RoFormer", queued: false };
+  assert.deepEqual(modelStatusLine({ ...row, progress: null }),
+    { cls: "model-busy", text: "Getting ready…", button: "cancel" });
+  assert.deepEqual(modelStatusLine({ ...row, progress: 0 }),
+    { cls: "model-busy", text: "Downloading Mel-Band RoFormer… 0%", button: "cancel" });
 });
 
 test("dubStartDialog says only the size and what it is for", () => {
@@ -78,6 +92,43 @@ test("overallProgress is byte-weighted and treats ready as done", () => {
   // (100*100% + 300*50% + 100*0%) / 500 = 50%
   assert.equal(overallProgress(rows, ["a", "b", "c"]), 50);
   assert.equal(overallProgress(rows, []), 0);
+});
+
+test("downloadStopped: one stopped and none on its way, never while another still downloads", () => {
+  const failedPack = { id: "engine", state: "paused", error: "This build carries no bundled files to install from." };
+  const whisper = { id: "whisper", state: "not_downloaded" };
+  assert.equal(downloadStopped([failedPack, whisper], ["engine", "whisper"]), true);
+  assert.equal(downloadStopped([{ id: "gemma", state: "not_downloaded", error: "Connection lost." }], ["gemma"]), true);
+  assert.equal(downloadStopped([failedPack, { ...whisper, state: "downloading", progress: 5 }], ["engine", "whisper"]), false);
+  // Not started yet is not stopped.
+  assert.equal(downloadStopped([whisper], ["whisper"]), false);
+});
+
+test("the topbar chip has no number while the download has none, never null% or 0%", () => {
+  assert.equal(downloadChipText({ name: "Python + PyTorch", progress: null }), "Python + PyTorch · Getting ready…");
+  assert.equal(downloadChipText({ name: "Python + PyTorch", progress: 0 }), "Python + PyTorch · 0%");
+  assert.equal(downloadChipText({ name: "Whisper", progress: 41 }), "Whisper · 41%");
+});
+
+test("overallProgress has no number while nothing on its way has a figure yet", () => {
+  const pack = { id: "engine", role: "pack", bytes: 900, state: "downloading", progress: null };
+  const whisper = { id: "whisper", bytes: 100, state: "not_downloaded" };
+  // A pack still making its venv: null, never the 0% that read as stuck (Windows C2).
+  assert.equal(overallProgress([pack, whisper], ["engine", "whisper"]), null);
+  assert.equal(overallProgress([{ ...pack, progress: 10 }, whisper], ["engine", "whisper"]), 9);
+  // A queued model beside one with a figure: the figure.
+  assert.equal(overallProgress([{ ...whisper, state: "downloading", progress: 50 }, { ...pack, role: "tts" }],
+                               ["engine", "whisper"]), 5);
+});
+
+test("overallProgress holds what is in while the next download gets ready", () => {
+  // The next one has no figure before its first byte: the bar keeps the share
+  // already in, never back to Getting ready… and 0 between two downloads.
+  const rows = [
+    { id: "engine", role: "pack", bytes: 900, state: "ready" },
+    { id: "whisper", bytes: 100, state: "downloading", progress: null },
+  ];
+  assert.equal(overallProgress(rows, ["engine", "whisper"]), 90);
 });
 
 test("allReady flips only when every needed model is ready", () => {

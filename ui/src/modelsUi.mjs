@@ -29,9 +29,11 @@ export function modelStatusLine(row) {
   if (!row) return { cls: "", text: "", button: null };
   if (row.state === "ready") return { cls: "model-ok", text: t("Ready"), button: null };
   if (row.state === "downloading") {
-    // progress null = queued behind another download; say so instead of 0%.
+    // progress null = queued behind another download, or no byte in yet: a
+    // download says Getting ready… until its first byte, never 0% (Windows C2,
+    // 2026-10-21). A pack never queues; null is its set-up.
     const text = row.progress == null
-      ? t("Waiting to download {name}…", { name: row.name })
+      ? (row.queued ? t("Waiting to download {name}…", { name: row.name }) : t("Getting ready…"))
       : t("Downloading {name}… {pct}%", { name: row.name, pct: row.progress });
     return { cls: "model-busy", text, button: "cancel" };
   }
@@ -43,8 +45,17 @@ export function modelStatusLine(row) {
   return { cls: "", text: `${gb(row.bytes)} GB`, button: "download" };
 }
 
-/** What the dub-start warning dialog shows, from the 409's detail. */
-export function dubStartDialog(detail) {
+/** The topbar chip's words for the download it stands for: the name and its
+ * percent, or no number while it has none -- the 0% it showed through a pack's
+ * set-up read as stuck (Windows C2). */
+export function downloadChipText(row) {
+  return `${row.name} · ${row.progress == null ? t("Getting ready…") : `${row.progress}%`}`;
+}
+
+/** What the dub-start warning dialog shows, from the 409's detail. ramOk is
+ * GET /api/engines' ram_ok: false when the computer has too little memory to
+ * dub on it. */
+export function dubStartDialog(detail, ramOk = true) {
   const missing = detail.missing || [];
   const total = detail.total_bytes ?? missing.reduce((n, m) => n + m.bytes, 0);
   // The desktop app installs packs (kind "pack": the AI engine, the
@@ -65,6 +76,15 @@ export function dubStartDialog(detail) {
     title: t("Download {size} GB?", { size: gb(total) }),
     line: downloadLine(purpose),
     perso: voice && !detail.purpose,
+    // The memory a dub on this computer needs, said before the download, and
+    // in its place, on a computer without it, why the download is off
+    // (owner, 2026-10-20). Only for the dub's own download: Separate audio
+    // and a translator alone are not held to it.
+    ram: voice && !detail.purpose
+      ? (ramOk ? t("Needs 8 GB of memory (16 GB recommended).")
+        : t("This computer does not have enough memory to dub on this computer. Try the Perso API."))
+      : "",
+    ramLow: voice && !detail.purpose && !ramOk,
     ids: missing.map((m) => m.id),
     packs,
     models,
@@ -93,10 +113,17 @@ export function neededPackIds(role, value) {
 }
 
 /** One number for the dialog's single progress bar: byte-weighted percent
- * across the models being fetched (a ready model counts as 100). */
+ * across the models being fetched (a ready model counts as 100), or null
+ * while none on its way has a figure yet and none is ready. */
 export function overallProgress(rows, ids) {
   const wanted = rows.filter((r) => ids.includes(r.id));
   if (!wanted.length) return 0;
+  // A pack setting itself up, or a model before its first byte, has no figure:
+  // 0% held for seconds read as stuck, so the dialog says "Getting ready…"
+  // instead (Windows C2). Only while nothing is in: a ready one's share is a
+  // figure, and the bar does not drop back to 0 between two downloads.
+  const going = wanted.filter((r) => r.state === "downloading");
+  if (going.length && going.every((r) => r.progress == null) && !wanted.some((r) => r.state === "ready")) return null;
   let got = 0, total = 0;
   for (const r of wanted) {
     total += r.bytes;
@@ -104,6 +131,14 @@ export function overallProgress(rows, ids) {
     got += r.bytes * (pct / 100);
   }
   return total ? Math.round((100 * got) / total) : 0;
+}
+
+/** Nothing in `ids` is on its way and one of them stopped (paused, or failed
+ * before it began): a failed row is not a download at 0%. */
+export function downloadStopped(rows, ids) {
+  const wanted = rows.filter((r) => ids.includes(r.id));
+  return !wanted.some((r) => r.state === "downloading")
+    && wanted.some((r) => r.state === "paused" || (r.state === "not_downloaded" && !!r.error));
 }
 
 /** Every id in `ids` is ready -- the dialog's cue to resubmit the dub. */

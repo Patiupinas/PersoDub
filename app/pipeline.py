@@ -26,7 +26,9 @@ from app.jobs import JobCancelled, raise_if_cancelled, shown_error, timed_step
 from app.perso_client import (
     PersoClient,
     PersoCreditExhaustedError,
+    PersoDurationLimitError,
     PersoInvalidKeyError,
+    PersoPlanRequiredError,
     PersoProjectFailedError,
     PersoUnavailableError,
     begin_credit_watch,
@@ -36,7 +38,7 @@ from app.perso_client import (
     short_reason,
 )
 from app.qwen_pipeline import cleanup_takes, run_qwen_dub
-from app.run_errors import advice_both
+from app.run_errors import PartsMissing, advice_both
 from app.scripts.check_leakage import _validate_manifest_spans, measure_leakage
 from app.scripts.suppress_vocal_echo import suppress_vocal_echo
 from app.separate import SeparationEngine
@@ -46,7 +48,7 @@ from app.separate import SeparationEngine
 # and pipeline.STAGES / pipeline.stage_marker stay valid names because tests
 # and other modules already read them off this module.
 from app.stages import STAGES, pre_stage_marker, stage_marker  # noqa: F401
-from app.stt_local import transcribe_local
+from app.stt_local import NoSpeech, transcribe_local
 from app.text.cues import cue_speaker, match_cue_index
 from app.text.length_fit import fit_translate
 from app.text.srt import (
@@ -61,6 +63,7 @@ from app.text.srt import (
 from app.translate import (
     ChatGptLimitError,
     ChatGptNotSignedInError,
+    GeminiInvalidKeyError,
     GeminiQuotaExhaustedError,
     GeminiUnavailableError,
     TranslationEngine,
@@ -140,10 +143,42 @@ def _check_file():
     return both("Check the video file.")
 
 
+# A helper that is missing its own interpreter, script or model file
+# (app/run_errors.py PartsMissing): the download is broken, not the video. The
+# sentence names the part, so the user knows which one to download again.
+_PARTS_MISSING = {
+    "Whisper": lambda: both("The Whisper files for speech-to-text are missing or damaged. "
+                            "Open Settings > Models and download Whisper again."),
+    "Demucs": lambda: both("The Demucs files for audio separation are missing or damaged. "
+                           "Open Settings > Models and download Demucs again."),
+}
+
+
+def _advice(e, part):
+    if isinstance(e, PartsMissing):
+        return _PARTS_MISSING[part]()
+    return advice_both(str(e), _check_file())
+
+
 _NOTICE_ERRORS = {
     PersoCreditExhaustedError: (
         "perso_credit_exhausted",
         lambda: both("Perso credits are used up. Recharge to continue."),
+        "link",
+        None,
+    ),
+    # Longer than the plan allows: the free plan stops at one minute. Its own
+    # popup says the limit and links to the plans; nothing to retry.
+    PersoDurationLimitError: (
+        "perso_duration_limit",
+        lambda: both("This video is longer than your Perso plan allows. Upgrade your plan, or set Dubbing to This computer."),
+        "link",
+        None,
+    ),
+    # A voice model the plan does not cover (FINCH, NIGHTINGALE need Pro).
+    PersoPlanRequiredError: (
+        "perso_plan_required",
+        lambda: both("This dubbing model needs a higher Perso plan. Upgrade your plan, or choose another dubbing model."),
         "link",
         None,
     ),
@@ -175,6 +210,12 @@ _NOTICE_ERRORS = {
         "gemini_quota_exhausted",
         lambda: both("Gemini quota is used up. Upgrade the key's plan, or try again after the daily reset."),
         "link",
+        None,
+    ),
+    GeminiInvalidKeyError: (
+        "gemini_invalid_key",
+        lambda: both("Gemini rejected the API key. Open Settings and check the key."),
+        None,
         None,
     ),
     GeminiUnavailableError: (
@@ -211,9 +252,9 @@ _NOTICE_ERRORS = {
 # and that is what an unexpected provider error must keep landing in.
 _PERSO_NOTICE_ERRORS = (
     PersoCreditExhaustedError, PersoInvalidKeyError, PersoUnavailableError,
-    PersoProjectFailedError,
+    PersoProjectFailedError, PersoDurationLimitError, PersoPlanRequiredError,
 )
-_GEMINI_NOTICE_ERRORS = (GeminiQuotaExhaustedError, GeminiUnavailableError,
+_GEMINI_NOTICE_ERRORS = (GeminiQuotaExhaustedError, GeminiUnavailableError, GeminiInvalidKeyError,
                          ChatGptNotSignedInError, ChatGptLimitError)
 
 
@@ -239,20 +280,28 @@ def raise_notice(e, log, on_notice) -> NoReturn:
         raise e
     notice_type, words, link_attr, ask = entry
     msg, shown = words()
-    # Perso's own words, kept whole and put after ours: the sentence above
-    # says what to do, and this says what Perso said, so the screen can be
-    # held up against Perso's dashboard (user, 2026-09-11).
+    # The failed job's sentence on screen: ours, with what to do. Perso's
+    # words go on a line of their own under it (the job's error_detail): the
+    # screen cut one sentence holding both at "Perso said:", and Perso's
+    # reason, its code and the advice after them were lost.
+    sentence = shown
+    detail = None
+    # Perso's own words stay whole in the log and the report, so they can be
+    # held up against Perso's dashboard (user, 2026-09-11). On screen only
+    # its code: Perso writes in English, and the code is all that asking
+    # Perso needs (user, 2026-10-20).
     said = getattr(e, "reason", "") or ""
     code = getattr(e, "code", "") or ""
     if said or code:
         perso = both("Perso said: {said}", said=said) if said else both("Perso said: no reason given")
-        msg, shown = f"{msg} {perso[0]}", f"{shown} {perso[1]}"
-        if code:
-            msg, shown = f"{msg} ({code})", f"{shown} ({code})"
+        msg = f"{msg} {perso[0]}" + (f" ({code})" if code else "")
+    if code:
+        detail = both("Error code {code}", code=code)[1]
+        shown = f"{shown} {detail}"
     # Last, after their own words: the code is the thing to quote when asking.
     if ask:
         asked = ask()
-        msg, shown = f"{msg} {asked[0]}", f"{shown} {asked[1]}"
+        msg, shown, sentence = f"{msg} {asked[0]}", f"{shown} {asked[1]}", f"{sentence} {asked[1]}"
     # A ChatGPT limit that named its reset time says it (weeks, on a free plan),
     # in the order the popup says it: when, then the two ways on.
     resets = getattr(e, "resets", None)
@@ -260,6 +309,9 @@ def raise_notice(e, log, on_notice) -> NoReturn:
         msg, shown = both("ChatGPT usage limit reached. Resets {resets}. Resume then, or continue with "
                           "another translator.", resets=resets)
     notice = {"type": notice_type, "message": msg, "message_shown": shown}
+    # The plan's limit, for the popup that names it ("up to 1 min").
+    if getattr(e, "limit_seconds", None):
+        notice["limit_seconds"] = e.limit_seconds
     if link_attr:
         notice["link"] = getattr(e, link_attr)
         log(f"   Error: {msg} ({notice['link']})")
@@ -267,7 +319,7 @@ def raise_notice(e, log, on_notice) -> NoReturn:
         log(f"   Error: {msg}")
     if on_notice:
         on_notice(notice)
-    raise shown_error(msg, shown) from e
+    raise shown_error(msg, sentence if detail else shown, detail) from e
 
 
 # The name the stages below were written against.
@@ -275,16 +327,13 @@ _raise_notice = raise_notice
 
 
 # What each Perso part says when it fails on an error none of its except
-# clauses named: which part stopped, why ({reason}), and what to switch to --
-# one whole sentence per part, so each language words it its own way.
+# clauses named: which part stopped and what to switch to -- one whole
+# sentence per part, so each language words it its own way. Why it stopped
+# goes under it (_raise_perso_failed).
 _PERSO_FAILED = {
-    "Perso separation": lambda reason: both(
-        "Perso separation failed ({reason}). Check Settings, or switch separation back to Local.",
-        reason=reason),
-    "Perso STT": lambda reason: both(
-        "Perso STT failed ({reason}). Check Settings, or switch to Whisper (free, offline).", reason=reason),
-    "Perso dubbing": lambda reason: both(
-        "Perso dubbing failed ({reason}). Check Settings, or use this computer for dubbing.", reason=reason),
+    "Perso separation": lambda: both("Perso separation failed. Check Settings, or switch separation back to Local."),
+    "Perso STT": lambda: both("Perso STT failed. Check Settings, or switch to Whisper (free, offline)."),
+    "Perso dubbing": lambda: both("Perso dubbing failed. Check Settings, or use this computer for dubbing."),
 }
 
 
@@ -301,11 +350,15 @@ def _raise_perso_failed(e, log, what) -> NoReturn:
     # and a sentence that finishes with a URL reads as somewhere the user
     # is being sent (user, 2026-09-11). The whole of it goes to the log.
     logger.warning("%s failed: %s", what, e)
-    msg, shown = _PERSO_FAILED[what](short_reason(e))
+    msg, shown = _PERSO_FAILED[what]()
     asked = _ask_perso()
-    msg, shown = f"{msg} {asked[0]}", f"{shown} {asked[1]}"
+    # The reason on a line of its own under the sentence (the job's
+    # error_detail): inside it, the screen cut the sentence at the reason's
+    # first colon and the advice went with it.
+    reason = both("Reason: {reason}", reason=short_reason(e))
+    msg, shown = f"{msg} {asked[0]} ({reason[0]})", f"{shown} {asked[1]}"
     log(f"   Error: {msg}")
-    raise shown_error(msg, shown) from e
+    raise shown_error(msg, shown, reason[1]) from e
 
 
 def _manifest_exclude_spans(manifest_path, mix_wav, log):
@@ -613,7 +666,7 @@ def _stage_separate(video_path, work_dir, sep_engine, perso_client,
             # ask -- but which thing to look at depends on what stopped it. A
             # timeout and a full disk are not a broken file, and saying so
             # sent people to check the one thing that was fine (2026-09-15).
-            advice = advice_both(str(e), _check_file())
+            advice = _advice(e, "Demucs")
             failed = both("Voice separation failed on this computer.")
             raise shown_error(f"{failed[0]} {advice[0]} ({str(e)[:400]})",
                              f"{failed[1]} {advice[1]} ({str(e)[:400]})")
@@ -686,7 +739,7 @@ def _stage_transcribe_perso(video_path, perso_client, cancel_check, on_notice, l
 
 
 def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, video_duration=None,
-                            vocals_path=None):
+                            vocals_path=None, cancel_check=None):
     """Stage 2/6 -- local Whisper transcription (no container at all).
 
     Returns (src_cues, detected_source_language_code, diar_engine): Whisper
@@ -696,6 +749,8 @@ def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, 
     video_duration, when known, scales the subprocess timeout for long videos
     (see app.timeouts.scaled_timeout) and ends every line where the video
     does; vocals_path lets Whisper's made-up lines over quiet stretches go.
+    cancel_check is asked while Whisper runs, so Stop ends it there instead
+    of after the whole run.
     """
     _log_stage(log, "transcribe", "Transcribing locally (Whisper, no container)…")
     detected = {"code": None}
@@ -708,14 +763,20 @@ def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, 
         src_cues = transcribe_local(
             video_path, language=source_language_code, word_timestamps=True, log=log,
             on_language=lambda c: detected.__setitem__("code", c),
-            video_duration=video_duration, vocals_path=vocals_path,
+            video_duration=video_duration, vocals_path=vocals_path, cancel_check=cancel_check,
         )
     except JobCancelled:
         raise  # a user cancel is not a failure of this stage
+    except NoSpeech as e:
+        # A music-only or silent video: said so, instead of "Speech
+        # recognition failed. Check the video file." about a file that is fine.
+        msg, shown = both("No speech was found in this video. Check that someone is speaking in it.")
+        log(f"   Error: {msg}")
+        raise shown_error(msg, shown) from e
     except Exception as e:
         # Was re-raised bare, which put a library's own words on the failure
         # card with no hint of which part had stopped (user, 2026-09-11).
-        advice = advice_both(str(e), _check_file())
+        advice = _advice(e, "Whisper")
         failed = both("Speech recognition failed on this computer.")
         msg = f"{failed[0]} {advice[0]} ({str(e)[:400]})"
         log(f"   Error: {msg}")
@@ -832,10 +893,14 @@ def _stage_translate(srt_path, source_cues, language, translate_engine, translat
             logger.warning("Translation failed (%s): %s", engine_label, e)
             where = _ask_google() if "gemini" in tr_name.lower() else \
                 both("Try again, or pick another translator in Settings.")
-            failed = both("Translation failed ({translator}: {reason}).", translator=tr_name, reason=str(e)[:120])
-            msg = f"{failed[0]} {where[0]}"
+            failed = both("{translator} translation failed.", translator=tr_name)
+            # The reason under the sentence (the job's error_detail): inside
+            # it, the screen cut "(ChatGPT: no reply)" at the colon. Shortened
+            # by short_reason, which keeps a URL and requests' own words out.
+            reason = both("Reason: {reason}", reason=short_reason(e))
+            msg = f"{failed[0]} {where[0]} ({reason[0]})"
             log(f"   Error: {msg}")
-            raise shown_error(msg, f"{failed[1]} {where[1]}") from e
+            raise shown_error(msg, f"{failed[1]} {where[1]}", reason[1]) from e
         auto_translated = True
     else:
         _log_stage(log, "translate", "Using the provided translated subtitles")
@@ -1026,7 +1091,7 @@ def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, s
     if perso_cues is None:
         src_cues, detected_code, diar_engine = _stage_transcribe_local(
             video_path, source_language_code, diar_engine, log, video_duration=video_duration,
-            vocals_path=vocals_path)
+            vocals_path=vocals_path, cancel_check=cancel_check)
     else:
         src_cues = perso_cues
     # A machine transcript can start a line before its speech (Whisper
@@ -1139,8 +1204,8 @@ def run_dub(
     JobCancelled and stops the job before the next stage starts. on_notice,
     if given, is called with a structured {"type", "message", "link"} dict
     for events the caller may want to surface outside the plain log stream
-    ("perso_credit_exhausted", "perso_invalid_key", "perso_unavailable",
-    "gemini_quota_exhausted", "gemini_unavailable" -- see app/api/dub.py,
+    ("perso_credit_exhausted", "perso_duration_limit", "perso_plan_required", "perso_invalid_key", "perso_unavailable",
+    "gemini_quota_exhausted", "gemini_invalid_key", "gemini_unavailable" -- see app/api/dub.py,
     which wires it to JobStore.append_notice so the job status JSON carries it
     for the UI).
     """

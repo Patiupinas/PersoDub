@@ -11,7 +11,7 @@
 // with the launch token, so an update never runs this file against a module a
 // browser kept from the version before.
 import { LANGUAGES, buildDubFormData, startDubJob, pollDubJob, cancelDubJob, parseProgress, applyEngineAvailability, probeSource, engineChips, engineLine, voiceLabel, dubAgainSource, holdDownload, downloadVideoUrl } from "./dubApi.mjs";
-import { gb, neededModelId, neededPackIds, modelStatusLine } from "./modelsUi.mjs";
+import { gb, neededModelId, neededPackIds, modelStatusLine, downloadChipText } from "./modelsUi.mjs";
 import { initModelsUi } from "./modelsDialog.mjs";
 import { initSubtitleOverlay } from "./subtitleOverlay.mjs";
 import { initEscapeKey } from "./escapeKey.mjs";
@@ -50,8 +50,8 @@ import { clearDraft, getDraft, onDraftChange, setDraft, setRanges, setDraftRatio
 import { readKept, keepDraft, dropKept, draftMark } from "./keptDrafts.mjs";
 import { initRatioUi } from "./ratio.mjs";
 import { wireUpdates } from "./updateWindow.mjs";
-import { fmtClock, fmtClockTenths, fmtLength, formatBytes, escapeHtml, errorText, serverText, statusParts, rawLogLines } from "./format.mjs";
-import { languageName, pageLanguage, t } from "./i18n.mjs";
+import { fmtClock, fmtClockTenths, fmtLength, formatBytes, escapeHtml, errorText, serverText, statusParts, rawLogLines, restartFailure } from "./format.mjs";
+import { languageName, pageLanguage, savedSettings, t } from "./i18n.mjs";
 import { paintMarkupWords } from "./markupWords.mjs";
 
 // The language before anything is drawn, so the first paint is already in it
@@ -229,6 +229,9 @@ const keySaved = { perso: true, gemini: true };
 // The model behind each voice engine (GET /api/engines voice_models): the
 // Text-to-speech dropdown and a job's engine line name it with the engine.
 let voiceModels = {};
+// Whether this computer has the memory to dub on it (GET /api/engines ram_ok),
+// for the download dialog. Enough until the answer comes.
+let ramOk = true;
 
 // (loadSavedDefaults -- the GET /api/setup pass that starts those dropdowns on
 // the app's saved defaults -- moved with the dialog it fills, into
@@ -251,18 +254,16 @@ async function applyEngineAvailabilityToForm() {
   const result = applyEngineAvailability(av, {
     translate: translateSel.value,
     stt: sttSel.value,
+    dubMode: $("dubModeSelect").value,
   });
 
   keySaved.perso = !result.disable.perso;
   keySaved.gemini = !result.disable.gemini;
   voiceModels = av.voice_models || {};
+  ramOk = av.ram_ok !== false;
   for (const o of $("voiceSelect").options) o.textContent = voiceLabel(o.value, voiceModels);
 
-  const warnEl = $("engineWarning");
-  if (warnEl) {
-    warnEl.textContent = result.warning || "";
-    warnEl.style.display = result.warning ? "" : "none";
-  }
+  $("engineWarning").textContent = result.warning || "";
 }
 applyEngineAvailabilityToForm();
 
@@ -300,6 +301,7 @@ const models = initModelsUi({
   shell: window.persodubShell || null,
   // Keep the catalog fresh while Settings shows it.
   keepPolling: () => $("settingsOverlay").classList.contains("open"),
+  ramOk: () => ramOk,
 });
 
 // Everything a dropdown choice needs, in the order it downloads: the pack it
@@ -369,7 +371,10 @@ function paintModelStatusLines(rows) {
     const needsAnything = !cloud && (neededPackIds(role, value).length || neededModelId(role, value));
     paintHint($(hint), cloud ? [] : hintNeeds(role, value), !!needsAnything);
   }
+  // The one under way, not one queued behind it: before its first byte it
+  // has no figure either (Windows C2, 2026-10-21).
   const dl = rows.find((m) => m.state === "downloading" && m.progress != null)
+          || rows.find((m) => m.state === "downloading" && !m.queued)
           || rows.find((m) => m.state === "downloading");
   // The chip stands in for the download dialog, not beside it: it shows only
   // once Hide closed the dialog (the dialog itself carries the percent). Same
@@ -379,7 +384,7 @@ function paintModelStatusLines(rows) {
   const shownElsewhere = dl && dl.id === ERASER_PACK_ID
     && document.body.dataset.screen === "erase";
   $("topbarDl").hidden = !dl || dialogOpen || shownElsewhere;
-  if (dl) $("topbarDl").textContent = `${dl.name} · ${dl.progress ?? 0}%`;
+  if (dl) $("topbarDl").textContent = downloadChipText(dl);
 }
 
 $("topbarDl").addEventListener("click", () => models.reopenDialogOrSettings());
@@ -388,10 +393,11 @@ for (const id of ["sttSelect", "translateSelect", "voiceSelect"]) {
 }
 // One sentence per line (they read as a wall when joined -- user feedback):
 // the hint slots render these with pre-line whitespace. Getters, so each is
-// read in the language of the moment.
+// read in the language of the moment. The Perso API dubbing hint names the
+// free first minute (owner, 2026-10-21): it is what gets people to sign up.
 const ENGINE_HINTS = {
   dubMode: { get local() { return [t("Runs on this computer, free."), t("You can edit the script after.")]; },
-             get perso() { return [t("Perso does the dubbing start to finish."), t("Uses Perso credits.")]; } },
+             get perso() { return [t("Perso does the dubbing start to finish."), t("Sign up and the first minute is free. Credits after that.")]; } },
   sep: { get local() { return [t("Runs on this computer, free."), t("For accuracy, use the API.")]; },
          get perso() { return [t("Most accurate."), t("Uses Perso credits.")]; } },
   stt: { get local() { return [t("Runs on this computer, free."), t("For accuracy, use the API.")]; },
@@ -399,7 +405,7 @@ const ENGINE_HINTS = {
   translate: { get hunyuan() { return [t("Runs on this computer, free and fastest."), t("For accuracy, use the API.")]; },
                get gemma() { return [t("Runs on this computer, free."), t("For accuracy, use the API.")]; },
                get gemini() { return [t("Most accurate."), t("Needs an API key.")]; },
-               get chatgpt() { return [t("Free with a ChatGPT account, no download."), t("Sign in on your first dubbing.")]; } },
+               get chatgpt() { return [t("Free within a ChatGPT account's limit. Sign in once, no download.")]; } },
   voice: { get qwen3() { return [t("Runs on this computer, free."), t("Clones each speaker\u2019s voice.")]; } },
 };
 function updateEngineHints() {
@@ -421,7 +427,9 @@ function paintDubMode() {
     $(id).disabled = cloud;
   }
 }
-$("dubModeSelect").addEventListener("change", () => { paintDubMode(); models.repaint(); });
+// The voice engine's warning is for a dub on this computer only: asked again
+// when the choice changes.
+$("dubModeSelect").addEventListener("change", () => { paintDubMode(); models.repaint(); applyEngineAvailabilityToForm(); });
 paintDubMode();
 models.refreshModels();
 
@@ -1348,6 +1356,9 @@ async function reopenDraft(downloadId) {
 // user 2026-09-30): each one opens a way in this page already has.
 initHomeSidebar({
   $, body: document.body, repoUrl: REPO_URL,
+  // The UTM-tagged link from the start-up's GET /api/settings; the plain page
+  // until that has answered.
+  persoUrl: () => savedSettings()?.perso_workspace_link || "https://perso.ai/workspace/vt",
   openUrl: (url) => window.open(url, "_blank", "noopener"),
   // An empty new project on its Dubbing tab: the Import block there takes a
   // file or a link, where the bare file picker took only a file (owner, 2026-10-09).
@@ -1475,12 +1486,15 @@ function langsLabel() {
 // errorEl: the dialog's own line -- or, for a draft's Start dubbing
 // (ui/src/draftSetup.mjs), that panel's own -- since this is the one status
 // word shown while the engine comes back up.
+// {ok, why}: why is the line said under the refusal when it did not come back
+// (ui/src/format.mjs restartFailure) -- without it the same "try again" came
+// back and the shell's reason was thrown away.
 async function restartVoiceEngine(errorEl) {
   const shell = window.persodubShell;
-  if (!shell || !shell.installPack) return false;
+  if (!shell || !shell.installPack) return { ok: false, why: "" };
   errorEl.textContent = t("Starting the voice engine…");
   const r = await shell.installPack("engine").catch(() => ({ ok: false }));
-  return !!(r && r.ok);
+  return r && r.ok ? { ok: true } : { ok: false, why: restartFailure(r && r.reason) };
 }
 
 // Posts the form and walks through every way a start can come back short --
@@ -1525,11 +1539,19 @@ async function submitDubStart({ fd, label, errorEl, retry, retried = false }) {
     } else if (e && e.status === 422 && /Select a Perso workspace/.test(serverText(e))) {
       // A key with several workspaces and none picked: pick one here, then go on.
       keyWindow.askKey("perso", null, null, { spaceOnly: true, then: retry });
-    } else if (!retried && e && e.status === 422 && /voice engine is not running/.test(serverText(e)) && await restartVoiceEngine(errorEl)) {
-      return submitDubStart({ fd, label, errorEl, retry, retried: true });
+    } else if (!retried && e && e.status === 422 && /voice engine is not running/.test(serverText(e))) {
+      const restart = await restartVoiceEngine(errorEl);
+      if (restart.ok) {
+        return submitDubStart({ fd, label, errorEl, retry, retried: true });
+      }
+      // The refusal, and under it why starting the engine again did not work.
+      errorEl.textContent = [errorText(e), restart.why].filter(Boolean).join("\n");
     } else if (!confirmDialogs.showIfOutOfSpace(e)) {
       errorEl.textContent = errorText(e);
     }
+    // With the advanced options open the line sits below the fold, where a
+    // refused Start looked like nothing happened (2026-10-20).
+    if (errorEl.textContent) errorEl.scrollIntoView({ block: "nearest" });
     return false;
   }
 }

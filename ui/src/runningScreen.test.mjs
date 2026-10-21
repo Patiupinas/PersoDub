@@ -226,6 +226,28 @@ test("a failed job shows the engine's sentence in the page's language, error_sho
   assert.equal(h.$("jobNotice").innerHTML, "다시 진행 중");
 });
 
+test("a failure sent with its cause apart shows the whole sentence, and the cause under it", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+
+  // Cut at its first ": " this read "Translation failed (ChatGPT." -- the
+  // advice and the reason both gone.
+  h.api.paintNotices({ id: "j1", status: "error",
+                       error: "ChatGPT translation failed. Try again, or pick another translator in Settings. (Reason: ChatGPT: no reply)",
+                       error_shown: "ChatGPT 번역에 실패했어요. 다시 시도하거나 설정에서 다른 번역기를 골라 주세요.",
+                       error_detail: "이유: ChatGPT: no reply" });
+  for (const id of ["jobNotice", "doneNotice"]) {
+    assert.equal(h.$(id).innerHTML, "ChatGPT 번역에 실패했어요. 다시 시도하거나 설정에서 다른 번역기를 골라 주세요."
+      + '<span class="notice-detail">이유: ChatGPT: no reply</span>');
+  }
+  // Perso's own words, code and all, under the sentence and its advice.
+  h.api.paintNotices({ id: "j1", status: "error", error: "Perso could not finish this job. ...",
+                       error_shown: "Perso could not finish this job. Try again, or check the project on Perso. Ask Perso if it keeps happening.",
+                       error_detail: "Perso said: <too short> (VT5001)" });
+  assert.equal(h.$("jobNotice").innerHTML, "Perso could not finish this job. Try again, or check the project on Perso. "
+    + 'Ask Perso if it keeps happening.<span class="notice-detail">Perso said: &lt;too short&gt; (VT5001)</span>');
+});
+
 test("no notice and no failure means no line at all", (t) => {
   const h = harness();
   t.after(h.log.restore);
@@ -289,6 +311,46 @@ test("a busy-server notice has nowhere to send anyone, so it shows no button", (
   assert.equal(h.$("creditTitle").textContent, "Perso server busy");
   assert.equal(h.$("creditRechargeBtn").style.display, "none");
   assert.deepEqual(h.log.opened, []);
+});
+
+test("a video too long for the Perso plan pops its own popup: the limit Perso named and the plan page", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+
+  h.api.paintNotices({ id: "j2", status: "error", error: "This video is longer than your Perso plan allows.",
+    notices: [{ type: "perso_duration_limit", message: "This video is longer than your Perso plan allows.",
+                link: "https://perso.ai/pricing?utm_content=pricing", limit_seconds: 60 }] });
+  assert.equal(h.$("creditTitle").textContent, "Video too long");
+  assert.equal(h.$("creditMessage").textContent,
+    "Your Perso plan dubs videos up to 1 min. Upgrade your plan, or set Dubbing to This computer.");
+  assert.equal(h.$("creditRechargeBtn").textContent, "See plans");
+  assert.deepEqual(h.log.opened, ["https://perso.ai/pricing?utm_content=pricing"]);
+  assert.ok(h.$("creditOverlay").classList.contains("open"));
+});
+
+test("a plan limit that is not whole minutes, or not named, still reads", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+
+  h.api.showCreditModal({ type: "perso_duration_limit", limit_seconds: 90, link: "https://perso.ai/pricing" });
+  assert.equal(h.$("creditMessage").textContent,
+    "Your Perso plan dubs videos up to 90 s. Upgrade your plan, or set Dubbing to This computer.");
+  h.api.showCreditModal({ type: "perso_duration_limit", link: "https://perso.ai/pricing" });
+  assert.equal(h.$("creditMessage").textContent,
+    "Your Perso plan does not take a video this long. Upgrade your plan, or set Dubbing to This computer.");
+});
+
+test("a voice model the plan does not cover has its own popup, not the wrong-key one", (t) => {
+  // VT40314 came as a 403 and read as a rejected key until 2026-10-19.
+  const h = harness();
+  t.after(h.log.restore);
+
+  h.api.showCreditModal({ type: "perso_plan_required", link: "https://perso.ai/pricing?utm_content=pricing" });
+  assert.equal(h.$("creditTitle").textContent, "Higher plan needed");
+  assert.equal(h.$("creditMessage").textContent,
+    "This dubbing model needs a higher Perso plan. Upgrade your plan, or choose another dubbing model.");
+  assert.equal(h.$("creditRechargeBtn").textContent, "See plans");
+  assert.deepEqual(h.log.opened, ["https://perso.ai/pricing?utm_content=pricing"]);
 });
 
 test("the wrong-key popup keeps the user in the app: its button opens Settings", async (t) => {

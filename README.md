@@ -61,6 +61,8 @@ Box the subtitles, press **Erase**, and dub the clean video.
 <tr>
 <td width="50%" valign="top">
 
+<img src="docs/images/burn-in-screen.png" alt="The Burn in subtitles screen: a video and its subtitle file, twelve looks to pick from, the subtitle shown on the picture" />
+
 ### Burn in subtitles
 
 Put a subtitle file on a video in the look you choose.

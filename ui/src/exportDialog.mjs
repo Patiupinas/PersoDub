@@ -1,19 +1,27 @@
-// The Export dialog: the one way to save anything out of a project. The top
-// bar's Export opens it on whatever is on screen, and its rows are what that
-// has to hand back:
+// The Export dialog, called Download on screen (owner, 2026-10-22; the ids
+// and names in the code kept "export"): the one way to save anything out of
+// a project. Download, at the right end of the video panel's tab row, opens
+// it on whatever is on screen, and its rows are what that has to hand back:
 //
 //   a draft            Video (the kept parts joined), Audio only
-//   a finished dubbing Dubbed video, Dubbed video with subtitles, Dubbed audio,
-//                      Original voice, Background, Subtitles, Original video
-//                      -- each only when there is one
+//   a finished dubbing under three headings (owner, 2026-10-22): Video --
+//                      Dubbed video, Dubbed video with subtitles, Original
+//                      video; Subtitles & script -- Subtitles (.srt), Script
+//                      (.xlsx); Audio -- Dubbed audio, Original voice,
+//                      Background -- each only when there is one
 //   an erased video    Video, Audio only
-//   separated audio    Voice, Background (the Audio tab's two sounds), both
-//                      ticked until the user says otherwise
+//   a video and its    Video with subtitles (the look picked burned in),
+//   own subtitles      Subtitles (.srt) -- a Burn in subtitles project
 //
-// Every row has a checkbox; the foot's Export saves each ticked row in turn
+// Every row has a checkbox; the foot's Download saves each ticked row in turn
 // (owner, 2026-09-30). The ticks are remembered for each of the three kinds,
 // and the first row is ticked until the user says otherwise. A saved row shows
 // a check at its right end and the line under the rows says where it went.
+//
+// Before a save that line says where the files go, and in the desktop shell
+// it ends in Change, which opens the computer's own folder picker, and Use
+// default once a folder is picked (owner, 2026-10-22). The shell keeps the
+// folder for every download after it, and the app's own saves go there too.
 //
 // A dubbing's rows are links the browser (or the desktop shell) downloads; a
 // draft's and an erased video's are written by the app itself into Downloads.
@@ -31,8 +39,10 @@
 // original video are what they are, whatever the ratio.
 //
 // The elements this file touches: #exportOverlay, #exportList, #exportWhere,
-// #exportCloseX, #exportCloseBtn (Cancel), #exportGoBtn (Export).
-import { downloadsLabel, escapeHtml, errorText } from "./format.mjs";
+// #exportFolder (Change, #exportFolderPick, and Use default, #exportFolderReset
+// in #exportFolderResetWrap), #exportCloseX, #exportCloseBtn (Cancel),
+// #exportGoBtn (Download).
+import { downloadsLabel, escapeHtml, errorText, folderName } from "./format.mjs";
 import { withRatio } from "./ratio.mjs";
 import { t } from "./i18n.mjs";
 
@@ -55,8 +65,7 @@ export function audioFormat(stored) {
  * @returns {string[]}
  */
 export function ticksFor(stored, kind, ids) {
-  // Separated audio is two sounds and both are what was asked for.
-  const fresh = kind === "separate" ? ids.slice() : ids.slice(0, 1);
+  const fresh = ids.slice(0, 1);
   let kept = null;
   try { kept = (JSON.parse(stored || "{}") || {})[kind]; } catch { /* not ours */ }
   if (!Array.isArray(kept)) return fresh;
@@ -82,13 +91,22 @@ const STEM_TIPS = {
   get voice() { return t("Only the speech."); },
   get background() { return t("Everything except speech: music, effects, noise."); },
 };
+// The headings a dubbing's rows stand under (owner, 2026-10-22): as one list
+// of seven the subtitles file was the sixth row, and people did not find it.
+// The script's spreadsheet stands beside the subtitles file, and the heading
+// names both.
+const GROUPS = {
+  get video() { return t("Video"); },
+  get subtitles() { return t("Subtitles & script"); },
+  get audio() { return t("Audio"); },
+};
 
 /**
  * The rows for what is on screen.
  *
  * @param {object} ctx
- * @param {"draft"|"dub"|"erase"|"separate"} ctx.kind
- * @param {string} [ctx.jobId]      a dub or a separation: the job
+ * @param {"draft"|"dub"|"erase"|"captions"} ctx.kind
+ * @param {string} [ctx.jobId]      a dub or a burn-in project: the job
  * @param {string} [ctx.target]     a dub: its language code, in the file names
  * @param {string} [ctx.videoHref]  a dub: the URL the player is on
  * @param {string} [ctx.mark]       a dub: "&v=3" after a remake, so a download
@@ -96,26 +114,41 @@ const STEM_TIPS = {
  * @param {{href: string, name: string}|null} [ctx.subtitled]  a dub with
  *        subtitles: the subtitled video in the look the player shows
  * @param {boolean} [ctx.hasSrt]
+ * @param {boolean} [ctx.hasScript]  a dub: whether it has a script, handed back
+ *        as the spreadsheet Perso's web app downloads
+ * @param {string} [ctx.title]    a dub: the project's name as the screens show it
+ * @param {string} [ctx.source]   a dub: its original's language code, when known
  * @param {{voice?: boolean, background?: boolean}} [ctx.stems]  a dub: which of
  *        the original's two separated sounds the job still has
  * @param {string} [ctx.project]   a dub: the project's folder name, in the
  *        names of those two files
  * @param {boolean} [ctx.fromLink]  only a link job has an original to hand back
+ *        -- unless the dialog was opened for it (Save video, ctx.only)
+ * @param {string[]} [ctx.only]  the rows asked for, the rest left out
  * @param {string} [ctx.ratio]     the shape the player shows the project in:
  *        "original" (or nothing) or "9:16", "16:9", "1:1", "4:5"
  * @param {"mp3"|"wav"} fmt
  * @returns {Array<{id: string, icon: string, label: string, href?: string,
- *   name?: string, audio?: boolean}>}  a row with an href is downloaded; one
- *   without is saved by the app (ctx.save)
+ *   name?: string, audio?: boolean, group?: string}>}  a row with an href is
+ *   downloaded; one without is saved by the app (ctx.save). A dubbing's rows
+ *   carry the heading they stand under (GROUPS), in that order.
  */
 export function exportRows(ctx, fmt) {
+  const all = allRows(ctx, fmt);
+  return ctx.only ? all.filter((r) => ctx.only.includes(r.id)) : all;
+}
+function allRows(ctx, fmt) {
   const audio = { id: "audio", icon: "audio", label: t("Audio only"), audio: true };
-  if (ctx.kind === "separate") {
-    // The same links a dubbing's two sounds go out by.
-    return [["voice", t("Voice")], ["background", t("Background")]].map(([which, label]) =>
-      ({ id: which, icon: "audio", label, audio: true, tip: STEM_TIPS[which],
-         href: `/api/dub/result/${ctx.jobId}/stem/${which}?format=${fmt}`,
-         name: `${ctx.project || "project"}_${which}.${fmt}` }));
+  // The original video, asked for by name (Save video): served whatever the
+  // project came from, where a link's alone is offered among the rest.
+  const original = (ctx.only || []).includes("original");
+  if (ctx.kind === "captions") {
+    return [{ id: "subtitled", icon: "film", label: t("Video with subtitles"),
+              href: withRatio(ctx.subtitled.href, ctx.ratio), name: ctx.subtitled.name },
+            { id: "srt", icon: "subs", label: t("Subtitles (.srt)"),
+              href: `/api/dub/result/${ctx.jobId}/srt?download=1`, name: "video.srt" },
+            original && { id: "original", icon: "film", label: t("Original video"),
+                          href: `/api/dub/result/${ctx.jobId}/original`, name: "org.mp4" }].filter(Boolean);
   }
   if (ctx.kind !== "dub") {
     return [{ id: "video", icon: "film", label: t("Video") }, audio];
@@ -123,23 +156,30 @@ export function exportRows(ctx, fmt) {
   const base = `/api/dub/result/${ctx.jobId}`;
   const mark = ctx.mark || "";
   return [
-    { id: "video", icon: "film", label: t("Dubbed video"),
+    { id: "video", group: "video", icon: "film", label: t("Dubbed video"),
       href: withRatio(ctx.videoHref, ctx.ratio), name: `dub_${ctx.target}.mp4` },
     // There whenever the project has subtitles (owner, 2026-09-30).
-    ctx.hasSrt && ctx.subtitled && { id: "subtitled", icon: "film", label: t("Dubbed video with subtitles"),
+    ctx.hasSrt && ctx.subtitled && { id: "subtitled", group: "video", icon: "film", label: t("Dubbed video with subtitles"),
                                      href: withRatio(ctx.subtitled.href, ctx.ratio),
                                      name: ctx.subtitled.name },
-    { ...audio, label: t("Dubbed audio"),
+    // A local file is already on the machine it would be saved to.
+    (ctx.fromLink || original) && { id: "original", group: "video", icon: "film", label: t("Original video"),
+                                    href: `${base}/original${ctx.fromLink ? "?download=1" : ""}`, name: "org.mp4" },
+    ctx.hasSrt && { id: "srt", group: "subtitles", icon: "subs", label: t("Subtitles (.srt)"),
+                    href: `${base}/srt?download=1`, name: `dub_${ctx.target}.srt` },
+    // Perso's own name for the file. The route sends the same name, with what
+    // a file name cannot hold swapped (app/api/script.py), and that names the
+    // saved file.
+    ctx.hasScript && { id: "script", group: "subtitles", icon: "subs", label: t("Script (original + translation, .xlsx)"),
+                       href: `/api/dub/jobs/${ctx.jobId}/script.xlsx`,
+                       name: `${ctx.title}_${(ctx.source || "auto").toUpperCase()}to${ctx.target.toUpperCase()}`
+                         + "_OriginalTranslatedScript.xlsx" },
+    { ...audio, group: "audio", label: t("Dubbed audio"),
       href: `${base}/audio?format=${fmt}&download=1${mark}`, name: `dub_${ctx.target}.${fmt}` },
     ...[["voice", t("Original voice")], ["background", t("Background")]].map(([which, label]) =>
-      (ctx.stems || {})[which] && { id: which, icon: "audio", label, audio: true, tip: STEM_TIPS[which],
+      (ctx.stems || {})[which] && { id: which, group: "audio", icon: "audio", label, audio: true, tip: STEM_TIPS[which],
                                     href: `${base}/stem/${which}?format=${fmt}`,
                                     name: `${ctx.project || "project"}_${which}.${fmt}` }),
-    ctx.hasSrt && { id: "srt", icon: "subs", label: t("Subtitles (.srt)"),
-                    href: `${base}/srt?download=1`, name: `dub_${ctx.target}.srt` },
-    // A local file is already on the machine it would be saved to.
-    ctx.fromLink && { id: "original", icon: "film", label: t("Original video"),
-                      href: `${base}/original?download=1`, name: "org.mp4" },
   ].filter(Boolean);
 }
 
@@ -147,6 +187,7 @@ export function exportRows(ctx, fmt) {
  * The rows as the dialog draws them: a checkbox, the icon, the name, a "?"
  * with what the file is on a row that has a tip (the two separated sounds),
  * the MP3 / WAV switch on a sound row, and the place the saved check appears.
+ * A row that starts a group has its heading over it.
  *
  * @param {Array} rows   exportRows' answer
  * @param {"mp3"|"wav"} fmt
@@ -157,9 +198,11 @@ export function rowsHtml(rows, fmt, ticked = [], saved = []) {
   const seg = `<span class="export-seg" role="radiogroup" aria-label="${t("Audio format")}">`
     + ["mp3", "wav"].map((f) => `<span role="radio" tabindex="0" data-fmt="${f}" aria-checked="${f === fmt}"`
       + `${f === fmt ? ' class="on"' : ""}>${f.toUpperCase()}</span>`).join("") + "</span>";
-  return rows.map((r) => {
+  return rows.map((r, i) => {
     const done = saved.includes(r.id);
-    return `<a href="#" role="checkbox" aria-checked="${ticked.includes(r.id)}" data-row="${r.id}"`
+    const head = r.group && r.group !== rows[i - 1]?.group
+      ? `<div class="export-group">${escapeHtml(GROUPS[r.group])}</div>` : "";
+    return `${head}<a href="#" role="checkbox" aria-checked="${ticked.includes(r.id)}" data-row="${r.id}"`
       + `${r.name ? ` data-name="${escapeHtml(r.name)}"` : ""}${done ? ' class="saved"' : ""}>`
       + `<span class="export-check">${svg(CHECK, "icon")}</span>`
       + `${ICONS[r.icon]}${escapeHtml(r.label)}`
@@ -168,6 +211,26 @@ export function rowsHtml(rows, fmt, ticked = [], saved = []) {
       + `${r.audio ? seg : ""}`
       + `<span class="export-state">${done ? SAVED_ICON : ""}</span></a>`;
   }).join("");
+}
+
+/**
+ * The line under the rows before a save, in the desktop shell: where the files
+ * go. A folder picked with Change is named by its own name, with a dubbing's
+ * dated folder under it, the way `ctx.where` names Downloads. A picked folder
+ * that is gone (a drive taken out) is said once, ahead of that Downloads line:
+ * the files go there instead.
+ *
+ * @param {{where?: string, day?: string, project?: string}} ctx  the dialog's
+ *        context: the Downloads line, and a dubbing's day and project
+ * @param {{chosen: string, missing: boolean}} folder  the shell's answer
+ */
+export function whereLine(ctx, { chosen, missing }) {
+  if (!chosen) return ctx.where || "";
+  const name = folderName(chosen);
+  if (missing) return `${t("Cannot find {folder}.", { folder: name })} ${ctx.where || ""}`.trim();
+  return ctx.day && ctx.project
+    ? t("Saved in {folder} / {day} / {project}", { folder: name, day: ctx.day, project: ctx.project })
+    : t("Saved in {folder}", { folder: name });
 }
 
 /** "clip.mp3" out of a path with either kind of slash. */
@@ -190,16 +253,20 @@ function followLink(href, name) {
  * @param {object} deps
  * @param {(id: string) => any} deps.$
  * @param {() => Promise<object|null>} deps.getContext  what is on screen, as
- *        exportRows reads it, plus `where` (the line under the rows) and, for
- *        a draft or an erased video, `save({audio} | {ratio}) => Promise<path>`; null
- *        when there is nothing to export
+ *        exportRows reads it, plus `where` (the line under the rows, naming
+ *        Downloads), for a dubbing `day` (its files' dated folder, with
+ *        `project`) and, for a draft or an erased video,
+ *        `save({audio} | {ratio}) => Promise<path>`; null when there is
+ *        nothing to export
  * @param {{getItem: Function, setItem: Function}} [deps.storage]
  * @param {object} [deps.shell]  the desktop shell (window.persodubShell): it
- *        saves a link without a word, then reports the file it wrote
+ *        saves a link without a word, then reports the file it wrote; and it
+ *        keeps the folder downloads go into (downloadFolder, pickDownloadFolder,
+ *        resetDownloadFolder, each answering {folder, chosen, missing})
  * @param {(href: string, init?: object) => Promise<Response>} [deps.fetchFn]
  * @param {(href: string, name: string) => void} [deps.follow]  hand a link to
  *        the browser to download
- * @returns {{ open: () => Promise<void>, close: () => void }}
+ * @returns {{ open: (tick?: string[], only?: string[]) => Promise<void>, close: () => void }}
  */
 export function initExportDialog({ $, getContext, storage = null, shell = null,
                                    fetchFn = (...a) => fetch(...a), follow = followLink }) {
@@ -214,12 +281,20 @@ export function initExportDialog({ $, getContext, storage = null, shell = null,
   let saving = false;
   // The shell's report of the download the Export button is waiting on.
   let landed = null;
+  // Where the files go, as the shell said it ({folder, chosen, missing}):
+  // asked each time the dialog opens and after each save, since a drive can be
+  // taken out in between. Null in a browser, which saves where it is set to.
+  let folder = null;
 
   const rows = () => exportRows(ctx, fmt);
+  const whereText = () => (folder ? whereLine(ctx, folder) : ctx.where || "");
   function paint() {
     list.innerHTML = rowsHtml(rows(), fmt, ticked, saved);
     go.disabled = saving || !ticked.length;
     $("exportCloseBtn").disabled = saving;
+    // Change, and Use default once a folder is picked; not while files go out.
+    $("exportFolder").hidden = saving || !folder;
+    $("exportFolderResetWrap").hidden = !(folder && folder.chosen);
   }
 
   function pickFormat(f) {
@@ -236,7 +311,8 @@ export function initExportDialog({ $, getContext, storage = null, shell = null,
     // Kept in the rows' order: that is the order they are saved in.
     ticked = rows().map((r) => r.id).filter((r) => (r === id) !== ticked.includes(r));
     try {
-      if (storage) {
+      // A dialog cut down to some rows remembers nothing for the whole one.
+      if (storage && !ctx.only) {
         let all = {};
         try { all = JSON.parse(storage.getItem(TICKS_KEY) || "{}") || {}; } catch { /* not ours */ }
         storage.setItem(TICKS_KEY, JSON.stringify({ ...all, [ctx.kind]: ticked }));
@@ -259,7 +335,7 @@ export function initExportDialog({ $, getContext, storage = null, shell = null,
     const r = await fetchFn(row.href, { signal: stop.signal });
     if (!r.ok) {
       const body = await r.json().catch(() => ({}));
-      throw new Error(body.detail || t("Could not export this file"));
+      throw new Error(body.detail || t("Could not download this file"));
     }
     stop.abort();   // it is there; the download itself reads it
     const report = shell && shell.onDownloadDone
@@ -280,15 +356,20 @@ export function initExportDialog({ $, getContext, storage = null, shell = null,
     let last = "";
     try {
       for (const [i, row] of todo.entries()) {
-        where.textContent = t("Exporting {i} of {n}…", { i: i + 1, n: todo.length });
+        where.textContent = t("Downloading {i} of {n}…", { i: i + 1, n: todo.length });
         last = await saveOne(row);
         saved.push(row.id);
         paint();
       }
-      const folder = downloadsLabel(last) || t("Downloads");
-      where.textContent = !last ? ctx.where || ""
-        : todo.length > 1 ? t("Saved {n} files to {folder}", { n: todo.length, folder })
-        : t("Saved {name} to {folder}", { name: baseName(last), folder });
+      // Asked again: the files went wherever the folder was just now.
+      if (folder) folder = await shell.downloadFolder().catch(() => folder);
+      const label = downloadsLabel(last, folder ? folder.chosen : "") || t("Downloads");
+      const said = !last ? whereText()
+        : todo.length > 1 ? t("Saved {n} files to {folder}", { n: todo.length, folder: label })
+        : t("Saved {name} to {folder}", { name: baseName(last), folder: label });
+      // A picked folder that was gone is said once, ahead of where the files went.
+      where.textContent = last && folder && folder.missing
+        ? `${t("Cannot find {folder}.", { folder: folderName(folder.chosen) })} ${said}` : said;
     } catch (e) {
       where.textContent = errorText(e);
     } finally {
@@ -316,6 +397,18 @@ export function initExportDialog({ $, getContext, storage = null, shell = null,
   });
   go.addEventListener("click", exportTicked);
 
+  // Change: the computer's own folder picker, through the shell, which keeps
+  // the folder for this download and every one after it. Use default: back to
+  // Downloads. Either way the line says the new place at once.
+  async function changeFolder(ask) {
+    if (saving || !folder) return;
+    folder = await ask().catch(() => folder);
+    where.textContent = whereText();
+    paint();
+  }
+  $("exportFolderPick").addEventListener("click", () => changeFolder(() => shell.pickDownloadFolder()));
+  $("exportFolderReset").addEventListener("click", () => changeFolder(() => shell.resetDownloadFolder()));
+
   if (shell && shell.onDownloadDone) shell.onDownloadDone((info) => {
     if (landed) { const tell = landed; landed = null; tell(info); }
   });
@@ -329,16 +422,21 @@ export function initExportDialog({ $, getContext, storage = null, shell = null,
     if (e.target === $("exportOverlay")) close();
   });
 
-  async function open() {
+  // `tick`: the rows to tick this time in place of the remembered ones (Save
+  // video's own opening ticks Video), remembering nothing. `only`: the rows
+  // to offer, the rest left out (the Save video tab's original).
+  async function open(tick = null, only = null) {
     const next = await getContext();
     if (!next) return;
-    ctx = next;
+    ctx = only ? { ...next, only } : next;
+    folder = shell && shell.downloadFolder ? await shell.downloadFolder().catch(() => null) : null;
     saved = [];
     let kept = null;
     try { kept = storage && storage.getItem(TICKS_KEY); } catch { /* private window */ }
-    ticked = ticksFor(kept, ctx.kind, rows().map((r) => r.id));
+    const ids = rows().map((r) => r.id);
+    ticked = tick ? ids.filter((id) => tick.includes(id)) : ticksFor(kept, ctx.kind, ids);
     paint();
-    where.textContent = ctx.where || "";
+    where.textContent = whereText();
     $("exportOverlay").classList.add("open");
   }
 

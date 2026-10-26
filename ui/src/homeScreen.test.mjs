@@ -9,12 +9,14 @@
 // Run with: node --test ui/src/homeScreen.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { initHomeScreen } from "./homeScreen.mjs";
+import { readFileSync } from "node:fs";
+import { initHomeScreen, FOLD_KEY } from "./homeScreen.mjs";
 
 function makeEl(id) {
   return {
     id, textContent: "", value: "", hidden: false, dataset: {}, style: {},
-    listeners: {}, focused: false, selected: false,
+    listeners: {}, focused: false, selected: false, attrs: {},
+    setAttribute(k, v) { this.attrs[k] = v; },
     set innerHTML(v) { this.html = v; },
     get innerHTML() { return this.html || ""; },
     qs: {},
@@ -30,7 +32,7 @@ function makeEl(id) {
 
 const clickEvent = (target) => ({ target, stopPropagation() { this.stopped = true; }, stopped: false, preventDefault() {} });
 
-function harness({ fetchOk = true } = {}) {
+function harness({ fetchOk = true, storage = null } = {}) {
   const els = new Map();
   const $ = (id) => { if (!els.has(id)) els.set(id, makeEl(id)); return els.get(id); };
   const log = { opened: [], deleted: [], calls: [], errors: [], openedDrafts: [], deletedDrafts: [] };
@@ -53,6 +55,7 @@ function harness({ fetchOk = true } = {}) {
     onError: (text) => log.errors.push(text),
     onOpenDraft: (id) => log.openedDrafts.push(id),
     onDeleteDraft: (d) => log.deletedDrafts.push(d.downloadId),
+    storage,
   });
   return { $, api, log };
 }
@@ -174,7 +177,7 @@ test("an erase job wears the eraser mark and says what it did, not which languag
   const html = h.$("projectsGrid").innerHTML;
   const card = html.slice(html.indexOf('data-job="f"'));
   assert.match(card, /proj-kind/);
-  assert.match(card, />Erased</);
+  assert.match(card, />Subtitles erased</);
 });
 
 test("clicking a card opens it, and the \"...\" button opens the menu without opening the card", (t) => {
@@ -337,6 +340,25 @@ test("a kept draft is the first card: marked Draft, with how much its cuts kept"
   assert.doesNotMatch(h.$("projectsGrid").innerHTML, /No projects yet/);
 });
 
+// A draft left on the Erase tab read "Not dubbed yet" (2026-10-21).
+test("a draft left on the Erase tab says what it was being made into, with the eraser", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+  h.api.renderDrafts([{ ...KEPT[0], tab: "erase" }]);
+  const erase = h.$("projectsGrid").innerHTML;
+  assert.match(erase, /<span class="proj-kind" title="Erase subtitles"><svg viewBox="0 0 24 24" width="12" height="12">/);
+  assert.match(erase, /<span class="proj-chip proj-chip-muted">Draft<\/span>/);
+  assert.match(erase, /<div class="proj-meta">Not erased yet<\/div>/);
+  // The Korean the owner approved names the tool (2026-10-21).
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko["Not erased yet"], "자막 지우기 · 미완료");
+  // The same draft moved to Dubbing is drawn again with its own words.
+  h.api.renderDrafts([{ ...KEPT[0], tab: "dubbing" }]);
+  const again = h.$("projectsGrid").innerHTML;
+  assert.doesNotMatch(again, /proj-kind/);
+  assert.match(again, /data-draft="0a1b2c3d"[^]*?<div class="proj-meta">Not dubbed yet<\/div>/);
+});
+
 test("a press on a draft card opens that draft, and its menu has Delete alone", async (t) => {
   const h = harness();
   t.after(h.log.restore);
@@ -477,7 +499,7 @@ test("a job whose state changed has its chip, length and words changed on the ca
   assert.equal(onAir.querySelector(".proj-dur").textContent, "01:15");
   assert.equal(next.querySelector(".proj-chip").className, "proj-chip proj-chip-run");
   assert.equal(next.querySelector(".proj-chip").textContent, "Dubbing…");
-  assert.equal(erase.querySelector(".proj-meta").textContent, "Erasing");
+  assert.equal(erase.querySelector(".proj-meta").textContent, "Erasing subtitles");
   // A chip put back goes ahead of the length, under the id the percent finds it by.
   const labels = finished.querySelector(".proj-thumb").kids;
   assert.deepEqual(labels.map((k) => k.className), ["proj-img", "proj-chip proj-chip-queued", "proj-dur"]);
@@ -546,4 +568,50 @@ test("a picture the server had none for is asked for again when the cards are pa
   assert.equal(grid.writes, 1);
   assert.equal(cardOf(grid, "e"), card);
   assert.equal(card.querySelector(".proj-thumb").kids[0].className, "proj-img");
+});
+
+// A long list is a lot to face (owner, 2026-10-23): Collapse folds the cards
+// away to the heading row, and the next start remembers it.
+test("Collapse folds the grid away and Expand brings it back, remembered for the next start", (t) => {
+  const kept = new Map();
+  const storage = { getItem: (k) => (kept.has(k) ? kept.get(k) : null), setItem: (k, v) => kept.set(k, v) };
+  const h = harness({ storage });
+  t.after(h.log.restore);
+  const btn = h.$("projectFoldBtn");
+  assert.equal(h.$("projectsGrid").hidden, false);
+  assert.equal(btn.attrs["aria-expanded"], "true");
+  assert.match(btn.innerHTML, /<span>Collapse<\/span>$/);
+  btn.fire("click");
+  assert.equal(h.$("projectsGrid").hidden, true);
+  assert.equal(btn.attrs["aria-expanded"], "false");
+  assert.match(btn.innerHTML, /<span>Expand<\/span>$/);
+  assert.equal(kept.get(FOLD_KEY), "1");
+  // The next start opens folded.
+  const again = harness({ storage });
+  t.after(again.log.restore);
+  assert.equal(again.$("projectsGrid").hidden, true);
+  again.$("projectFoldBtn").fire("click");
+  assert.equal(again.$("projectsGrid").hidden, false);
+  assert.equal(kept.get(FOLD_KEY), "0");
+  // No storage to read (a private window): open, and a press still folds.
+  const bare = harness({ storage: { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); } } });
+  t.after(bare.log.restore);
+  assert.equal(bare.$("projectsGrid").hidden, false);
+  bare.$("projectFoldBtn").fire("click");
+  assert.equal(bare.$("projectsGrid").hidden, true);
+});
+
+// Searching a folded list shows nothing to find: opening the search unfolds it.
+test("opening the search unfolds a folded grid", (t) => {
+  const kept = new Map([[FOLD_KEY, "1"]]);
+  const storage = { getItem: (k) => (kept.has(k) ? kept.get(k) : null), setItem: (k, v) => kept.set(k, v) };
+  const h = harness({ storage });
+  t.after(h.log.restore);
+  assert.equal(h.$("projectsGrid").hidden, true);
+  h.$("projectSearchBox").hidden = true;
+  h.$("projectSearchBtn").fire("click");
+  assert.equal(h.$("projectSearchBox").hidden, false);
+  assert.equal(h.$("projectsGrid").hidden, false);
+  assert.match(h.$("projectFoldBtn").innerHTML, /<span>Collapse<\/span>$/);
+  assert.equal(kept.get(FOLD_KEY), "0");
 });

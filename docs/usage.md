@@ -18,18 +18,19 @@ the app partway through does not lose the work, setup resumes where it stopped.
 
 The Home screen has a sidebar down the left:
 
-- **Tools**: **Dubbing**, **Separate audio**, **Erase subtitles** and **Save video**.
+- **Tools**: **Dubbing**, **Erase subtitles**, **Burn in subtitles** and **Save video**.
 - **Management**: **Projects**, every job this app has run, and **Settings**.
 - At its foot, **Help**, **Send feedback** and **What's new**.
 
 Beside it are the **Create project** banner, a row of cards (the **Dub Agent** and
 the four tools) and your projects.
 
-A project opens on the work screen: tabs on the left (**Dubbing**, **Separate
-audio**, **Captions**, **Erase**, between **Home** and **New project**), the video in
+A project opens on the work screen: tabs on the left (**Dubbing**, **Erase**, **Burn in
+subtitles**, **Save video**, between **Home** and **New project**), the video in
 the middle, the **Dub Agent** panel on the right and the timeline under all three.
-Along the top is the bar with the project's name, **Settings**, the three pane buttons
-that show or hide the left panel, the timeline and the Dub Agent, and **Export**.
+Along the top is the bar with the project's name, **Settings** and the three pane
+buttons that show or hide the left panel, the timeline and the Dub Agent. **Download**
+is at the right end of the tabs above the video.
 
 ## Dubbing
 
@@ -46,8 +47,11 @@ you can play it, cut it, and save a copy. See
 ## New project
 
 As soon as one video is ready it opens as a new project: the work screen, with the
-**Dubbing** tab on the left showing **Before dubbing**. Several videos at once open
-the **New project** dialog instead, where one set of choices starts them all.
+**Dubbing** tab on the left showing **Before dubbing**. Its **Video** card has
+**Replace**, which opens the file picker and puts the video you choose in its place
+(the old one's Draft card leaves Home), and **Remove**, which asks first, deletes this
+draft and leaves the project empty for another video. Several videos at once open the **New project** dialog instead, where
+one set of choices starts them all.
 
 **Cutting** happens on the timeline under the video: **Split at playhead**, **Delete
 left of playhead**, **Delete right of playhead** and **Delete selected** take out what
@@ -55,32 +59,43 @@ you do not want, with **Undo** and **Redo**. Leave it alone to take the whole vi
 cut video is re-encoded before the work starts, which takes a moment but cuts
 exactly where you asked.
 
+**Choose a model**, first, is how the dub is made: **Local model**, the free path on this
+computer and the one a first project starts on, or **Perso API**, where the video is
+uploaded to Perso and Perso makes the whole dub, which needs a Perso API key and uses
+Perso credits. With **Perso API** the **Dubbing model** row under it picks Perso's voice
+model: *Linnet 4* to begin with (*Oriole* for a language Linnet 4 does not have),
+*Nightingale*, *Wren* and the others. Later projects start
+on the choices you made last.
+
 **Original language** can stay on *Auto-detect* unless detection gets it wrong.
 
 **Target language** is the language to dub into: ten on this computer (English, Korean,
 Chinese, Japanese, French, German, Italian, Portuguese, Russian and Spanish), 100+ with
-the Perso API, depending on the **Dubbing model** below ([full list](languages.md)).
+the Perso API, depending on the **Dubbing model** above ([full list](languages.md)).
+It opens as a list with a search field on top: type part of a name, in your language
+or in English, or a code such as *zh*, and only the languages that match stay, with a
+count such as *2 of 77* under them.
 
 From here:
 
-- **Export** in the top bar saves the kept part as a video, or as audio only, into
-  Downloads.
-- The **Separate audio** and **Erase** tabs work on the same video.
-- **Start dubbing** begins the dub.
+- **Download**, at the right end of the tabs above the video, saves the kept part as a
+  video, or as audio only, into Downloads.
+- The **Erase** and **Burn in subtitles** tabs work on the same video.
+- **Start dubbing** begins the dub. With **Perso API** the line beside it says what the
+  dub costs and how many credits your Perso workspace has left. Perso charges the dubbing
+  model's credits a second for the whole seconds that are spoken, so a new video says *up
+  to* that rate times every whole second kept, and one opened with **+ Add language** says
+  *about* that rate times the seconds its first dubbing's script speaks.
 
-### Advanced options
+### Dubbing step settings
 
-Collapsed by default. A first project starts with **Dubbing** set to **On this
-computer**, the free path. Set it to **Perso API** and Perso makes the whole dub, which
-needs a Perso API key and uses Perso credits; later projects start on the choices you
-made last. The rows from **Audio separation** to **Voice quality** apply only on
-this computer, and are greyed out while Perso dubs.
+Always shown under **Choose a model**. The rows from **Voice separation** to **Voice quality** apply only
+with **Local model**. While Perso dubs they are greyed out and read *Perso*; what you chose
+for the local model comes back when you choose it again.
 
 | Field | Default | Notes |
 |---|---|---|
-| **Dubbing** | On this computer | *On this computer* runs the steps below, free. *Perso API* uploads the video and Perso does every step. |
-| **Dubbing model** | Oriole | Shown while Perso dubs: Perso's voice model, *Nightingale*, *Oriole* or *Wren*. The target languages follow it. |
-| **Audio separation** | Demucs | Splits the voice from the music and effects. Runs Mel-Band RoFormer instead once its model is downloaded in **Settings > Models**. *Perso API* needs a Perso key. |
+| **Voice separation** | Demucs | Splits the voice from the music and effects. *Mel-Band RoFormer* is a choice in this list too: a cleaner background, slower, and a 0.9 GB download. *Perso API* needs a Perso key. |
 | **Speech-to-text** | Whisper; Perso API when you choose it | Turns the speech in your video into text. *Perso API* uploads the video. |
 | **Translation** | ChatGPT (Hunyuan on a computer that already has the Hunyuan model) | *ChatGPT* uses your own free ChatGPT account; you sign in on your first dub. *Hunyuan* and *Gemma 3* translate locally. *Gemini API* needs a Google key. |
 | **Text-to-speech** | Qwen3-TTS | Speaks the translated lines in the cloned voice. |
@@ -117,20 +132,22 @@ When the job finishes it opens on the screen the app is really about: the script
 - **The timeline** underneath has a lane for the video, one for the original, one
   for the translation and one for the captions. A bar that runs past its slot is
   marked.
-- **Export** in the top bar saves the dubbed video, with or without the subtitles
-  burned in, the dubbed audio, the original voice and the background, the translated
-  `.srt`, and, for a job that started from a link, the original video (each when the
-  job has one).
+- **Download**, at the right of **Original** and **Dubbed**, saves the dubbed video, with
+  or without the subtitles burned in, the dubbed audio, the original voice and the
+  background, the translated `.srt`, the script as a spreadsheet (each line's speaker,
+  times, original and translation, laid out as Perso's web app downloads it), and, for
+  a job that started from a link, the original video (each when the job has one).
 - The click target on the job's name in the top bar renames the project. The folder
   keeps the name it was made with; the screens show the name you gave it.
 
 A narrow window folds columns away rather than cutting words in half. The end of each
 time slot goes first, then the original line, so the translation always stays whole.
 
-### Export
+### Download
 
-**Export** opens a dialog with a row per file, each with a tick box, and its own
-**Export** button saves the ticked rows. Sound rows can be MP3 or WAV. The app saves
+**Download** opens a dialog with a row per file, each with a tick box; a dubbing's rows
+stand under three headings, **Video**, **Subtitles & script** and **Audio**. The dialog's own
+**Download** button saves the ticked rows. Sound rows can be MP3 or WAV. The app saves
 without asking, into `Downloads` / the day the job ran / the project's name; a saved
 row gets a check, and the line under the rows says where it went.
 
@@ -138,6 +155,10 @@ row gets a check, and the line under the rows says where it went.
 
 **Erase subtitles** on the Home screen, or the **Erase** tab of a project, takes
 subtitles that are burned into the picture back out of it.
+
+- **Why:** Original subtitles left in the video overlap the translated ones.
+- **How:** Fit the box → Erase subtitles → Dubbing → burn in a Subtitle style.
+- **Time:** About 10 min for a 10-second video (Local model).
 
 Drop a video or paste a link, the same two ways in the dubbing screen offers. The app
 looks for the writing and draws a box where it thinks it is: red while it is looking,
@@ -149,36 +170,28 @@ is slow work, minutes for every minute of video, because every frame in the band
 to be painted over. **Erase** starts it.
 
 When it finishes, **Original** and **Erased** above the picture swap between the two
-so you can see what changed. **Export** in the top bar saves the clean video, and
-**Dubbing** opens it as a new project to dub. If something goes wrong, the panel says
+so you can see what changed. **Download**, at the right of the two, saves the clean video,
+**Dubbing** opens it as a new project to dub, and the **Burn in subtitles** tab puts a
+subtitle file on it. If something goes wrong, the panel says
 why it stopped, **Try again** runs it again on the same video and the same box, and
 **Raw log** has the detail.
 
 The eraser is a pack of its own, downloaded the first time you use it.
 
-## Separate audio
+## Burn in subtitles
 
-The **Separate audio** card on the home screen splits a video's sound into two
-files: the voice, and everything else. Drop a video or paste a link, the same two
-ways the Dubbing tab offers. A pasted link starts fetching by itself.
+The **Burn in subtitles** card on the home screen, or the tab of the same name in a
+project, puts a subtitle file (`.srt`) on a video in the look you choose. Bring the
+video the same ways the Dubbing tab offers; in a project the tab uses that project's
+video (the original it was cut from, while the app still has it), and on the erase
+screen the erased one. Then drop the `.srt` file, and the two open as a new project.
 
-The tab shows the video's name and length, then **Runs on**: *This computer* or *Perso
-API*. Perso spends credits, so its **Separate** button has to be pressed twice. A
-line under it estimates the time, for example "About 1 min". While it runs you see
-"Separating… 42%", a bar and **Stop**. On this computer the work is done by a
-Mel-Band RoFormer model, or by Demucs if the RoFormer files have not been downloaded.
-On an M4 MacBook Air a 38 second clip took 43 seconds.
+Its tab names the two files and holds the looks, **A-** / **A+** for the size, **All
+lines** / **This line** for the boxed looks, and **Show**. Clicking the subtitle on the
+picture picks that line. **Download** saves the video with the subtitles burned in.
 
-When it is done there are two rows, **Voice** (only the speech) and **Background**
-(music, effects and noise, everything except speech). Each has a play button and its
-waveform, and the timeline gets a lane for each, which can be muted. A short note
-beside each name says what it holds. **Dubbing** goes to the Dubbing tab, where a dub
-of the same cut reuses these two files instead of separating again. **Export** saves
-Voice and Background as MP3 or WAV into Downloads.
-The files stay in the project folder as `vocals.wav` and `background.wav`.
-
-Cutting the video on the timeline puts the tab back to how it was before you
-separated; undoing the cut brings the two sounds back.
+In a dub, the **Subtitle style** button just above the subtitle, shown while the video
+is paused, opens the same looks for the dub's own subtitles.
 
 ## Save video
 
@@ -187,8 +200,8 @@ top ("Paste a YouTube, TikTok or Reels link"). Paste a link and it opens as a ne
 project on the Dubbing tab, where the video is fetched onto your computer with the
 percentage on screen.
 
-From there **Export** > **Video** saves the file, in the shape the **Ratio** button is
-set to. The same video can also be dubbed, separated or have its subtitles erased
+From there **Download** > **Video** saves the file, in the shape the **Ratio** button is
+set to. The same video can also be dubbed or have its subtitles erased
 without fetching it again.
 
 Links are fetched with yt-dlp on your computer. Saving uploads nothing; dubbing or
@@ -266,8 +279,8 @@ next dub, no restart needed.
 **Show in Explorer** on Windows).
 
 **Privacy** has two switches, both on to begin with: *Anonymous usage counts* and
-*Automatic failure reports*. Keys and folder names are removed from a report before
-it leaves.
+*Send job logs*. Keys and folder names are removed from a job's logs before they
+leave.
 
 **About** has the version (press it to see what is new) and, under
 **Acknowledgements**, the licences of the open-source components. The full text

@@ -69,6 +69,16 @@ test("a local translator no longer downloaded gives way; one that is here, or co
   assert.equal(choicesToPutBack(readRemembered(s), setup(rows("downloading"))).translator, "hunyuan");
 });
 
+test("the RoFormer gives way once it is no longer downloaded, like a local translator", () => {
+  const s = storage();
+  rememberChoice(s, "sep", "roformer", DEFAULTS);
+  const rows = (state) => ({ models: [{ id: "engine", state: "ready" }, { id: "vocal-separator", state }] });
+  assert.equal(choicesToPutBack(readRemembered(s), setup(rows("not_downloaded"))).sep, undefined);
+  assert.equal(choicesToPutBack(readRemembered(s), setup(rows("ready"))).sep, "roformer");
+  rememberChoice(s, "sep", "local", DEFAULTS);
+  assert.equal(choicesToPutBack(readRemembered(s), setup(rows("not_downloaded"))).sep, "local", "Demucs needs no download");
+});
+
 test("a saved default changed since the choice was made (the Dub Agent's set_default) wins", () => {
   const s = storage();
   rememberChoice(s, "dubMode", "local", DEFAULTS);
@@ -87,7 +97,7 @@ test("without the app's setup only the choices that need nothing from it come ba
 
 test("a Perso model that is no model id, or a speaker count that is not a number, is left out", () => {
   // Any model id is put back (one Perso adds is offered without an app
-  // update); the dialog falls back to Oriole when Perso's list no longer has it.
+  // update); the dialog falls back to the default when Perso's list no longer has it.
   const s = storage();
   rememberChoice(s, "persoModel", "not a model", DEFAULTS);
   rememberChoice(s, "speakers", "two", DEFAULTS);

@@ -3,8 +3,8 @@
 app's HTTP API, each one timed and checked with numbers.
 
     python tests/e2e/regress.py --base http://127.0.0.1:52252 \\
-        --clip speech-10s.mp4 --subs-clip subtitles-10s.mp4 --out runs/today \\
-        [--translator hunyuan] [--perso]
+        --clip paris-en-subs-10s.mp4 --subs-clip paris-en-subs-10s.mp4 --out runs/today \\
+        [--translator hunyuan] [--perso] [--srt paris-ko-3cues.srt] [--kit <kit>] [--logs <logs>]
 
 Every route is asked in the shape the page asks it (ui/src/dubApi.mjs,
 ui/src/exportDialog.mjs), so a change that breaks the page's own requests
@@ -18,13 +18,16 @@ what each step checks.
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 from datetime import datetime
 
 # How far a result's length may be from its input's: a dub keeps the video's
@@ -47,6 +50,17 @@ SETTINGS_FIELDS = ("gemini_key_set", "perso_key_set", "gemini_api_key", "perso_a
 # What the script table's length column and the timeline read off each line
 # (ui/src/scriptTable.mjs lineVerdict).
 VERDICT_FIELDS = ("line", "slot", "audio_sec", "estimated", "fits")
+# The four steps of a dub the usage count times, by the names the job record
+# keeps them under (app/jobs.py timed_step, desktop/src/analytics.js STAGE_FIELDS).
+TIMED_STAGES = ("separate", "transcribe", "translate", "synthesize")
+# The subtitle file the captions step brings with the clip: three lines, all
+# inside its first ten seconds.
+CUES = ((0.5, 3.0, "The first line"), (3.5, 6.0, "The second line"), (6.5, 9.0, "The third line"))
+# The translators the app keeps out of every choice list (app/engines_status.py
+# TRANSLATORS offered=False, and app/translate.py's vertex, which has no row).
+HIDDEN_TRANSLATORS = ("qwen", "vertex")
+# A voice the app speaks on its own must be longer than this to be words.
+MIN_SAY_SECONDS = 0.5
 
 BASE = ""            # the app, from --base
 FFPROBE = "ffprobe"  # find_ffprobe's answer
@@ -88,25 +102,28 @@ def api(method, path, json_body=None, form=None, upload=None, timeout=120):
 
 def multipart(form, upload=None):
     """A multipart/form-data body, which urllib has no builder for: the form's
-    fields, then `upload` = (field, file name, path) when there is a file."""
+    fields, then `upload` = (field, file name, path[, type]) when there is a
+    file; a video unless the type says otherwise."""
     boundary = uuid.uuid4().hex
     body = b""
     for name, value in form.items():
         body += f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
     if upload:
-        field, filename, path = upload
+        field, filename, path, kind = (*upload, "video/mp4")[:4]
         with open(path, "rb") as f:
             body += (f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; '
-                     f'filename="{filename}"\r\nContent-Type: video/mp4\r\n\r\n').encode() + f.read() + b"\r\n"
+                     f'filename="{filename}"\r\nContent-Type: {kind}\r\n\r\n').encode() + f.read() + b"\r\n"
     return body + f"--{boundary}--\r\n".encode(), "multipart/form-data; boundary=" + boundary
 
 
-def fetch(path, dest, timeout=600):
+def fetch(path, dest, timeout=600, headers=None):
     """GET a file the app hands out, into dest: (status, the bytes written or
-    the refusal's words)."""
+    the refusal's words). A `headers` dict is filled with the answer's headers."""
     try:
         with urllib.request.urlopen(BASE + path, timeout=timeout) as r, open(dest, "wb") as f:
             shutil.copyfileobj(r, f)
+            if headers is not None:
+                headers.update(r.headers.items())
             return r.status, f.tell()
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf-8", "replace")[:300]
@@ -155,6 +172,31 @@ def same_length(label, path, want):
     if abs(got - want) > TOLERANCE:
         raise Fail(f"{label} is {got:.2f}s, the input {want:.2f}s (allowed {TOLERANCE}s)")
     return f"{label} {got:.2f}s"
+
+
+def cue_count(path):
+    """How many cues an .srt holds: one "-->" each."""
+    with open(path, encoding="utf-8-sig") as f:
+        return f.read().count("-->")
+
+
+def srt_time(sec):
+    return "%02d:%02d:%02d,%03d" % (sec // 3600, sec % 3600 // 60, sec % 60, round(sec % 1 * 1000))
+
+
+def cues_file(ctx):
+    """The three CUES written out as files/captions.srt; its path."""
+    srt = os.path.join(ctx["files"], "captions.srt")
+    with open(srt, "w", encoding="utf-8") as f:
+        f.write("\n".join(f"{n}\n{srt_time(a)} --> {srt_time(b)}\n{text}\n" for n, (a, b, text) in enumerate(CUES, 1)))
+    return srt
+
+
+def srt_texts(path):
+    """Each cue's words in an .srt, in order: what follows its time line."""
+    with open(path, encoding="utf-8-sig") as f:
+        blocks = f.read().replace("\r\n", "\n").strip().split("\n\n")
+    return [flat(" ".join(block.split("\n")[2:])) for block in blocks if "-->" in block]
 
 
 def held(ctx, path):
@@ -243,7 +285,7 @@ def step_answers(ctx):
             f"ui_language={settings['ui_language']}")
 
 
-def start_dub(ctx, dub_mode, project):
+def start_dub(ctx, dub_mode, project, upload=None, **fields):
     """POST /api/dub/start with the form the New project dialog builds
     (ui/src/dubApi.mjs buildDubFormData) for the held clip: English to Korean,
     Fast. Transcription and separation are named outright, because a blank
@@ -251,13 +293,30 @@ def start_dub(ctx, dub_mode, project):
     run that is meant to stay on this computer; a Perso dubbing ignores both
     (the cloud does every stage). The translator is --translator, sent the
     way the dialog's Translation dropdown sends a choice; without it the
-    field stays blank and the saved one translates. Its evidence names which."""
+    field stays blank and the saved one translates. Its evidence names which.
+    `upload` is a file sent with it (the advanced options' subtitle file),
+    `fields` more of the dialog's fields (num_speakers)."""
     form = {"download_id": held(ctx, ctx["args"].clip), "language": "Korean", "language_code": "ko",
             "source_language_code": "en", "n_takes": "1", "stt_engine": "local", "sep_engine": "local",
-            "dub_mode": dub_mode, "project": project}
+            "dub_mode": dub_mode, "project": project, **fields}
     if ctx["args"].translator:
         form["translate_engine"] = ctx["args"].translator
-    return started(ctx, *api("POST", "/api/dub/start", form=form, timeout=600))
+    return started(ctx, *api("POST", "/api/dub/start", form=form, upload=upload, timeout=600))
+
+
+def finished_video(ctx, jid, name):
+    """The finished dub's video, fetched into files/<name> and measured
+    against the clip: the evidence, or Fail."""
+    video = os.path.join(ctx["files"], name)
+    status, got = fetch(f"/api/dub/result/{jid}", video)
+    if status != 200:
+        raise Fail(f"GET /api/dub/result/{jid}: HTTP {status} {got}")
+    return same_length("dubbed video", video, ctx["clip_sec"])
+
+
+def flat(text):
+    """Text with its runs of spaces and line breaks made one space."""
+    return " ".join(str(text or "").split())
 
 
 def step_local_dub(ctx):
@@ -309,14 +368,21 @@ def step_separate(ctx):
 
 
 def step_erase(ctx):
-    """Erase subtitles in the band the app guesses, and the eraser's own look
-    at the finished video finding no writing left (job.check)."""
+    """Erase subtitles in the band the app guesses, which lies in the bottom
+    third of the picture where the fixture's captions are (90 px above the
+    bottom edge, 630 of 720); the eraser's own look at the finished video
+    finding no writing left (job.check), and that video as long as the clip."""
     did = held(ctx, ctx["args"].subs_clip)
     status, found = api("POST", "/api/erase/suggest", form={"download_id": did}, timeout=600)
     if status != 200:
         raise Fail(f"suggest: HTTP {status} {detail(found)}")
     if not found.get("found"):
         raise Fail(f"suggest found no subtitles (it offers the bottom band {found.get('area')})")
+    # The area is [ymin, ymax, xmin, xmax], rows first.
+    top, bottom, height = found["area"][0], found["area"][1], found["height"]
+    if not (top >= height * 2 / 3 and top <= height - 90 <= bottom <= height):
+        raise Fail(f"the band is rows {top}-{bottom} of {height}: not in the bottom third "
+                   f"(from {height * 2 / 3:.0f}) around the captions at {height - 90}")
     form = {"download_id": did, "area": json.dumps(found["area"]), "project": "e2e-erase"}
     jid = started(ctx, *api("POST", "/api/erase", form=form, timeout=600))
     job, queued = wait_for(jid, "erase")
@@ -326,8 +392,15 @@ def step_erase(ctx):
     check = record.get("check") or {}
     if check.get("frames_with_text") != 0:
         raise Fail(f"frames_with_text {check.get('frames_with_text')} of {check.get('frames_checked')} checked")
-    return (f"area {found['area']} of {found['width']}x{found['height']}; {ran(job, queued)}; erased.mp4 there; "
-            f"frames_with_text 0 of {check.get('frames_checked')} checked, {check.get('repainted')} repainted")
+    erased = os.path.join(ctx["files"], "erased.mp4")
+    status, got = fetch(f"/api/erase/{jid}/video", erased)
+    if status != 200:
+        raise Fail(f"GET /api/erase/{jid}/video: HTTP {status} {got}")
+    length = same_length("erased.mp4", erased, ctx["subs_sec"])
+    return (f"area {found['area']} of {found['width']}x{found['height']}, rows {top}-{bottom} in the bottom third "
+            f"(from {height * 2 / 3:.0f}) around {height - 90}; {ran(job, queued)}; {length}, input "
+            f"{ctx['subs_sec']:.2f}s; frames_with_text 0 of {check.get('frames_checked')} checked, "
+            f"{check.get('repainted')} repainted")
 
 
 def step_export(ctx):
@@ -371,7 +444,37 @@ def step_export(ctx):
             said.append(f"{label} {cues} cues")
         else:
             said.append(same_length(label, path, ctx["clip_sec"]))
-    return f"{len(rows)} rows: " + ", ".join(said) + "; the desktop shell's save to Downloads not run"
+    said.append(script_sheet(ctx, jid, job))
+    return f"{len(rows) + 1} rows: " + ", ".join(said) + "; the desktop shell's save to Downloads not run"
+
+
+def script_sheet(ctx, jid, job):
+    """The Export dialog's script row (exportDialog.mjs, id "script"): a
+    workbook whose one sheet has the header and a row per script line, named
+    <project>_<SRC>to<TGT>_OriginalTranslatedScript.xlsx by the route itself."""
+    _, script = api("GET", f"/api/dub/jobs/{jid}/script")
+    lines = len(script.get("lines") or [])
+    path = os.path.join(ctx["export"], "script.xlsx")
+    headers = {}
+    status, got = fetch(f"/api/dub/jobs/{jid}/script.xlsx", path, headers=headers)
+    if status != 200:
+        raise Fail(f"script (.xlsx): HTTP {status} {got}")
+    said = headers.get("content-disposition") or headers.get("Content-Disposition") or ""
+    name = urllib.parse.unquote(said.split("''", 1)[1]) if "''" in said else said
+    want = (f"{job.get('title') or job['project']}_{(job.get('source_lang') or 'auto').upper()}to"
+            f"{(job.get('language_code') or 'out').upper()}_OriginalTranslatedScript.xlsx")
+    if name != want:
+        raise Fail(f"script (.xlsx) is named {name!r}, not {want!r}")
+    try:
+        with zipfile.ZipFile(path) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
+    except (zipfile.BadZipFile, KeyError) as e:
+        raise Fail(f"script (.xlsx) is not a workbook with xl/worksheets/sheet1.xml: {e}")
+    rows = len(re.findall(r"<row ", sheet))
+    if rows != lines + 1 or "speaker_id" not in sheet.split("</row>", 1)[0]:
+        raise Fail(f"script (.xlsx) has {rows} rows for {lines} lines and a header")
+    os.replace(path, os.path.join(ctx["export"], name))
+    return f"script (.xlsx) {rows} rows = header + {lines} lines, named {name}"
 
 
 def step_perso(ctx):
@@ -429,13 +532,280 @@ def step_settings(ctx):
     return f"ui_language {before} -> {flipped} -> {before}, each read back"
 
 
-STEPS = (("1. Engines and settings answer", step_answers),
+def step_timings(ctx):
+    """The finished dub's record carries how long it took, the numbers the
+    usage count sends (desktop/src/analytics.js timingSeconds): its whole
+    seconds and each of the four timed steps', every one above 0 and the four
+    together no longer than the whole."""
+    jid = ctx.get("dub_done")
+    if not jid:
+        raise Skip("needs step 2's finished dub")
+    status, job = api("GET", f"/api/dub/jobs/{jid}")
+    if status != 200:
+        raise Fail(f"GET /api/dub/jobs/{jid}: HTTP {status} {detail(job)}")
+    whole, stages = job.get("elapsed_seconds"), job.get("stage_seconds") or {}
+    got = {name: stages.get(name) for name in TIMED_STAGES}
+    bad = [name for name, n in got.items() if not isinstance(n, int) or n <= 0]
+    if not isinstance(whole, int) or whole <= 0 or bad:
+        raise Fail(f"elapsed_seconds {whole}, stage_seconds {stages}: not a whole number above 0 for "
+                   + ", ".join(bad or ["elapsed_seconds"]))
+    if sum(got.values()) > whole + 1:
+        raise Fail(f"the four steps add up to {sum(got.values())}s, more than the whole {whole}s")
+    return (f"job {jid}: elapsed_seconds {whole}; " + ", ".join(f"{name} {n}s" for name, n in got.items())
+            + f" (together {sum(got.values())}s); started_hour {job.get('started_hour')}")
+
+
+def step_captions(ctx):
+    """The Subtitle style tab on its own: the held clip and a subtitle file of
+    three lines made a finished project of kind "captions" (POST
+    /api/captions/import, as ui/src/dubApi.mjs importCaptions sends it), whose
+    two rows the Export dialog offers: the video in the Sticker look, as long
+    as the clip, and the .srt with its three cues. A file with no subtitles is
+    refused with 422, a video that is not held with 404."""
+    srt = cues_file(ctx)
+    junk = os.path.join(ctx["files"], "not-subtitles.srt")
+    with open(junk, "w", encoding="utf-8") as f:
+        f.write("no cues here\n")
+    did = held(ctx, ctx["args"].clip)
+
+    def send(download_id, path):
+        return api("POST", "/api/captions/import", form={"download_id": download_id},
+                   upload=("srt", os.path.basename(path), path, "application/x-subrip"), timeout=600)
+
+    status, body = send(did, srt)
+    jid = started(ctx, status, body)
+    status, job = api("GET", f"/api/dub/jobs/{jid}")
+    if status != 200 or job.get("kind") != "captions" or job.get("status") != "done" or body.get("lines") != len(CUES):
+        raise Fail(f"job {jid}: HTTP {status}, kind {job.get('kind')}, {job.get('status')}, "
+                   f"{body.get('lines')} lines of {len(CUES)}")
+    video = os.path.join(ctx["export"], "video-sub-sticker.mp4")
+    status, got = fetch(f"/api/dub/result/{jid}/subtitled?preset=sticker&download=1", video)
+    if status != 200:
+        raise Fail(f"video with subtitles: HTTP {status} {got}")
+    length = same_length("video with subtitles (sticker)", video, ctx["clip_sec"])
+    path = os.path.join(ctx["export"], "video.srt")
+    status, got = fetch(f"/api/dub/result/{jid}/srt?download=1", path)
+    if status != 200:
+        raise Fail(f"subtitles: HTTP {status} {got}")
+    cues = cue_count(path)
+    if cues != len(CUES):
+        raise Fail(f"the subtitles file has {cues} cues, not {len(CUES)}")
+    bad, _ = send(did, junk)
+    missing, _ = send("e2e-no-such-download", srt)
+    if (bad, missing) != (422, 404):
+        raise Fail(f"a file with no subtitles answered HTTP {bad} (not 422), a video not held HTTP {missing} (not 404)")
+    return (f"job {jid} kind captions, done at once, {len(CUES)} lines; {length}, input {ctx['clip_sec']:.2f}s; "
+            f"subtitles {cues} cues; no subtitles in the file HTTP 422, video not held HTTP 404")
+
+
+def step_edition(ctx):
+    """Which edition the app answers as: GET /api/setup's default Dubbing
+    mode is "local", the open-source edition's (app/setup.py _fallback; the
+    production edition's is "perso"), and with --kit, kit.env holds no
+    PERSODUB_EDITION=production line."""
+    status, setup = api("GET", "/api/setup")
+    if status != 200:
+        raise Fail(f"GET /api/setup: HTTP {status} {detail(setup)}")
+    mode = (setup.get("defaults") or {}).get("dub_mode")
+    if mode != "local":
+        raise Fail(f"the default Dubbing mode is {mode!r}, not 'local'")
+    said = f"defaults.dub_mode local, choices {setup['choices']['dub_mode']}"
+    if not ctx["args"].kit:
+        return said + "; kit.env not read (no --kit)"
+    with open(os.path.join(ctx["args"].kit, "kit.env"), encoding="utf-8") as f:
+        editions = [line.strip() for line in f if line.strip().startswith("PERSODUB_EDITION=")]
+    production = [line for line in editions if line.split("=", 1)[1].strip() == "production"]
+    if production:
+        raise Fail(f"kit.env has {len(production)} PERSODUB_EDITION=production line(s)")
+    return said + f"; kit.env: 0 production lines, edition lines {editions or 'none'}"
+
+
+def step_srt_dub(ctx):
+    """A dub started with a subtitle file attached (the advanced options'
+    "srt", ui/src/dubApi.mjs: pre-translated, used as is): no translation
+    runs (stage_seconds.translate 0 or absent), its script's lines are the
+    file's cues word for word, and its video is as long as the clip. Speech
+    is still transcribed, for the speakers: that stage's time is reported."""
+    path = ctx["args"].srt or cues_file(ctx)
+    want = srt_texts(path)
+    jid = start_dub(ctx, "local", "e2e-dub-srt",
+                    upload=("srt", os.path.basename(path), path, "application/x-subrip"))
+    job, queued = wait_for(jid, "dub with subtitles")
+    stages = job.get("stage_seconds") or {}
+    if stages.get("translate"):
+        raise Fail(f"translate took {stages['translate']}s with the subtitles given")
+    _, script = api("GET", f"/api/dub/jobs/{jid}/script")
+    got = [flat(line.get("text")) for line in script.get("lines") or []]
+    if got != want:
+        raise Fail(f"the script's {len(got)} lines {got} are not the file's {len(want)} cues {want}")
+    length = finished_video(ctx, jid, "dub-srt.mp4")
+    return (f"{ran(job, queued)}; translate {stages.get('translate', 'absent')}, transcribe "
+            f"{stages.get('transcribe', 'absent')}s; script {len(got)} lines = the {len(want)} cues of "
+            f"{os.path.basename(path)}; {length}")
+
+
+def step_redub(ctx):
+    """POST /api/dub/jobs/{id}/redub on step 2's finished dub: a new job,
+    made on this computer, whose video is as long as the clip."""
+    first = ctx.get("dub_done")
+    if not first:
+        raise Skip("needs step 2's finished dub")
+    jid = started(ctx, *api("POST", f"/api/dub/jobs/{first}/redub", timeout=600))
+    if jid == first:
+        raise Fail(f"redub answered the same job {jid}")
+    job, queued = wait_for(jid, "redub")
+    if job.get("dub_mode") != "local":
+        raise Fail(f"the redub's dub_mode is {job.get('dub_mode')}, not local")
+    return f"new job {jid} from {first}, {ran(job, queued)}; {finished_video(ctx, jid, 'redub.mp4')}"
+
+
+def step_unused_routes(ctx):
+    """The six routes no screen calls, each asked once: GET /api/tts/engines,
+    POST /api/tts/say (a wav longer than MIN_SAY_SECONDS, in the voice step
+    2's dub cloned), POST /api/translate (the translator the app started
+    with) and GET .../subtitle_preview (a JPEG) answer 200. The two Perso
+    line routes, perso/script/{line}/fit and /reset, need a Perso dub, which
+    spends credits: asked of the local dub they must refuse with 409 before
+    Perso is reached."""
+    jid = ctx.get("dub_done")
+    if not jid:
+        raise Skip("needs step 2's finished dub")
+    _, job = api("GET", f"/api/dub/jobs/{jid}")
+    said = []
+    status, engines = api("GET", "/api/tts/engines")
+    ready = [e["id"] for e in (engines.get("engines") or []) if e.get("available")] if status == 200 else []
+    if not ready:
+        raise Fail(f"tts/engines: HTTP {status}, no engine available {detail(engines)}")
+    said.append(f"tts/engines 200 ({', '.join(ready)})")
+    # The voice the dub cloned: its reference clip and the words in it.
+    with open(os.path.join(job["work_dir"], "speaker_refs.json"), encoding="utf-8") as f:
+        ref = next(iter(json.load(f).values()))
+    say = json.dumps({"text": "여기가 파리에서 제일 멋진 전망이에요.", "language": "Korean",
+                       "ref_audio": os.path.join(job["work_dir"], ref["ref_wav"]), "ref_text": ref["ref_text"]})
+    wav = os.path.join(ctx["files"], "say.wav")
+    request = urllib.request.Request(BASE + "/api/tts/say", data=say.encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=600) as r, open(wav, "wb") as f:
+            shutil.copyfileobj(r, f)
+    except urllib.error.HTTPError as e:
+        raise Fail(f"tts/say: HTTP {e.code} {detail(e.read().decode('utf-8', 'replace'))}")
+    spoke = seconds(wav)
+    if spoke <= MIN_SAY_SECONDS:
+        raise Fail(f"tts/say gave {spoke:.2f}s of wav, not more than {MIN_SAY_SECONDS}s")
+    said.append(f"tts/say 200, wav {spoke:.2f}s")
+    status, out = api("POST", "/api/translate", json_body={"texts": ["This is the best view in all of Paris."],
+                                                           "target_lang": "Korean", "source_lang": "en"}, timeout=600)
+    words = (out.get("translations") or [""])[0] if status == 200 else ""
+    if not flat(words):
+        raise Fail(f"translate: HTTP {status} {detail(out)}")
+    said.append(f"translate 200, 1 line ({len(words)} characters)")
+    frame = os.path.join(ctx["files"], "subtitle-preview.jpg")
+    status, got = fetch(f"/api/dub/result/{jid}/subtitle_preview?preset=sticker", frame)
+    with open(frame, "rb") as f:
+        jpeg = f.read(2) == b"\xff\xd8"
+    if status != 200 or not jpeg:
+        raise Fail(f"subtitle_preview: HTTP {status} {got}, JPEG {jpeg}")
+    said.append(f"subtitle_preview 200, a {got}-byte JPEG")
+    fit, fit_said = api("POST", f"/api/dub/jobs/{jid}/perso/script/1/fit", json_body={"text": "안녕하세요"})
+    reset, reset_said = api("POST", f"/api/dub/jobs/{jid}/perso/script/1/reset", json_body={"confirm": True})
+    if (fit, reset) != (409, 409):
+        raise Fail(f"on a local dub perso fit answered HTTP {fit}, reset HTTP {reset} (not 409): "
+                   f"{detail(fit_said)} / {detail(reset_said)}")
+    said.append("perso fit and reset 409 on a local dub (a 200 needs a Perso dub: credits)")
+    return "; ".join(said)
+
+
+def step_hidden_translators(ctx):
+    """The translators the app keeps out of sight, qwen and vertex, are
+    offered nowhere: not among GET /api/setup's translator choices (the list
+    the Settings screen and the Dub Agent offer) and no *_available field
+    of GET /api/engines names vertex."""
+    status, setup = api("GET", "/api/setup")
+    status_e, engines = api("GET", "/api/engines")
+    if status != 200 or status_e != 200:
+        raise Fail(f"/api/setup HTTP {status}, /api/engines HTTP {status_e}")
+    offered = setup["choices"]["translator"]
+    shown = [name for name in HIDDEN_TRANSLATORS if name in offered] + [k for k in engines if "vertex" in k]
+    if shown:
+        raise Fail(f"offered: {shown}; translator choices {offered}")
+    return (f"translator choices {offered}: neither {' nor '.join(HIDDEN_TRANSLATORS)}; /api/engines has no "
+            f"vertex field (qwen_available {engines.get('qwen_available')} is read, never offered)")
+
+
+def dub_log(ctx, jid):
+    """Step 2's dub's own log: <logs>/job-<id>.log with --logs (beside
+    backend.log, which keeps only each stage's START and DONE), else the
+    job record's log, which holds the same lines."""
+    if ctx["args"].logs:
+        with open(os.path.join(ctx["args"].logs, f"job-{jid}.log"), encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines(), f"job-{jid}.log"
+    _, job = api("GET", f"/api/dub/jobs/{jid}")
+    return job.get("logs") or [], "the job record's log"
+
+
+def step_leakage(ctx):
+    """Step 2's dub checked its voices for the original voice leaking
+    through (app/pipeline.py leakage_gate): at least one "leakage gate:"
+    line in its log, none saying the check was skipped. The verdict is
+    recorded."""
+    jid = ctx.get("dub_done")
+    if not jid:
+        raise Skip("needs step 2's finished dub")
+    lines, where = dub_log(ctx, jid)
+    gate = [line.strip() for line in lines if "leakage gate:" in line]
+    skipped = [line.strip() for line in lines if "leakage gate skipped" in line or "leakage… skipped" in line]
+    if not gate or skipped:
+        raise Fail(f"{where}: {len(gate)} leakage gate lines, {len(skipped)} skipped: {skipped[:1]}")
+    return f"{where}: {len(gate)} leakage gate lines; verdict: {gate[-1].split('leakage gate:', 1)[1].strip()}"
+
+
+def step_nonverbal(ctx):
+    """Step 2's dub looked for laughs and breaths to keep (app/nonverbal.py):
+    at least one "nonverbal whitelist:" line in its log, and no "whisper
+    veto unavailable" error. Its counts are recorded."""
+    jid = ctx.get("dub_done")
+    if not jid:
+        raise Skip("needs step 2's finished dub")
+    lines, where = dub_log(ctx, jid)
+    found = [line.strip() for line in lines if "nonverbal whitelist:" in line]
+    broken = [line.strip() for line in lines if "whisper veto unavailable" in line]
+    if not found or broken:
+        raise Fail(f"{where}: {len(found)} nonverbal whitelist lines, {len(broken)} veto errors")
+    return f"{where}: {len(found)} nonverbal line(s): {found[-1].split('nonverbal whitelist:', 1)[1].strip()}"
+
+
+def step_one_speaker(ctx):
+    """A dub started with num_speakers 1 (the dialog's Speakers field): its
+    record keeps 1 and its finished script names exactly one speaker."""
+    jid = start_dub(ctx, "local", "e2e-dub-1speaker", num_speakers="1")
+    job, queued = wait_for(jid, "one-speaker dub")
+    _, script = api("GET", f"/api/dub/jobs/{jid}/script")
+    lines = script.get("lines") or []
+    speakers = sorted({line.get("speaker") for line in lines})
+    if job.get("num_speakers") != 1 or len(speakers) != 1:
+        raise Fail(f"num_speakers {job.get('num_speakers')}, the script's {len(lines)} lines name {speakers}")
+    return (f"{ran(job, queued)}; num_speakers 1, {len(lines)} lines all {speakers[0]}; "
+            f"{finished_video(ctx, jid, 'dub-1speaker.mp4')}")
+
+
+STEPS =(("1. Engines and settings answer", step_answers),
          ("2. Local dub, English to Korean", step_local_dub),
          ("3. Separate audio", step_separate),
          ("4. Erase subtitles", step_erase),
          ("5. Export the dub", step_export),
          ("6. Perso dub", step_perso),
-         ("7. Settings round trip", step_settings))
+         ("7. Settings round trip", step_settings),
+         ("8. The dub's step timings", step_timings),
+         ("9. Subtitles on their own", step_captions),
+         ("10. The edition", step_edition),
+         ("11. A dub with its subtitle file", step_srt_dub),
+         ("12. Remake the voices (redub)", step_redub),
+         ("13. The six routes no screen calls", step_unused_routes),
+         ("14. Hidden translators", step_hidden_translators),
+         ("15. The leakage check ran", step_leakage),
+         ("16. The nonverbal check ran", step_nonverbal),
+         ("17. A dub with one speaker", step_one_speaker))
 
 
 def run_step(name, fn, ctx):
@@ -503,6 +873,11 @@ def main():
     parser.add_argument("--perso", action="store_true", help="also dub through Perso (spends credits)")
     parser.add_argument("--translator", help="the dub's translator, any name in app/engines_status.py "
                                              "TRANSLATORS (e.g. hunyuan); default: the saved one")
+    parser.add_argument("--srt", help="a subtitle file for step 11's dub, cues in Korean; "
+                                      "default: three cues the run writes")
+    parser.add_argument("--kit", help="the app's kit folder, whose kit.env step 10 reads")
+    parser.add_argument("--logs", help="the app's logs folder, whose job-<id>.log steps 15 and 16 read; "
+                                       "default: the job record's log")
     args = parser.parse_args()
     global BASE, FFPROBE
     BASE, FFPROBE = args.base.rstrip("/"), find_ffprobe()

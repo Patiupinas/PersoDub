@@ -21,7 +21,7 @@ from app.config import QWEN_N_TAKES
 from app.diar_campplus_client import diarize
 from app.engines.base import VoiceEngineDown
 from app.engines.qwen_tts import QwenTTSEngine
-from app.i18n import both
+from app.i18n import both, t
 from app.jobs import JobCancelled, raise_if_cancelled, shown_error, timed_step
 from app.perso_client import (
     PersoClient,
@@ -38,7 +38,7 @@ from app.perso_client import (
     short_reason,
 )
 from app.qwen_pipeline import cleanup_takes, run_qwen_dub
-from app.run_errors import PartsMissing, advice_both
+from app.run_errors import PartsMissing, advice_both, ran_out_of_memory
 from app.scripts.check_leakage import _validate_manifest_spans, measure_leakage
 from app.scripts.suppress_vocal_echo import suppress_vocal_echo
 from app.separate import SeparationEngine
@@ -68,6 +68,7 @@ from app.translate import (
     GeminiUnavailableError,
     TranslationEngine,
     get_translator,
+    reset_time_shown,
     script_ok,
 )
 
@@ -151,12 +152,19 @@ _PARTS_MISSING = {
                             "Open Settings > Models and download Whisper again."),
     "Demucs": lambda: both("The Demucs files for audio separation are missing or damaged. "
                            "Open Settings > Models and download Demucs again."),
+    "RoFormer": lambda: both("The Mel-Band RoFormer files for audio separation are missing or damaged. "
+                             "Open Settings > Models and download Mel-Band RoFormer again."),
 }
 
 
 def _advice(e, part):
     if isinstance(e, PartsMissing):
         return _PARTS_MISSING[part]()
+    # A dub that stopped has Resume, which picks up where it stopped (the
+    # eraser says its own, app/eraser.py).
+    if ran_out_of_memory(str(e)):
+        return both("Dubbing stopped because this computer ran out of memory. "
+                    "Close other programs and press Resume to go on from where it stopped.")
     return advice_both(str(e), _check_file())
 
 
@@ -171,7 +179,7 @@ _NOTICE_ERRORS = {
     # popup says the limit and links to the plans; nothing to retry.
     PersoDurationLimitError: (
         "perso_duration_limit",
-        lambda: both("This video is longer than your Perso plan allows. Upgrade your plan, or set Dubbing to This computer."),
+        lambda: both("This video is longer than your Perso plan allows. Upgrade your plan, or set Choose a model to Local model."),
         "link",
         None,
     ),
@@ -306,8 +314,13 @@ def raise_notice(e, log, on_notice) -> NoReturn:
     # in the order the popup says it: when, then the two ways on.
     resets = getattr(e, "resets", None)
     if isinstance(e, ChatGptLimitError) and resets:
-        msg, shown = both("ChatGPT usage limit reached. Resets {resets}. Resume then, or continue with "
-                          "another translator.", resets=resets)
+        # The English keeps the time as Codex wrote it (the page reads it back
+        # out, ui/src/translatorChoice.mjs); the screen's says it the way the
+        # user's language writes a time ("10월 24일 오후 1:07").
+        msg = both("ChatGPT usage limit reached. Resets {resets}. Resume then, or continue with "
+                   "another translator.", resets=resets)[0]
+        shown = t("ChatGPT usage limit reached. Resets {resets}. Resume then, or continue with "
+                  "another translator.", resets=reset_time_shown(resets))
     notice = {"type": notice_type, "message": msg, "message_shown": shown}
     # The plan's limit, for the popup that names it ("up to 1 min").
     if getattr(e, "limit_seconds", None):
@@ -592,7 +605,7 @@ def _carry_speaker_labels(target_cues: List[dict], labelled_cues: List[dict]) ->
             cue["speaker_id"] = spk
 
 
-def _separate_with_perso(video_path, work_dir, perso_client, cancel_check, on_notice, log):
+def _separate_with_perso(video_path, work_dir, perso_client, cancel_check, on_notice, log, title=None):
     """Perso cloud voice/background separation for run_dub's 1b stage.
 
     Same contract as the local SeparationEngine ({"vocals", "background"}), and
@@ -616,7 +629,9 @@ def _separate_with_perso(video_path, work_dir, perso_client, cancel_check, on_no
         if ws:
             name = ws.get("name") or f"workspace {ws.get('seq')}"
             log(f"   Perso workspace: {name} (#{ws.get('seq')})")
-        sep_paths = pc.separate(video_path, work_dir)
+        # Named on Perso's workspace as the project is here. Only said when
+        # there is a name: the fake clients in tests predate it.
+        sep_paths = pc.separate(video_path, work_dir, **({"title": title} if title else {}))
         # What THIS job consumed, not just the balance -- a surprise in the
         # credits payload must never discard the paid result (STT stage rule).
         note_credits(ws, pc, log, "Perso separation")
@@ -632,10 +647,12 @@ def _separate_with_perso(video_path, work_dir, perso_client, cancel_check, on_no
 
 
 def _stage_separate(video_path, work_dir, sep_engine, perso_client,
-                    cancel_check, on_notice, log, video_duration=None):
+                    cancel_check, on_notice, log, video_duration=None, title=None):
     """Stage 1/6 -- voice/background separation.
 
-    Local Demucs (default) or Perso cloud. Either way a failure fails the whole
+    Local Demucs (default), Mel-Band RoFormer ("roformer") or Perso cloud.
+    No choice at all (the Separate audio tool) is the RoFormer when its
+    weights are here, else Demucs. Either way a failure fails the whole
     job: no silent engine substitution (2026-08-06 rule), and no container
     fallback. Returns (vocals_path, background_path, perso_client, model); the
     client comes back because the Perso path may have created one, and the STT
@@ -646,15 +663,19 @@ def _stage_separate(video_path, work_dir, sep_engine, perso_client,
 
     video_duration, when known, scales the local Demucs subprocess timeout for
     long videos (see app.timeouts.scaled_timeout) -- unused on the Perso path.
+    title, the project's name, is what Perso's workspace calls the upload --
+    unused on the local path.
     """
     began = time.monotonic()
     if (sep_engine or "").lower() == "perso":
         model = "Perso"
         _log_stage(log, "separate", "Separating background audio via Perso cloud…")
         sep_paths, perso_client = _separate_with_perso(
-            video_path, work_dir, perso_client, cancel_check, on_notice, log)
+            video_path, work_dir, perso_client, cancel_check, on_notice, log, title=title)
     else:
-        engine = SeparationEngine(video_duration=video_duration)
+        chosen = (sep_engine or "").lower()
+        engine = SeparationEngine(video_duration=video_duration,
+                                  roformer=(chosen == "roformer") if chosen else None)
         # getattr: test fakes may not carry them.
         model = getattr(engine, "name", "Demucs")
         _log_stage(log, "separate",
@@ -666,7 +687,7 @@ def _stage_separate(video_path, work_dir, sep_engine, perso_client,
             # ask -- but which thing to look at depends on what stopped it. A
             # timeout and a full disk are not a broken file, and saying so
             # sent people to check the one thing that was fine (2026-09-15).
-            advice = _advice(e, "Demucs")
+            advice = _advice(e, "RoFormer" if model == "RoFormer" else "Demucs")
             failed = both("Voice separation failed on this computer.")
             raise shown_error(f"{failed[0]} {advice[0]} ({str(e)[:400]})",
                              f"{failed[1]} {advice[1]} ({str(e)[:400]})")
@@ -685,7 +706,8 @@ def _separation_note(vocals_path, background_path, model=None):
     return note
 
 
-def _stage_transcribe_perso(video_path, perso_client, cancel_check, on_notice, log, video_duration=None):
+def _stage_transcribe_perso(video_path, perso_client, cancel_check, on_notice, log, video_duration=None,
+                            title=None):
     """Stage 2/6 -- Perso cloud STT (diarization & timestamps). Returns
     (cues, client) -- the client so the job can report what the stage spent.
 
@@ -714,7 +736,8 @@ def _stage_transcribe_perso(video_path, perso_client, cancel_check, on_notice, l
         if ws:
             name = ws.get("name") or f"workspace {ws.get('seq')}"
             log(f"   Perso workspace: {name} (#{ws.get('seq')})")
-        segments = pc.transcribe(video_path)
+        # Named as the separation's is (_separate_with_perso).
+        segments = pc.transcribe(video_path, **({"title": title} if title else {}))
         # What THIS job consumed (balance before minus after), not just the
         # remaining balance (user feedback 2026-08-06). Counted as soon as
         # Perso answers, before the answer is read, as separation and the
@@ -770,7 +793,7 @@ def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, 
     except NoSpeech as e:
         # A music-only or silent video: said so, instead of "Speech
         # recognition failed. Check the video file." about a file that is fine.
-        msg, shown = both("No speech was found in this video. Check that someone is speaking in it.")
+        msg, shown = both("This video has no speech.")
         log(f"   Error: {msg}")
         raise shown_error(msg, shown) from e
     except Exception as e:
@@ -785,7 +808,7 @@ def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, 
     return src_cues, detected["code"], diar_engine or "campplus"
 
 
-def _stage_diarize(diar_engine, vocals_path, src_cues, num_speakers, log, video_duration=None):
+def _stage_diarize(diar_engine, vocals_path, src_cues, num_speakers, log, video_duration=None, on_notice=None):
     """Stage 2/6 -- local CAM++ diarization (opt-in). Relabels src_cues in place.
 
     pyannote-era labels could collapse everyone to a single speaker; CAM++
@@ -796,6 +819,9 @@ def _stage_diarize(diar_engine, vocals_path, src_cues, num_speakers, log, video_
 
     video_duration, when known, scales the subprocess timeout for long videos
     (see app.timeouts.scaled_timeout).
+
+    A failure is told on the screen too (on_notice): every line then keeps
+    one voice, and the finished dub alone did not say why.
     """
     if diar_engine != "campplus" or not src_cues:
         return
@@ -813,6 +839,10 @@ def _stage_diarize(diar_engine, vocals_path, src_cues, num_speakers, log, video_
         log(f"   CAM++ labeled {len(src_cues)} lines across {n_spk} speakers")
     except Exception as e:
         log(f"   Warning: CAM++ diarization failed ({str(e)[:80]}) — keeping existing labels")
+        if on_notice:
+            msg, shown = both("Could not tell the speakers apart, so every line was made in one voice. "
+                              "Dub it again to try telling them apart once more.")
+            on_notice({"type": "diarization_failed", "message": msg, "message_shown": shown})
 
 
 def _pick_source_cues(source_srt_path, perso_cues, src_cues):
@@ -1050,7 +1080,7 @@ def _duration_or_none(video_path):
 
 
 def _separate_or_reuse(video_path, work_dir, resume, sep_engine, perso_client, cancel_check, on_notice, log,
-                       video_duration=None):
+                       video_duration=None, title=None):
     """Stage 1/6, or the separation the earlier run saved (SEPARATED_NAME)
     when resuming. Returns (vocals_path, background_path, perso_client,
     model, reused)."""
@@ -1062,14 +1092,14 @@ def _separate_or_reuse(video_path, work_dir, resume, sep_engine, perso_client, c
         return vocals_path, background_path, perso_client, model, True
     vocals_path, background_path, perso_client, model = _stage_separate(
         video_path, work_dir, sep_engine, perso_client, cancel_check, on_notice, log,
-        video_duration=video_duration)
+        video_duration=video_duration, title=title)
     _save_json(work_dir, SEPARATED_NAME, _separation_note(vocals_path, background_path, model))
     return vocals_path, background_path, perso_client, model, False
 
 
 def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, source_language_code,
                          diar_engine, num_speakers, perso_client, cancel_check, on_notice, log,
-                         video_duration=None):
+                         video_duration=None, title=None):
     """Stage 2/6, or the transcript the earlier run saved (TRANSCRIPT_NAME)
     when `reuse`. Perso cloud STT if the user picked it, else local Whisper.
     Whisper auto-detects the source language, and that code comes back so
@@ -1087,7 +1117,8 @@ def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, s
     perso_cues = None
     if stt_engine == "perso":
         perso_cues, perso_client = _stage_transcribe_perso(
-            video_path, perso_client, cancel_check, on_notice, log, video_duration=video_duration)
+            video_path, perso_client, cancel_check, on_notice, log, video_duration=video_duration,
+            title=title)
     if perso_cues is None:
         src_cues, detected_code, diar_engine = _stage_transcribe_local(
             video_path, source_language_code, diar_engine, log, video_duration=video_duration,
@@ -1100,7 +1131,8 @@ def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, s
     moved = snap_starts(src_cues, vocals_path)
     if moved:
         log("   %d line start(s) moved to where the speech begins" % moved)
-    _stage_diarize(diar_engine, vocals_path, src_cues, num_speakers, log, video_duration=video_duration)
+    _stage_diarize(diar_engine, vocals_path, src_cues, num_speakers, log, video_duration=video_duration,
+                   on_notice=on_notice)
     _save_json(work_dir, TRANSCRIPT_NAME,
                {"cues": src_cues, "perso": perso_cues is not None, "detected": detected_code})
     return src_cues, perso_cues, detected_code, perso_client, False
@@ -1177,6 +1209,9 @@ def run_dub(
     cancel_check: Optional[Callable[[], bool]] = None,
     on_notice: Optional[Callable[[dict], None]] = None,
     resume: bool = False,
+    # The project's name, which a stage sent to Perso is named by on the
+    # workspace (owner, 2026-10-22); without one Perso shows input.
+    title: Optional[str] = None,
 ) -> dict:
     """Dub a single video and save it to out_path.
 
@@ -1234,7 +1269,7 @@ def run_dub(
                       duration=None if video_duration is None else round(video_duration, 1)):
         vocals_path, background_path, perso_client, sep_model, sep_reused = _separate_or_reuse(
             video_path, work_dir, resume, sep_engine, perso_client, cancel_check, on_notice, log,
-            video_duration=video_duration)
+            video_duration=video_duration, title=title)
 
     checkpoint()
 
@@ -1250,7 +1285,7 @@ def run_dub(
         src_cues, perso_cues, detected_code, perso_client, tx_reused = _transcribe_or_reuse(
             video_path, work_dir, sep_reused, vocals_path, stt_engine, source_language_code,
             diar_engine, num_speakers, perso_client, cancel_check, on_notice, log,
-            video_duration=video_duration)
+            video_duration=video_duration, title=title)
         source_cues = _pick_source_cues(source_srt_path, perso_cues, src_cues)
 
     checkpoint()

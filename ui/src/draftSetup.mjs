@@ -15,10 +15,12 @@
 // With no video yet the tab shows the shared Import block instead; bringing
 // a video in is ui/src/draftImport.mjs, and this file only calls its
 // importSource for the shortcut above.
-import { buildDubFormData, saveDownloadParts } from "./dubApi.mjs";
+import { buildDubFormData, fetchCreditsLeft, saveDownloadParts } from "./dubApi.mjs";
 import { errorText, fmtLength, videoCardHtml } from "./format.mjs";
-import { getDraft, clearDraft, setRanges, keptSeconds, isWhole, onDraftChange } from "./draft.mjs";
+import { getDraft, clearDraft, setRanges, keptSeconds, spokenSeconds, isWhole, onDraftChange } from "./draft.mjs";
+import { modelInfo } from "./persoModels.mjs";
 import { t } from "./i18n.mjs";
+import { gb } from "./modelsUi.mjs";
 
 function stripExt(name) {
   return String(name || "").replace(/\.[^./\\]+$/, "");
@@ -46,16 +48,46 @@ function stripExt(name) {
  *        finished model download resumes (the models dialog's onStartDubbing)
  * @param {() => string} [deps.getScreen]  the screen that is up: the Erase tab
  *        edits the same draft and keeps its own top bar
- * @param {() => string} [deps.stemsFrom]  the id of a finished Separate audio
- *        job of the draft as it is cut now, or ""
+ * @param {(d: object) => void} [deps.removeDraft]  the Video card's Remove:
+ *        asks, as the Home card's Delete does, and deletes this draft
+ * @param {() => number} [deps.firstDownloadBytes]  what a dubbing on the
+ *        form's choices downloads first, in bytes; 0 for nothing
  * @returns {{ openDraft: (source?: {file?, link?, downloadId?, name?, duration?}) => Promise<void>,
- *             showDraftScreen: () => void, paint: () => void, canExport: () => boolean,
+ *             showDraftScreen: () => void, paint: () => void, paintFoot: () => void, canExport: () => boolean,
  *             saveDraft: (what?: {audio?: string, ratio?: string}) => Promise<string> }}
  */
 export function initDraftSetup({ $, state, showScreen, setTopbar, fitLayout, sizeVideoPane,
                                   leftTabsShow, importer, newProject, submitDubStart, setDubRestart,
                                   showDraftTimeline = () => {}, getScreen = () => "done",
-                                  stemsFrom = () => "" }) {
+                                  removeDraft = () => {}, firstDownloadBytes = () => 0 }) {
+  // What a Perso API dubbing of the kept part costs and what the workspace
+  // has left, beside Start (owner, 2026-10-22). Perso charges the model's
+  // credits a second for the whole seconds spoken: until a script has heard
+  // the video that is at most every second kept, and once one has (a draft
+  // opened by + Add language) about the seconds it heard in the kept parts,
+  // whole seconds as the clock beside it counts them. What is left is what
+  // Settings' workspace list says, asked at most once a minute: it moves
+  // only when credits are spent.
+  const LEFT_FRESH_MS = 60 * 1000;
+  let creditsLeft = null;
+  let leftAskedAt = -Infinity;
+  const number = (n) => n.toLocaleString("en-US", { maximumFractionDigits: 1 });
+  function persoCost(d) {
+    if (Date.now() - leftAskedAt >= LEFT_FRESH_MS) {
+      leftAskedAt = Date.now();
+      fetchCreditsLeft().then((n) => { creditsLeft = n; paintFoot(); });
+    }
+    const { rate } = modelInfo(newProject.persoModel());
+    const spoken = spokenSeconds(d);
+    const cost = rate == null || !(keptSeconds(d) > 0) ? null
+      : Math.round(Math.floor(spoken ?? keptSeconds(d)) * rate * 10) / 10;
+    const about = spoken != null;
+    const price = cost == null ? ""
+      : cost === 1 ? (about ? t("about {n} credit", { n: 1 }) : t("up to {n} credit", { n: 1 }))
+      : about ? t("about {n} credits", { n: number(cost) }) : t("up to {n} credits", { n: number(cost) });
+    return [price, creditsLeft == null ? "" : t("{n} left", { n: number(creditsLeft) })].filter(Boolean);
+  }
+
   // The Dubbing tab's three faces: the Import block with no video yet (the
   // importer shows it), this card once there is one, and the Script pane
   // (script engineer's own #dubbingPaneHead/#scriptBox) for a job.
@@ -64,8 +96,12 @@ export function initDraftSetup({ $, state, showScreen, setTopbar, fitLayout, siz
     importer.render();
     const d = getDraft();
     const active = !!d && !state.jobId;
-    const script = !!state.jobId;
+    // A video with the user's own subtitles has no script: one card instead,
+    // with the way to dub the same video.
+    const own = !!state.jobId && !!state.job && state.job.id === state.jobId && state.job.kind === "captions";
+    const script = !!state.jobId && !own;
     $("draftSetup").hidden = !active;
+    $("dubbingCaptions").hidden = !own;
     const head = $("dubbingPaneHead");
     if (head) head.hidden = !script;
     const box = $("scriptBox");
@@ -77,16 +113,29 @@ export function initDraftSetup({ $, state, showScreen, setTopbar, fitLayout, siz
     // way out (cut into parts). The old New project dialog said it; this card
     // took its place and said nothing (Windows B11, 2026-10-07).
     $("draftLongHint").hidden = !(keptSeconds(d) > LONG_VIDEO_SECONDS);
-    // Perso does the whole job, so the voice-quality choice is not in force.
-    const quality = $("dubModeSelect").value === "perso" ? "Perso API"
-      : $("qualitySelect").value === "high" ? t("High quality mode") : t("Fast mode");
-    $("draftFootLabel").textContent = t("Dubbing {length} · {mode}", { length: fmtLength(keptSeconds(d)), mode: quality });
+    paintFoot();
     $("draftStartBtn").disabled = !d.downloadId;
     $("draftStartBtn").title = d.downloadId ? "" : t("The video is still coming in");
   }
+  // The foot: the length, the mode and then, for a Perso API dubbing, its
+  // credits (persoCost above), or, while the local choices still need a
+  // download, its size the first time (owner, 2026-10-22, 1-3). Painted by
+  // itself as well whenever the model rows change (ui/src/app.mjs).
+  function paintFoot() {
+    const d = getDraft();
+    if (!d || state.jobId) return;
+    // Perso does the whole job, so the voice-quality choice is not in force.
+    const cloud = $("dubModeSelect").value === "perso";
+    const quality = cloud ? "Perso API"
+      : $("qualitySelect").value === "high" ? t("High quality mode") : t("Fast mode");
+    const first = firstDownloadBytes();
+    $("draftFootLabel").textContent = [t("Dubbing {length} · {mode}", { length: fmtLength(keptSeconds(d)), mode: quality }),
+      ...(cloud ? persoCost(d) : first ? [t("{size} GB the first time", { size: gb(first) })] : [])].join(" · ");
+  }
   // The foot names the mode, so it has to follow the two choices that set it:
   // it went on saying "Fast mode" after High quality was picked (2026-09-30).
-  for (const id of ["qualitySelect", "dubModeSelect"]) $(id).addEventListener("change", paintDubbingTab);
+  // And the Dubbing model, which prices a Perso dubbing.
+  for (const id of ["qualitySelect", "dubModeSelect", "persoModelPick"]) $(id).addEventListener("change", paintDubbingTab);
 
   onDraftChange(() => {
     paintDubbingTab();
@@ -120,9 +169,6 @@ export function initDraftSetup({ $, state, showScreen, setTopbar, fitLayout, siz
         translateEngine: $("translateSelect").value,
         ttsEngine: $("voiceSelect").value,
         project: stripExt(d.name) || undefined,
-        // The Audio tab's finished separation of this same cut, when there
-        // is one: the dubbing takes its two sounds (app/api/dub.py).
-        stemsFrom: stemsFrom() || undefined,
         // Add language: the project this dubbing joins (ui/src/languageRow.mjs).
         projectId: state.draftProject || undefined,
       };
@@ -145,6 +191,15 @@ export function initDraftSetup({ $, state, showScreen, setTopbar, fitLayout, siz
     }
   }
   $("draftStartBtn").addEventListener("click", () => startDraftDubbing());
+
+  // The Video card's two ways out (owner, 2026-10-22): Replace opens the
+  // Import block's own file picker (ui/src/draftImport.mjs takes the file),
+  // and Remove deletes the draft once asked, leaving the empty project.
+  $("draftReplaceBtn").addEventListener("click", () => $("draftFileInput").click());
+  $("draftRemoveBtn").addEventListener("click", () => {
+    const d = getDraft();
+    if (d) removeDraft(d);
+  });
 
   // What the top bar's Export hands back before a dub: the kept parts as one
   // video, in the canvas of `ratio` when the Ratio button is on one, or their
@@ -187,7 +242,7 @@ export function initDraftSetup({ $, state, showScreen, setTopbar, fitLayout, siz
     $("draftError").textContent = "";
     // Nor is its link: the Import blocks kept the last address in their
     // field, so an empty project opened from Home showed it (review, 2026-10-09).
-    for (const id of ["dubbingLinkInput", "audioLinkInput"]) {
+    for (const id of ["dubbingLinkInput", "capLinkInput", "saveLinkInput"]) {
       const f = $(id);
       if (f) f.value = "";
     }
@@ -202,5 +257,5 @@ export function initDraftSetup({ $, state, showScreen, setTopbar, fitLayout, siz
     }
   }
 
-  return { openDraft, showDraftScreen, paint: paintDubbingTab, canExport, saveDraft };
+  return { openDraft, showDraftScreen, paint: paintDubbingTab, paintFoot, canExport, saveDraft };
 }

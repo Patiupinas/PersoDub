@@ -126,7 +126,14 @@ def subtitles_extract(body: SubtitleExtractRequest):
             if not cues:
                 raise RuntimeError(t("Perso heard no speech in this video."))
     except (PersoCreditExhaustedError, PersoInvalidKeyError, PersoUnavailableError) as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        # The sentences a dub says for the same three, in the user's language;
+        # Perso's own English, with its HTTP code, is for the log.
+        logger.warning("Subtitles through Perso refused: %s", e)
+        said = (t("Perso credits are used up. Recharge to continue.") if isinstance(e, PersoCreditExhaustedError)
+                else t("Perso rejected the API key. Open Settings and check the key.")
+                if isinstance(e, PersoInvalidKeyError)
+                else t("Perso's server is temporarily unavailable. Try again in a few minutes."))
+        raise HTTPException(status_code=409, detail=said)
     except Exception as e:
         raise HTTPException(status_code=503,
                             detail=t("Could not transcribe this video ({reason}).", reason=str(e)[:120]))
@@ -274,6 +281,12 @@ def subtitles_burn(body: SubtitleBurnRequest):
 
 def _target_code(job: dict) -> str:
     return job.get("language_code") or "out"
+
+
+def _file_stem(job: dict) -> str:
+    """The downloads' name before the look: "dub_<code>" for a dubbing, plain
+    "video" for a video with the user's own subtitles (kind "captions")."""
+    return "video" if kind_of(job) == JobKind.CAPTIONS else "dub_" + _target_code(job)
 
 
 @router.get("/api/dub/result/{jid}")
@@ -436,7 +449,7 @@ def dub_result_srt(jid: str, download: int = 0):
             headers = None
             if download:
                 headers = {"Content-Disposition":
-                           f'attachment; filename="dub_{_target_code(j)}.srt"'}
+                           f'attachment; filename="{_file_stem(j)}.srt"'}
             return Response(content=text,
                             media_type="text/plain; charset=utf-8",
                             headers=headers)
@@ -516,13 +529,14 @@ def dub_result_subtitled(jid: str, preset: Optional[str] = None, download: int =
                                 detail=media._failure(t("ffmpeg could not subtitle this video"), run.stderr,
                                                       (out, ass, built)))
         shutil.copyfile(ass, built + ".ass")
-    filename = "dub_%s-sub-%s.mp4" % (_target_code(j), preset)
+    filename = "%s-sub-%s.mp4" % (_file_stem(j), preset)
     headers = ({"Content-Disposition": 'attachment; filename="%s"' % filename}
                if download else None)
     return FileResponse(built, media_type="video/mp4", headers=headers)
 
 
-_SUBTITLE_STYLE_DEFAULTS = {"enabled": True, "preset": "clean",
+# Off until the user turns them on (owner, 2026-10-23): a dub plays clean.
+_SUBTITLE_STYLE_DEFAULTS = {"enabled": False, "preset": "clean",
                             "pos": None, "size": None, "cues": {},
                             "boxWidth": None, "widths": {}, "layout": {}}
 

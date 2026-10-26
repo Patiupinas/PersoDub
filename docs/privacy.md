@@ -7,7 +7,7 @@ and speech synthesis run locally, and speech-to-text runs on local Whisper and
 CAM++, key or no key. One step can still leave by default: translation sends the
 transcript text through your own ChatGPT account on a new install (a computer that
 already has the Hunyuan model translates locally). With **Whisper** and a local translator (Hunyuan or
-Gemma), nothing from the video leaves at all. Set **Advanced options > Dubbing** to
+Gemma), nothing from the video leaves at all. Set **Choose a model** to
 **Perso API** and the video is uploaded to Perso, which makes the whole
 dub; that needs a Perso API key.
 
@@ -19,18 +19,19 @@ What each dubbing service receives, precisely:
 
 | If you add | What is sent | Where |
 |---|---|---|
-| **Perso API key** | **The video file itself** (the part you kept) is uploaded. With Perso API dubbing, Perso transcribes, translates and voices it and sends back the finished video. Dubbing on this computer, the default, can set **Speech-to-text** and **Audio separation** to Perso; each of those uploads the video too. | Perso |
+| **Perso API key** | **The video file itself** (the part you kept) is uploaded. With Perso API dubbing, Perso transcribes, translates and voices it and sends back the finished video; the project's name goes with it, as its title on your Perso workspace. Dubbing on this computer, the default, can set **Speech-to-text** and **Voice separation** to Perso; each of those uploads the video too, with the project's name, as does **Separate audio** on Perso. | Perso |
 | **Google Gemini key** | **The transcript text only** — not the video, not the audio. | Google |
 | **ChatGPT sign-in** (the default translator) | **The transcript text**, with the translation instructions, sent through your own ChatGPT account, under that account's own data settings. The program that carries it (OpenAI's Codex) runs in a folder of PersoDub's own with every tool switched off, so it reads nothing else on your computer and none of your own Codex settings go along; OpenAI's program may send its own usage statistics. The sign-in is OpenAI's own flow and stays on your computer; PersoDub never sees the password or token. | OpenAI |
 
-Clearing the key in **Settings** stops that engine. Picking a local translator (Hunyuan or Gemma) in **Advanced options** keeps translation on your computer too.
+Clearing the key in **Settings** stops that engine. Picking a local translator (Hunyuan or Gemma) under **Dubbing step settings** keeps translation on your computer too.
 
 When a Perso key is configured, requests to Perso carry a header identifying the
 application name, version, and operating system family so the vendor can attribute API
 usage.
 
 The desktop app checks GitHub Releases once at launch to learn whether a newer
-version exists, and downloads it in the background when there is one. The request
+version exists, and downloads it in the background when there is one, with that
+version's list of changes from the repository for the update window. The request
 carries no personal data — it is the same anonymous read anyone makes opening the
 releases page. Set `PERSODUB_DISABLE_UPDATE_CHECK=1` in the kit's `kit.env` to turn
 the check off entirely.
@@ -74,12 +75,22 @@ workspace or balance; no IP address is stored.
 A launch counts once a day; every dub counts. Turn it off in **Settings → Privacy** or
 with `PERSODUB_NO_ANALYTICS=1` in the kit's `kit.env`; it applies to the next event, no
 restart. `PERSODUB_ANALYTICS_DEBUG=1` prints what would be sent instead of sending it.
+The random install ID is made the first time the app starts, whether the counts are on
+or off, and kept on this computer. With the counts off it is not sent here; its first 12
+characters still go with the job logs below while they are on.
 
-## Failure reports
+## Job logs
 
-When an install, a dub or a subtitle erase fails, the app sends one report so the failure can be fixed.
-It becomes a public issue in this repository — a hundred machines that broke the same
-way land on one issue rather than a hundred.
+With this switch on, the full logs of every job, finished or failed, are kept for 30 days
+on a private dashboard and never put in a public issue. When a dub, a subtitle erase or
+an audio separation finishes, its logs go there with a short record: which kind of job it
+was, the machine and the app version as a report below carries them, and how many whole
+seconds it took, in all and for each of separation, transcription, translation and
+voices. A job that finished never becomes an issue.
+
+When an install, a dub or a subtitle erase fails, the app also sends one report so the
+failure can be fixed. It becomes a public issue in this repository, so that a hundred
+machines that broke the same way land on one issue rather than a hundred.
 
 A report carries the machine (operating system and version, CPU, memory, free disk,
 which torch build, which packs are installed), where it stopped, one error code off a
@@ -98,6 +109,11 @@ the install folder can be written. An engine that would not start: which Visual 
 files are missing, and the NVIDIA driver line. An out-of-memory error: the memory free.
 Product names, yes-or-no answers, error codes and numbers only.
 
+From 0.8.8 every report and every finished job's record also carries the first 12
+characters of the usage counts' random install ID, so the logs of one computer can be read
+together (0.8.7 sent them only while the counts were on). It is a random number, never
+anything personal, and it goes to the private dashboard only, never into a public issue.
+
 Before anything leaves your machine, every line of it is put through three rules: a
 path under your home folder is cut down to `~/…/*.mp4` — the name of the folder and the
 name of the file both go, and so does yours; anything shaped like an API key becomes
@@ -114,8 +130,8 @@ not its words, and a Perso job by the credits it used, never your balance (from 
 earlier versions could quote a translation in an error sentence). The relay that posts the
 issue does not store your IP address, and applies the same rules a second time.
 
-Turn it off in **Settings → Privacy** or with `PERSODUB_NO_REPORTS=1` in the kit's
-`kit.env`; it applies to the next failure, no restart. This is a separate switch from
+Turn it off in **Settings → Privacy** (**Send job logs**) or with `PERSODUB_NO_REPORTS=1`
+in the kit's `kit.env`; it applies to the next job, no restart. This is a separate switch from
 the usage counts above — turning one off leaves the other alone.
 `PERSODUB_REPORTS_DEBUG=1` prints what would be sent instead of sending it, and a
 PersoDub run from source never reports at all.
@@ -130,7 +146,7 @@ Link fetching is powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 installed from PyPI on your machine at install time; PersoDub does not bundle or
 redistribute its code. Reading and fetching a link contacts the site it points to, and
 when a fetch fails for a reason other than the network, the app updates yt-dlp from PyPI
-and tries once more. The fetched video is saved locally and is dubbed where **Dubbing**
+and tries once more. The fetched video is saved locally and is dubbed where **Choose a model**
 says (this computer by default), like any
 dropped file. Only dub videos you hold the rights to — downloading content may be
 restricted by the source platform's terms of service, and that responsibility is yours.

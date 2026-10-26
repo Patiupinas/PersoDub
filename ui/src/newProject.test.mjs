@@ -8,8 +8,10 @@
 // Run with: node --test ui/src/newProject.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { initNewProjectUi, lengthLine } from "./newProject.mjs";
 import { LANGUAGES } from "./dubApi.mjs";
+import { loadTable, setLanguage } from "./i18n.mjs";
 
 function makeEl(id) {
   const classes = new Set();
@@ -49,6 +51,8 @@ function makeEl(id) {
       this.listeners[ev] = (this.listeners[ev] || []).filter((f) => f !== fn);
     },
     fire: async function (ev, arg) { for (const fn of [...(this.listeners[ev] || [])]) await fn(arg); },
+    // What the page's own code fires (the Processing halves fire the select's change).
+    dispatchEvent: function (ev) { for (const fn of [...(this.listeners[ev.type] || [])]) fn(ev); return true; },
   };
 }
 
@@ -60,7 +64,7 @@ function memoryStorage() {
 }
 
 /** A page, a fetch log and the callbacks the dialog reaches out through. */
-function harness({ responses = {}, storage = memoryStorage() } = {}) {
+function harness({ responses = {}, storage = memoryStorage(), pickedFolder } = {}) {
   const els = new Map();
   const $ = (id) => {
     if (!els.has(id)) els.set(id, makeEl(id));
@@ -119,6 +123,7 @@ function harness({ responses = {}, storage = memoryStorage() } = {}) {
     onPickFile: () => { log.picked += 1; },
     onErase: (source) => { log.erased.push(source); },
     storage,
+    pickedFolder,
   });
   return { $, api, state, log };
 }
@@ -128,9 +133,9 @@ const bad = (status, detail) => ({ ok: false, status, json: async () => ({ detai
 // A link's dialog with the holding area answering: POST /api/downloads hands
 // back id "d1", and every tick of the clock reads the next record in `steps`
 // (the last one repeats).
-function linkHarness(steps, extra = {}) {
+function linkHarness(steps, extra = {}, more = {}) {
   let at = 0;
-  return harness({ responses: {
+  return harness({ ...more, responses: {
     "/api/downloads": () => ok({ id: "d1" }),
     "/api/downloads/d1": () => ok({ id: "d1", url: "https://x/y",
                                     ...steps[Math.min(at++, steps.length - 1)] }),
@@ -484,8 +489,8 @@ test("a copy that will not upload leaves the file itself to be dubbed", async (t
 // -- Save clip and Erase subtitles ------------------------------------------
 
 /** A dialog whose link has landed, with the trim bar drawn for a 30s video. */
-async function readyDialog(extra = {}) {
-  const h = linkHarness([{ status: "ready", percent: 100 }], extra);
+async function readyDialog(extra = {}, more = {}) {
+  const h = linkHarness([{ status: "ready", percent: 100 }], extra, more);
   h.api.openNewProject({ probe: PROBE });
   await new Promise((r) => setTimeout(r, 0));
   await h.log.tick();
@@ -522,6 +527,19 @@ test("Save clip with the handles at the ends asks for the whole video", async (t
   const save = h.log.requests.find((r) => r.url === "/api/downloads/d1/save");
   assert.deepEqual(JSON.parse(save.body), {});
   assert.equal(h.$("projectSaved").textContent, "Saved to Downloads");
+});
+
+// The folder the Download dialog's Change picked (owner, 2026-10-22): the app
+// saves the clip there, and the line names it as it names Downloads.
+test("Save clip names the folder picked for downloads by its own name", async (t) => {
+  const h = await readyDialog({
+    "/api/downloads/d1/save": () => ok({ path: "/Volumes/Work SSD/2026-10-22/A talk/A talk.mp4", seconds: 30 }),
+  }, { pickedFolder: async () => "/Volumes/Work SSD" });
+  t.after(h.log.restore);
+
+  await h.$("saveClipBtn").fire("click");
+
+  assert.equal(h.$("projectSaved").textContent, "Saved to Work SSD / 2026-10-22 / A talk");
 });
 
 test("a clip that cannot be saved says so on the red line, and claims nothing", async (t) => {
@@ -660,8 +678,9 @@ test("readOptions hands back the whole form, field for field", async (t) => {
     sttEngine: "local",
     sepEngine: "perso",
     dubMode: "local",
-    // What the Dubbing model row would select; only a Perso dubbing sends it.
-    persoModel: "ORIOLE",
+    // What the Dubbing model row would select, nobody having chosen one; only
+    // a Perso dubbing sends it.
+    persoModel: "LINNET_4",
     qualityMode: "high",
     numSpeakers: 2,
     translateEngine: "gemini",
@@ -761,18 +780,14 @@ test("Replace closes the dialog and reopens the file picker", (t) => {
 
 // -- the rest of the dialog's own chrome -----------------------------------
 
-test("Advanced options folds open and shut", (t) => {
+// No fold any more (owner, 2026-10-22, remark 2): the heading over the six
+// stage rows answers no press, and opening the dialog leaves the rows in sight.
+test("the stage rows have no fold: their heading is no button, and the dialog never hides them", (t) => {
   const h = harness();
   t.after(h.log.restore);
-  h.$("advancedBody").hidden = true;
-
-  h.$("advancedBtn").fire("click");
+  h.api.openNewProject({ probe: PROBE });
+  assert.deepEqual(h.$("stageHead").listeners, {}, "nothing listens on the heading");
   assert.equal(h.$("advancedBody").hidden, false);
-  assert.equal(h.$("advancedBtn").attrs["aria-expanded"], "true");
-
-  h.$("advancedBtn").fire("click");
-  assert.equal(h.$("advancedBody").hidden, true);
-  assert.equal(h.$("advancedBtn").attrs["aria-expanded"], "false");
 });
 
 test("Start hands the job back to the page", (t) => {
@@ -787,6 +802,7 @@ test("Start hands the job back to the page", (t) => {
 
 // -- the Dubbing model row ---------------------------------------------------
 
+// No Linnet 4 in these: a dubbing nobody chose a model for is Oriole's here.
 const PERSO_LANGS = [
   { id: "en", code: "en", name: "English (US)", tag: null, models: ["NIGHTINGALE", "ORIOLE", "WREN"] },
   { id: "en-GB", code: "en", name: "English (UK)", tag: "en-GB", models: ["NIGHTINGALE", "ORIOLE"] },
@@ -848,13 +864,23 @@ test("pressing a segment chooses that model, and it is what the dubbing starts w
   assert.equal(h.api.persoModel(), "WREN");
 });
 
+test("choosing a model says so on the pick, as a dropdown's change does: the card's foot prices by it", async (t) => {
+  const h = await persoDialog();
+  t.after(h.log.restore);
+  let said = 0;
+  pick(h).addEventListener("change", () => { said += 1; });
+  await chooseModel(h, "Wren");
+  assert.equal(said, 1);
+  assert.equal(h.api.persoModel(), "WREN");
+});
+
 test("the target languages are the ones the chosen model has", async (t) => {
   const h = await persoDialog();
   t.after(h.log.restore);
   assert.deepEqual(targets(h), ["en", "en-GB"]);                    // Oriole
   await chooseModel(h, "Nightingale");            // Nightingale
   assert.deepEqual(targets(h), ["en", "en-GB", "en-AU"]);
-  assert.equal(h.$("persoModelHint").textContent, "6 credits per second · 3 languages · Perso Pro plan and up");
+  assert.equal(h.$("persoModelHint").textContent, "4 credits per second · 3\u00a0supported\u00a0languages · Perso Pro plan and up");
   assert.deepEqual(await models(h), ["Oriole", "Wren", "[Nightingale]"]);
   await chooseModel(h, "Wren");            // Wren
   assert.deepEqual(targets(h), ["en"]);
@@ -880,6 +906,29 @@ test("a model that lacks the chosen language cannot be chosen, so the language n
   assert.equal(h.api.readOptions().persoModel, "ORIOLE");
 });
 
+// A press on a greyed model left the focus on the page, out of the list's
+// reach, and Escape no longer closed it (Mac check, 2026-10-22, remark 6):
+// the list takes the focus itself now (ui/src/pickList.mjs).
+test("after a press on a greyed model the list stays open, and Escape closes it", async (t) => {
+  const h = await persoDialog();
+  t.after(h.log.restore);
+  await chooseModel(h, "Nightingale");
+  h.$("targetLangSelect").value = "en-GB";
+  await h.$("targetLangSelect").fire("change");
+  const wren = (await openModels(h)).find((o) => nameOf(o) === "Wren");
+  assert.equal(wren.disabled, true);
+  await wren.fire("click");
+  const list = pick(h).children[1];
+  assert.ok(list, "still open");
+  assert.equal(list.tabIndex, -1, "the list takes the focus the greyed row cannot");
+  let stopped = false;
+  await list.fire("keydown", { key: "Escape", stopPropagation: () => { stopped = true; } });
+  assert.equal(pick(h).children.length, 1, "Escape closed it");
+  assert.equal(pick(h).children[0].attrs["aria-expanded"], "false");
+  assert.ok(stopped, "and the dialog under it stays open");
+  assert.equal(h.api.readOptions().persoModel, "NIGHTINGALE");
+});
+
 test("a remembered model Perso no longer names gives way to Oriole", async (t) => {
   const storage = memoryStorage();
   storage.setItem("persodub.lastChoices", JSON.stringify({ persoModel: { value: "DODO", over: null } }));
@@ -901,9 +950,9 @@ test("every model Perso names is offered, a new one under a name made from its i
   const rows = await openModels(h);
   assert.deepEqual(rows.map(nameOf), ["Oriole", "Finch", "Nightingale", "New One"]);
   const caption = (o) => o.children[0].children[1].textContent;
-  assert.equal(caption(rows[0]), "Default · 1 credits per second · 1 languages");
-  assert.equal(caption(rows[1]), "Lowest-cost basic dubbing · 0.2 credits per second · 1 languages");
-  assert.equal(caption(rows[3]), "1 languages");                    // nothing known of it but its languages
+  assert.equal(caption(rows[0]), "Natural local pronunciation, steady voice. Lectures and corporate video · 1 credit per second · 1\u00a0supported\u00a0languages");
+  assert.equal(caption(rows[1]), "Keeps your own voice, lowest cost. Interviews and whole channels · 0.2 credits per second · 1\u00a0supported\u00a0languages");
+  assert.equal(caption(rows[3]), "1\u00a0supported\u00a0languages");    // nothing known of it but its languages
   assert.equal(rows[1].children[1].textContent, "Pro and up");       // the Pro badge
   assert.equal(rows[0].children.length, 1);                          // none on Oriole
   assert.equal(rows[0].attrs.role, "option");
@@ -911,7 +960,7 @@ test("every model Perso names is offered, a new one under a name made from its i
   await rows[1].fire("click");
   assert.equal(h.api.readOptions().persoModel, "FINCH");
   assert.equal(pick(h).children.length, 1, "choosing closes the list");
-  assert.equal(h.$("persoModelHint").textContent, "0.2 credits per second · 1 languages · Perso Pro plan and up");
+  assert.equal(h.$("persoModelHint").textContent, "0.2 credits per second · 1\u00a0supported\u00a0languages · Perso Pro plan and up");
 });
 
 test("the chosen model survives the trip to Erase subtitles, and a new video starts on it too", async (t) => {
@@ -968,6 +1017,89 @@ test("Perso API with Wren is what the next project starts on, after a restart to
   assert.equal(h2.$("persoModelRow").hidden, false);
   assert.equal(h2.$("numSpeakers").value, "2");
   assert.equal(h2.api.readOptions().persoModel, "WREN");
+});
+
+// Processing (owner, 2026-10-22): Local model | Perso API above the languages,
+// two halves over the hidden #dubModeSelect that everything else reads.
+const litHalf = (h) => ["dubModeLocal", "dubModePerso"].filter((id) => h.$(id).attrs["aria-checked"] === "true");
+
+test("Processing's two halves set the dubbing mode, and the half it is on is lit", async (t) => {
+  const h = await persoHarness();
+  t.after(h.log.restore);
+  let changes = 0;
+  h.$("dubModeSelect").addEventListener("change", () => { changes += 1; });
+  await h.$("dubModePerso").fire("click");
+  assert.equal(h.$("dubModeSelect").value, "perso");
+  assert.deepEqual(litHalf(h), ["dubModePerso"]);
+  assert.equal(h.$("persoModelRow").hidden, false, "the Dubbing model row comes with it");
+  assert.deepEqual(targets(h), ["en", "en-GB"], "and the languages follow it");
+  assert.equal(h.api.readOptions().dubMode, "perso");
+  await h.$("dubModePerso").fire("click");
+  assert.equal(changes, 1, "pressing the lit half again changes nothing");
+  await h.$("dubModeLocal").fire("click");
+  assert.equal(h.$("dubModeSelect").value, "local");
+  assert.deepEqual(litHalf(h), ["dubModeLocal"]);
+  assert.equal(h.$("persoModelRow").hidden, true);
+  assert.equal(h.api.readOptions().dubMode, "local");
+});
+
+test("the lit half follows the select whoever sets it: a project's start, the key window's Cancel", async (t) => {
+  const h = await persoHarness(setupWith({ defaults: { ...SETUP.defaults, dub_mode: "perso" } }));
+  t.after(h.log.restore);
+  h.api.openNewProject({ downloadId: "d1", title: "First" });
+  await tick();
+  assert.equal(h.$("dubModeSelect").value, "perso");
+  assert.deepEqual(litHalf(h), ["dubModePerso"], "put back by the saved default, which fires no change");
+  // The key window's Cancel sets the select back and fires its change (ui/src/keyWindow.mjs).
+  h.$("dubModeSelect").value = "local";
+  h.$("dubModeSelect").dispatchEvent(new Event("change"));
+  assert.deepEqual(litHalf(h), ["dubModeLocal"]);
+});
+
+test("Perso API pressed on Processing is what the next project starts on, and so is Local model", async (t) => {
+  const store = memoryStorage();
+  const h = await persoHarness(setupWith(), store);
+  h.api.openNewProject({ downloadId: "d1", title: "First" });
+  await tick();
+  await h.$("dubModePerso").fire("click");
+  h.log.restore();
+
+  const h2 = await persoHarness(setupWith(), store);
+  h2.api.openNewProject({ downloadId: "d2", title: "Next" });
+  await tick();
+  assert.equal(h2.$("dubModeSelect").value, "perso");
+  assert.deepEqual(litHalf(h2), ["dubModePerso"]);
+  await h2.$("dubModeLocal").fire("click");
+  h2.log.restore();
+
+  const h3 = await persoHarness(setupWith(), store);
+  t.after(h3.log.restore);
+  h3.api.openNewProject({ downloadId: "d3", title: "Later" });
+  await tick();
+  assert.equal(h3.$("dubModeSelect").value, "local");
+  assert.deepEqual(litHalf(h3), ["dubModeLocal"]);
+});
+
+// The Dubbing model is remembered as every other choice is (rememberedChoices'
+// "persoModel"); Settings keeps no default for it, so nothing newer can win
+// over it, while Processing keeps its own rule: a default changed since wins.
+test("the Dubbing model chosen under Perso API on Processing is what the next project starts on, after a restart too", async (t) => {
+  const store = memoryStorage();
+  const h = await persoHarness(setupWith(), store);
+  h.api.openNewProject({ downloadId: "d1", title: "First" });
+  await tick();
+  await h.$("dubModePerso").fire("click");
+  await chooseModel(h, "Nightingale");
+  h.log.restore();
+
+  const h2 = await persoHarness(setupWith(), store);
+  t.after(h2.log.restore);
+  h2.api.openNewProject({ downloadId: "d2", title: "Next" });
+  await tick();
+  assert.deepEqual(litHalf(h2), ["dubModePerso"]);
+  assert.equal(h2.$("persoModelRow").hidden, false);
+  assert.equal(h2.api.readOptions().persoModel, "NIGHTINGALE");
+  assert.deepEqual(await models(h2), ["Oriole", "Wren", "[Nightingale]"]);
 });
 
 test("every Advanced option and the target language are remembered", async (t) => {
@@ -1075,6 +1207,140 @@ test("a storage the browser blocks leaves the dialog working on its defaults", a
   assert.equal(h.$("dubModeSelect").value, "local");
 });
 
+// -- the Target language's list (owner, 2026-10-22) ---------------------------
+// A button and, pressed, a list in the Dubbing model's dress with a search
+// field on top; it sets the hidden #targetLangSelect that everything reads.
+
+const BUNDLED = JSON.parse(readFileSync(new URL("../../app/perso_languages.json", import.meta.url), "utf8")).languages
+  .map((l) => ({ id: l.tag || l.code, code: l.code, name: l.name, tag: l.tag, models: l.models }));
+async function inKorean(t) {
+  const real = globalThis.fetch;
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  globalThis.fetch = async () => ({ ok: true, json: async () => ko });
+  await loadTable("ko");
+  globalThis.fetch = real;
+  setLanguage("ko");
+  t.after(() => setLanguage("en"));
+}
+// A project open on the bundled list (app/perso_languages.json), Perso API chosen.
+async function bundledPerso(storage = memoryStorage()) {
+  const h = harness({ responses: { "/api/languages": ok({ local: [], perso: BUNDLED }), ...setupWith() }, storage });
+  fillAdvanced(h.$);
+  h.api.openNewProject({ downloadId: "d1", title: "A talk" });
+  await tick();
+  if (h.$("dubModeSelect").value !== "perso") await choose(h, "dubModeSelect", "perso");
+  return h;
+}
+const langBox = (h) => h.$("targetLangPick");
+async function openLanguages(h) {
+  await langBox(h).children[0].fire("click");
+  const list = langBox(h).children[1];
+  const [search, opts, count] = list.children;
+  return { list, field: search.children[0], opts, count };
+}
+const rowNames = (opts) => opts.children.map((o) => o.children[0].children[0].textContent);
+const key = (k, target = null) => ({ key: k, target, preventDefault() {}, stopPropagation() {} });
+
+test("the Target language opens as a list with a search: 스페 leaves the two Spanish, 83개 중 2개", async (t) => {
+  await inKorean(t);
+  const h = await bundledPerso();
+  t.after(h.log.restore);
+  assert.equal(langBox(h).children[0].children[0].textContent, "🇺🇸 영어(미국)", "the button names the language");
+  const { opts, field, count } = await openLanguages(h);
+  assert.equal(opts.children.length, 83, "Linnet 4's 80 and the three only Oriole has");
+  assert.equal(opts.children[0].attrs["aria-selected"], "true", "the chosen one is marked");
+  assert.equal(count.hidden, true, "nothing to count before a search");
+  assert.equal(field.placeholder, "언어 검색");
+  field.value = "스페";
+  await field.fire("input");
+  assert.deepEqual(rowNames(opts), ["🇲🇽 스페인어(멕시코)", "🇪🇸 스페인어(스페인)"]);
+  assert.equal(count.hidden, false);
+  assert.equal(count.textContent, "83개 중 2개");
+  field.value = "";
+  await field.fire("input");
+  assert.equal(opts.children.length, 83);
+});
+
+test("the search also finds a language by its English name and its code, so eng finds English in Korean", async (t) => {
+  await inKorean(t);
+  const h = await bundledPerso();
+  t.after(h.log.restore);
+  const { opts, field, count } = await openLanguages(h);
+  field.value = "eng";
+  await field.fire("input");
+  // Bengali too: its English name has "eng" in it.
+  assert.deepEqual(rowNames(opts), ["🇺🇸 영어(미국)", "🇧🇩 벵골어", "🇬🇧 영어(영국)"]);
+  assert.equal(count.textContent, "83개 중 3개");
+  // "zh" is in no name: Chinese is found by its code.
+  field.value = "ZH";
+  await field.fire("input");
+  assert.deepEqual(rowNames(opts), ["🇨🇳 중국어"]);
+});
+
+test("a language chosen in the list is the hidden dropdown's, so it is what is started with and remembered", async (t) => {
+  const store = memoryStorage();
+  const h = await bundledPerso(store);
+  const { opts, field } = await openLanguages(h);
+  field.value = "spanish";
+  await field.fire("input");
+  assert.deepEqual(rowNames(opts), ["🇲🇽 Spanish (Mexico)", "🇪🇸 Spanish (Spain)"]);
+  await opts.children[1].fire("click");
+  assert.equal(h.$("targetLangSelect").value, "es-ES");
+  assert.equal(langBox(h).children.length, 1, "choosing closes the list");
+  assert.equal(langBox(h).children[0].children[0].textContent, "🇪🇸 Spanish (Spain)");
+  assert.equal(h.api.readOptions().targetLang, "es-ES");
+  h.log.restore();
+
+  // The next project, after a restart: Perso API and Spanish (Spain) again.
+  const h2 = await bundledPerso(store);
+  t.after(h2.log.restore);
+  assert.equal(h2.$("targetLangSelect").value, "es-ES");
+  assert.equal(langBox(h2).children[0].children[0].textContent, "🇪🇸 Spanish (Spain)");
+});
+
+test("Enter in the search takes the first language left, and Escape closes the list", async (t) => {
+  const h = await bundledPerso();
+  t.after(h.log.restore);
+  let { list, field } = await openLanguages(h);
+  field.value = "japan";
+  await field.fire("input");
+  await list.fire("keydown", key("Enter", field));
+  assert.equal(h.$("targetLangSelect").value, "ja");
+  assert.equal(langBox(h).children.length, 1);
+  ({ list } = await openLanguages(h));
+  await list.fire("keydown", key("Escape"));
+  assert.equal(langBox(h).children.length, 1, "closed");
+  assert.equal(h.$("targetLangSelect").value, "ja", "and nothing chosen by it");
+});
+
+// Nobody choosing, the model is Linnet 4, or Oriole for a language Linnet 4
+// lacks, as Perso's own API picks since 2026-10-12 (owner, 2026-10-22); a
+// model the person chose still wins, after a restart too.
+test("a dubbing nobody chose a model for is Linnet 4, Oriole where the language lacks it, and a choice wins", async (t) => {
+  const store = memoryStorage();
+  const h = await bundledPerso(store);
+  const button = (x) => pick(x).children[0].children[0].textContent;
+  assert.equal(button(h), "Linnet 4");
+  assert.equal(h.api.readOptions().persoModel, "LINNET_4");
+  assert.ok(targets(h).includes("es-ES") && targets(h).includes("yue"), "Oriole's languages and Linnet 4's both");
+  await choose(h, "targetLangSelect", "es-ES");              // Spanish (Spain): Oriole, not Linnet 4
+  assert.equal(button(h), "Oriole");
+  assert.equal(h.api.readOptions().persoModel, "ORIOLE");
+  assert.equal((await openModels(h)).find((o) => nameOf(o) === "Linnet 4").disabled, true);
+  await choose(h, "targetLangSelect", "ko");
+  assert.equal(h.api.readOptions().persoModel, "LINNET_4");
+  // Oriole chosen for Korean is the person's: the next project starts on it,
+  // with Oriole's own languages.
+  await chooseModel(h, "Oriole");
+  h.log.restore();
+  const h2 = await bundledPerso(store);
+  t.after(h2.log.restore);
+  assert.equal(h2.$("targetLangSelect").value, "ko");
+  assert.equal(button(h2), "Oriole");
+  assert.equal(h2.api.readOptions().persoModel, "ORIOLE");
+  assert.equal(targets(h2).length, 77);
+});
+
 // The four languages that are shown by name alone, no country's flag.
 const NO_FLAG = ["bo", "ug", "yue", "zh-TW"];
 
@@ -1145,9 +1411,9 @@ test("the options block goes home to the box that scrolls, in order, and out to 
   h.api.openNewProject({ probe: PROBE });
   // The voice engine's warning goes with the languages (issue #187).
   assert.deepEqual(h.$("projectOptions").children.map((e) => e.id),
-    ["langGrid", "engineWarning", "advancedBtn", "advancedBody"]);
+    ["langGrid", "engineWarning", "stageHead", "advancedBody"]);
 
   const slot = h.$("draftOptionsSlot");
   h.api.moveOptionsInto(slot);
-  assert.deepEqual(slot.children.map((e) => e.id), ["langGrid", "engineWarning", "advancedBtn", "advancedBody"]);
+  assert.deepEqual(slot.children.map((e) => e.id), ["langGrid", "engineWarning", "stageHead", "advancedBody"]);
 });

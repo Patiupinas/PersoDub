@@ -32,8 +32,9 @@ const SRC = fileURLToPath(new URL("./", import.meta.url));
 const DRAWN_AT_LOAD = [
   "newProjDrop", "newProjLinkRow", "newProjLinkInput",   // newProjectWindow.mjs
   "dubbingZone", "dubbingLinkRow", "dubbingLinkInput",   // draftImport.mjs
-  "audioZone", "audioLinkRow", "audioLinkInput",         // audioTab.mjs
+  "saveZone", "saveLinkRow", "saveLinkInput",            // draftImport.mjs
   "eraseZone", "eraseLinkRow", "eraseLinkInput",         // eraseScreen.mjs
+  "capZone", "capLinkRow", "capLinkInput",               // captionsTab.mjs
 ];
 
 // Each inline module with the line its <script> tag is on.

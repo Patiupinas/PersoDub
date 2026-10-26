@@ -4,6 +4,7 @@ The 4-state model (ready / downloading / paused / not_downloaded) is what
 keeps the 2026-08-14 "install died halfway = broken forever" bug from coming
 back: a half-downloaded model shows Resume instead of being skipped.
 """
+import json
 import os
 
 from fastapi.testclient import TestClient
@@ -115,13 +116,29 @@ def test_api_models_lists_optional_models_with_states(monkeypatch, tmp_path):
     assert r.status_code == 200
     rows = r.json()["models"]
     by_id = {m["id"]: m for m in rows}
-    # always-installed models never show in the catalog screen
-    assert "demucs" not in by_id
     assert by_id["whisper"]["state"] == "ready"
     assert by_id["qwen3-tts"]["state"] == "not_downloaded"
     for m in rows:
         for key in ("id", "role", "name", "bytes", "state"):
             assert key in m
+    # Demucs is listed with its stage, as what comes with Python + PyTorch:
+    # Advanced options' default had no row anywhere (feedback 2, 2026-10-20).
+    assert {k: by_id["demucs"][k] for k in ("role", "name", "comes_with", "state")} == \
+        {"role": "sep", "name": "Demucs", "comes_with": "engine", "state": "not_downloaded"}
+    assert "comes_with" not in by_id["whisper"]
+
+
+def test_demucs_reads_ready_with_its_pack_and_is_never_fetched_or_removed_alone(monkeypatch, tmp_path):
+    kit = str(tmp_path)
+    monkeypatch.setenv("PERSODUB_KIT_DIR", kit)
+    _mk(kit, "models", "demucs", "HTDemucs", "955717e8.safetensors", content=b"w")
+    by_id = {m["id"]: m for m in client.get("/api/models").json()["models"]}
+    assert by_id["demucs"]["state"] == "ready"
+    assert by_id["demucs"]["hint"] == "Default · Comes with Python + PyTorch"
+    for method, path in (("post", "/api/models/demucs/download"), ("post", "/api/models/demucs/cancel"),
+                         ("delete", "/api/models/demucs")):
+        assert getattr(client, method)(path).status_code == 404, path
+    assert os.path.exists(os.path.join(kit, "models", "demucs", "HTDemucs", "955717e8.safetensors"))
 
 
 # ── free space ─────────────────────────────────────────────────────────────
@@ -223,9 +240,9 @@ def test_packs_are_not_downloaded_or_removed_through_the_backend(monkeypatch, tm
     monkeypatch.setenv("PERSODUB_KIT_DIR", str(tmp_path))
     monkeypatch.setattr(models_module, "dub_in_progress", lambda: False)   # other tests leave jobs behind
     r = client.post("/api/models/engine/download")
-    assert r.status_code == 409 and r.json()["detail"] == "Packs are installed by the desktop app"
+    assert r.status_code == 409 and r.json()["detail"] == "PersoDub installs this itself."
     r = client.delete("/api/models/ollama-runtime")
-    assert r.status_code == 409 and r.json()["detail"] == "Packs are installed by the desktop app"
+    assert r.status_code == 409 and r.json()["detail"] == "PersoDub installs this itself."
 
 
 def test_removing_an_ollama_model_without_its_runtime_is_refused_with_a_sentence(monkeypatch, tmp_path):
@@ -237,7 +254,8 @@ def test_removing_an_ollama_model_without_its_runtime_is_refused_with_a_sentence
     monkeypatch.setattr(models_module, "dub_in_progress", lambda: False)
     r = client.delete("/api/models/hunyuan")
     assert r.status_code == 409
-    assert r.json()["detail"] == "Install Ollama first, then remove this model."
+    assert r.json()["detail"] == ("Local translation models (Hunyuan, Gemma 3) need a program called Ollama "
+                                  "to run. Download it in Settings > Models.")
     assert os.path.exists(os.path.join(kit, "models", "ollama", "manifests"))
 
 
@@ -261,18 +279,30 @@ def test_an_ollama_model_asked_for_without_its_runtime_is_refused_with_a_sentenc
     monkeypatch.setattr(models_module, "free_bytes_at", lambda path: 10**12)
     r = client.post("/api/models/hunyuan/download")
     assert r.status_code == 409
-    assert r.json()["detail"] == "Install Ollama first, then download this model."
+    assert r.json()["detail"] == ("Local translation models (Hunyuan, Gemma 3) need a program called Ollama "
+                                  "to run. Download it in Settings > Models.")
 
 
 def test_only_a_row_its_group_title_does_not_explain_carries_a_hint():
     # Settings lists the rows under what they are for (ui/src/modelsUi.mjs
     # groupModels). A hint is left where that title does not say it all: two
-    # translators side by side, and what each base program carries.
+    # translators side by side, what each base program carries, and where
+    # Demucs comes from.
     hinted = {m["id"] for m in models_module.load_catalog() if m.get("hint")}
-    assert hinted == {"engine", "ollama-runtime", "gemma", "hunyuan"}
+    assert hinted == {"engine", "ollama-runtime", "gemma", "hunyuan", "demucs"}
     rows = {m["id"]: m for m in models_module.status_rows()}
     assert rows["engine"]["hint"] == "Audio separation, speech-to-text, voices"
+    assert rows["ollama-runtime"]["hint"] == "Local translation (Hunyuan, Gemma 3)"
     assert rows["whisper"]["hint"] == ""
+
+
+def test_each_program_says_where_it_is_used_in_korean_in_the_owners_words():
+    # Under "Required programs" the group says they run the models, and each
+    # row what it is used for (owner, 2026-10-22): no "needed to run" twice.
+    with open(os.path.join(os.path.dirname(models_module.__file__), "i18n", "app.ko.json"), encoding="utf-8") as f:
+        ko = json.load(f)
+    assert ko["Audio separation, speech-to-text, voices"] == "오디오 분리·받아쓰기·목소리 만들기"
+    assert ko["Local translation (Hunyuan, Gemma 3)"] == "로컬 번역 (Hunyuan, Gemma 3)"
 
 
 def test_a_pack_the_desktop_app_is_installing_reads_as_downloading(tmp_path):

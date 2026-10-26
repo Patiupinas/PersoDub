@@ -5,7 +5,7 @@
 // Run with: node --test ui/src/format.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { modKey, plainFailure, rawLogLines, restartFailure, fmtLength, videoCard, videoCardHtml } from "./format.mjs";
+import { modKey, plainFailure, rawLogLines, restartFailure, restartRanOutOfMemory, fmtLength, videoCard, videoCardHtml } from "./format.mjs";
 import {
   fmtClock,
   fmtClockTenths,
@@ -124,7 +124,9 @@ test("errorText survives an empty or missing error", () => {
 });
 
 
+import { readFileSync } from "node:fs";
 import { downloadsLabel } from "./format.mjs";
+import { loadTable, setLanguage } from "./i18n.mjs";
 
 test("downloadsLabel names the folders under Downloads, on either kind of slash", () => {
   assert.equal(downloadsLabel("/Users/x/Downloads/2026-09-10/clip/clip (no subtitles).mp4"),
@@ -135,6 +137,57 @@ test("downloadsLabel names the folders under Downloads, on either kind of slash"
   assert.equal(downloadsLabel("/Users/x/Downloads/clip.mp4"), "Downloads");
   assert.equal(downloadsLabel("/elsewhere/clip.mp4"), "");
   assert.equal(downloadsLabel(""), "");
+});
+
+// Under the Download dialog's title 다운로드, "다운로드 / 2026-10-22 / clip"
+// read as the title said twice (owner, 2026-10-22).
+test("in Korean the folders under Downloads are named as in the Downloads folder", async (t) => {
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true,
+    json: async () => JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8")) });
+  await loadTable("ko");
+  globalThis.fetch = real;
+  setLanguage("ko");
+  t.after(() => setLanguage("en"));
+  assert.equal(downloadsLabel("C:\\Users\\x\\Downloads\\2026-10-22\\clip\\dub_ko.mp4"), "다운로드 폴더의 2026-10-22 / clip");
+  assert.equal(downloadsLabel("/Users/x/Downloads/clip.mp4"), "다운로드");
+  // A folder picked with Change in the Download dialog, by its own name.
+  assert.equal(downloadsLabel("/Volumes/작업용 SSD/2026-10-22/paris_steps/dub_ko.mp4", "/Volumes/작업용 SSD"),
+    "작업용 SSD의 2026-10-22 / paris_steps");
+});
+
+import { folderName, insideFolder } from "./format.mjs";
+
+// The Download dialog's Change picks a folder of the user's (owner, 2026-10-22);
+// the "… saved" sentences name it by the last part of its path.
+test("downloadsLabel names a file saved in the picked folder from that folder's own name", () => {
+  const picked = "/Volumes/Work SSD";
+  assert.equal(downloadsLabel("/Volumes/Work SSD/2026-10-22/paris_steps/dub_ko.mp4", picked),
+    "Work SSD / 2026-10-22 / paris_steps");
+  // Loose in it (the separated sounds), by the name alone.
+  assert.equal(downloadsLabel("/Volumes/Work SSD/clip_voice.mp3", picked), "Work SSD");
+  // Windows, either kind of slash, and a whole drive picked.
+  assert.equal(downloadsLabel("D:\\Work\\2026-10-22\\clip\\clip.mp4", "D:\\Work"), "Work / 2026-10-22 / clip");
+  assert.equal(downloadsLabel("D:\\2026-10-22\\clip\\clip.mp4", "D:\\"), "D: / 2026-10-22 / clip");
+  // Not in it (the drive was taken out, the files went to Downloads): Downloads, as before.
+  assert.equal(downloadsLabel("/Users/x/Downloads/2026-10-22/clip/clip.mp4", picked), "Downloads / 2026-10-22 / clip");
+  // A folder of its own inside Downloads is named as itself.
+  assert.equal(downloadsLabel("/Users/x/Downloads/PersoDub/2026-10-22/clip/clip.mp4", "/Users/x/Downloads/PersoDub"),
+    "PersoDub / 2026-10-22 / clip");
+  // A name that only starts the same is another folder.
+  assert.equal(downloadsLabel("/Volumes/Work SSD 2/clip.mp4", picked), "");
+});
+
+test("insideFolder and folderName read a path as written, either kind of slash", () => {
+  assert.equal(insideFolder("/Volumes/Work SSD/a/b.mp4", "/Volumes/Work SSD/"), true);
+  assert.equal(insideFolder("C:\\Work\\a.mp4", "C:/Work"), true);
+  assert.equal(insideFolder("/Volumes/Work SSD", "/Volumes/Work SSD"), false, "the folder itself holds no file");
+  assert.equal(insideFolder("/Volumes/Work SSD2/a.mp4", "/Volumes/Work SSD"), false);
+  assert.equal(insideFolder("/a.mp4", ""), false);
+  assert.equal(insideFolder("/a.mp4", "/"), false, "no folder, not the whole disk");
+  assert.equal(folderName("/Volumes/작업용 SSD"), "작업용 SSD");
+  assert.equal(folderName("C:\\Users\\x\\Work\\"), "Work");
+  assert.equal(folderName("D:\\"), "D:");
 });
 
 import { statusParts } from "./format.mjs";
@@ -152,7 +205,7 @@ test("statusParts cuts a top-bar status into the pieces its chips are made of", 
 });
 
 test("errorText turns a request that never reached the app into what to do about it", () => {
-  const told = "PersoDub is not running. Restart the app.";
+  const told = "The connection to PersoDub dropped for a moment. If it stays this way, quit and reopen PersoDub.";
   assert.equal(errorText(new TypeError("Failed to fetch")), told);
   assert.equal(errorText(new TypeError("Load failed")), told);
   assert.equal(errorText(new TypeError("NetworkError when attempting to fetch resource.")), told);
@@ -164,9 +217,10 @@ test("errorText turns a request that never reached the app into what to do about
 
 test("errorText never shows a list of field errors or a page of HTML", () => {
   const body = JSON.stringify({ detail: [{ loc: ["body", "file"], msg: "field required", type: "value_error.missing" }] });
-  assert.equal(errorText(new Error(body)), "That did not work. Try again.");
-  assert.equal(errorText(new Error('{"detail": {"code": 3}}')), "That did not work. Try again.");
-  assert.equal(errorText(new Error("<!DOCTYPE html><html><body>500</body></html>")), "That did not work. Try again.");
+  const told = "Something went wrong in PersoDub. Try again, and if it happens again, quit and reopen PersoDub.";
+  assert.equal(errorText(new Error(body)), told);
+  assert.equal(errorText(new Error('{"detail": {"code": 3}}')), told);
+  assert.equal(errorText(new Error("<!DOCTYPE html><html><body>500</body></html>")), told);
 });
 
 test("shortcut tips say Cmd on a Mac and Ctrl everywhere else", () => {
@@ -201,7 +255,11 @@ test("a failure's plain sentence is shown, and a program's own words are not", (
 test("why the voice engine did not start again is said in plain words, never the engine's own line", () => {
   // Issue #187's engine, as the shell hands it back (desktop/src/packIpc.js).
   assert.equal(restartFailure("Installed, but it could not start: OSError: �� �۾��� �Ϸ��ϱ� ���� ����¡ ������ �ʹ� �۽��ϴ�. (os error 1455)"),
-    "Starting it again did not work: this computer ran out of memory.");
+    "Starting it again did not work because there is still not enough memory. Close more programs or restart "
+    + "your computer. Dubbing with the Perso API uses almost no memory.");
+  // That one is said on its own, without the refusal above it (A37).
+  assert.ok(restartRanOutOfMemory("Installed, but it could not start: MemoryError"));
+  assert.ok(!restartRanOutOfMemory("Installed, but it could not start: RuntimeError: boom"));
   assert.equal(restartFailure("Installed, but it could not start: Health check timed out after 300000ms: http://127.0.0.1:5/health"),
     "Starting it again did not work: it took too long to start.");
   // The shell's own sentence is said as it is.

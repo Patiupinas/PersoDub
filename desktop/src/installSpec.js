@@ -621,6 +621,13 @@ export function buildSteps(ctx) {
   // --report arrived in 22.2, and without it only the FILE lines are lost.
   // pip's own tries of a request again are RETRY lines (pipRetryLine),
   // counted out of the --retries the command names, else pip's default.
+  // The files pip fetches are kept in the kit (pipCache) until the venv step
+  // is done, so a Resume after a cut line or a Cancel takes the wheels that
+  // were already in from there: with --no-cache-dir every one of them came
+  // down again, PyTorch's 3.5 GB Windows wheel too (owner, 2026-10-22, 1-3).
+  // Not pip's own cache: that one kept a 3 GB torch wheel outside the kit
+  // for good (Windows, %LOCALAPPDATA%\pip).
+  const pipCache = (venvName) => k("downloads", `pip-${venvName}`);
   const pipInstall = async (venvPy, venvName, args, report, progress = null) => {
     const what = `pip ${venvName}`;
     const reportFile = k("downloads", `pip-report-${venvName}.json`);
@@ -632,7 +639,7 @@ export function buildSteps(ctx) {
     const from = Date.now();
     try {
       for (;;) {
-        const flags = bar ? ["--no-cache-dir", "--progress-bar", bar, "--retries", "10", "--timeout", "60"] : [];
+        const flags = bar ? ["--cache-dir", pipCache(venvName), "--progress-bar", bar, "--retries", "10", "--timeout", "60"] : [];
         const argv = [venvPy, "-m", "pip", "install", ...flags, ...args, ...(listed ? ["--report", reportFile] : [])];
         const retries = argv.includes("--retries") ? Number(argv[argv.indexOf("--retries") + 1]) : PIP_DEFAULT_RETRIES;
         try {
@@ -648,7 +655,7 @@ export function buildSteps(ctx) {
         } catch (e) {
           const said = String(e && e.message);
           if (bar === "raw" && RAW_BAR_REFUSED.test(said)) {
-            report(null, t("pip is older than expected; installing without the progress count"));
+            log(`${what}: pip is older than expected, installing without the progress count`);
             bar = "off";
           } else if (listed && REPORT_REFUSED.test(said)) {
             listed = false;
@@ -702,6 +709,13 @@ export function buildSteps(ctx) {
       for (const args of pipInstalls) await pipInstall(venvPy, venvName, args, report, progress);
       if (proveItWorks) await proveItWorks(venvPy, report);
       markOk(id, pipFingerprint(pipInstalls));
+      // Installed: the kept wheels are a second copy now. Best-effort, as the
+      // archives below: a file Windows will not let go of fails no install.
+      try {
+        rmSync(pipCache(venvName), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      } catch {
+        console.warn(`PERSODUB_INSTALL could not remove ${pipCache(venvName)}`);
+      }
     },
   });
 
@@ -724,7 +738,7 @@ export function buildSteps(ctx) {
     if (!existsSync(path)) return;   // upstream moved it: the import check below is what judges
     const text = readFileSync(path, "utf8");
     if (!text.includes(PY312_FSTRING)) return;   // already plain 3.11 syntax
-    report(null, t("Making the eraser readable to Python 3.11"));
+    report(null, t("Preparing the subtitle eraser"));
     writeFileSync(path, text.replaceAll(PY312_FSTRING, '{frame_info["len"]}'));
   };
 
@@ -838,7 +852,7 @@ export function buildSteps(ctx) {
       bytes: 0.2 * GB,
       isDone: () => existsSync(k("bin", exeName("ffmpeg"))) && existsSync(k("bin", exeName("ffprobe"))),
       run: async (report) => {
-        report(null, t("Fetching ffmpeg binaries"));
+        report(null, t("Downloading the video-processing program"));
         const lines = [];
         // static-ffmpeg lives in app_venv (requirements.txt): the one venv a
         // light install always has, so ffmpeg no longer waits on the engines.
@@ -1094,14 +1108,14 @@ export function buildSteps(ctx) {
       run: async (report) => {
         const path = k(KIT_ENV);
         if (!existsSync(path)) {
-          report(null, t("Writing kit.env"));
+          report(null, t("Writing the settings file"));
           writeFileSync(path, writeKitEnv({ kitDir: ctx.kitDir, torchVariant }));
           return;
         }
         // Existing kit (installed before these keys existed): merge, never
         // clobber -- app/settings_env.py writes user API keys into this same
         // file and they must survive.
-        report(null, t("Updating kit.env"));
+        report(null, t("Updating the settings file"));
         writeFileSync(path, withMissingKitEnvKeys(readFileSync(path, "utf8")));
       },
     },

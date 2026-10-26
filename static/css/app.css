@@ -353,12 +353,18 @@
     display: flex; align-items: center; gap: 10px;
     margin: 0 -9px; padding: 0 12px;
   }
-  /* The bar's icon buttons (Settings, the way back into a job): a 16px line
-     icon in a 28x26 target. */
-  .topbar-icon, .topbar-back { border: none; background: none; cursor: pointer; padding: 0;
+  /* The bar's icon buttons (Settings): a 16px line icon in a 28x26 target. */
+  .topbar-icon { border: none; background: none; cursor: pointer; padding: 0;
     width: 28px; height: 26px; flex: 0 0 auto; border-radius: 6px;
     display: inline-grid; place-items: center; color: var(--icon); }
-  .topbar-icon:hover, .topbar-back:hover { background: var(--secondary); }
+  .topbar-icon:hover { background: var(--secondary); }
+  /* The way back into a job: a pill with the curled-back arrow and the job's
+     name, a long one cut short at 200px (2026-10-21). */
+  .topbar-back { border: none; cursor: pointer; padding: 0 8px; max-width: 200px; height: 26px;
+    flex: 0 0 auto; border-radius: 999px; display: inline-flex; align-items: center; gap: 5px;
+    background: var(--secondary); color: var(--icon); font: inherit; font-size: 11px; font-weight: 500; }
+  .topbar-back:hover { background: var(--divider); }
+  #topbarForwardName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Home and New project while the left panel is hidden: the same two
      buttons the tab row holds, moved here and drawn as the bar's icon
      buttons, their words on the tip instead. */
@@ -422,9 +428,8 @@
   :root[data-platform="darwin"] .topbar { -webkit-app-region: drag; padding-left: 80px; }
   :root[data-platform="darwin"] .topbar :is(button, input, #topbarTitle) { -webkit-app-region: no-drag; }
   /* One bar, two layouts (2026-10-21), the name centred in both. The Mac's
-     right end reads Export, Settings, the pane buttons; Windows starts with
-     the pane buttons and Settings at the left, so Export is the last thing
-     before its window buttons. */
+     right end reads Settings, the pane buttons; Windows starts with the
+     pane buttons and Settings at the left. */
   :root[data-platform="darwin"] .topbar :is(#settingsBtn, .panes) { order: 1; }
   :root[data-platform="win32"] .topbar .panes { order: -2; }
   :root[data-platform="win32"] .topbar #settingsBtn { order: -1; }
@@ -435,6 +440,9 @@
   /* The mockup's Export: 22px high, capitals 8px tall (11px words). */
   #exportBtn { height: 22px; min-width: 67px; padding: 0 10px; border-radius: 5px;
     font-size: 11px; font-weight: 600; }
+  /* At the right end of the video panel's tab row, 9px in from its edge
+     (owner, 2026-10-22), below the bar and the window's own buttons. */
+  .video-tabs #exportBtn { align-self: center; margin: 0 9px 0 auto; }
 
   /* The one job-wide message line (a credit warning, or why a dub failed).
      It sits in the progress card, right under the four steps -- the place the
@@ -511,8 +519,8 @@
   body:is([data-screen="running"], [data-screen="failed"]) #runPane { display: flex; }
   body[data-screen="erase"] #erasePane { display: flex; }
   body[data-screen="running"]:not(.timeline-off) #runTimeline { display: flex; }
-  /* A tab with nothing behind it yet, and the top bar's Export before there
-     is anything to hand back. */
+  /* A tab with nothing behind it yet, and Export before there is anything
+     to hand back. */
   .left-tab:disabled, .vtab:disabled { opacity: 0.4; cursor: default; }
   #exportBtn:disabled { background: var(--secondary); color: var(--muted-foreground);
     opacity: 1; cursor: default; box-shadow: none; }
@@ -642,6 +650,10 @@
     font-size: var(--font-label); color: var(--primary-ink); }
   .erase-link:hover { text-decoration: underline; }
   .erase-card .erase-link { position: absolute; right: 12px; top: 10px; }
+  /* What a tool makes: one card under its last choice, "What you get" over
+     the files (owner, 2026-10-22). */
+  .result-box { margin: 8px 0 4px; }
+  .result-box .m { line-height: 1.5; }
   /* The pack line and the no-graphics-card line. */
   .erase-notice { flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
     padding: 8px 10px; border-radius: 6px; background: var(--accent);
@@ -650,28 +662,27 @@
   .erase-error { color: var(--destructive); font-size: var(--font-label); }
   .erase-error:empty { display: none; }
   .erase-tab .erase-log { margin: 0; }
-  /* ---- Audio: the left panel's tab (ui/src/audioTab.mjs) ---- */
-  /* The Erase tab's cards and foot, without its side list. */
-  .audio-tab .erase-card select { margin-top: 6px; height: 28px; padding: 0 8px; font-size: 12px; }
-  .audio-tab .audio-run { font-size: 13px; font-weight: 600; }
-  /* One sound: its play button, its name, its picture. */
-  .audio-row { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; background: var(--well);
-    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
-    font-size: 12px; font-weight: 500; }
-  .audio-row .audio-name { flex: 0 0 74px; }
-  .audio-play { flex: 0 0 auto; width: 26px; height: 26px; border: 0; border-radius: 50%; padding: 0;
-    display: grid; place-items: center; cursor: pointer; background: var(--secondary); color: var(--foreground); }
-  .audio-play:hover { background: var(--accent); }
-  .audio-wave { flex: 1; min-width: 0; height: 26px; }
-  /* Before there is a separation: the same two rows, dim, each saying what
-     it will be. */
-  .audio-row.dim { color: var(--muted-foreground); }
-  .audio-row .audio-note { font-size: var(--font-label); font-weight: 400; color: var(--muted-foreground); }
-  .audio-tab .erase-desc { flex: 0 0 auto; padding: 0 14px 8px; font-size: var(--font-label);
-    color: var(--muted-foreground); }
-  .audio-tab .erase-label { padding-bottom: 2px; }
-  .audio-wave svg { display: block; width: 100%; height: 100%; fill: var(--primary); }
-  #audioBackgroundWave svg { fill: var(--success); }
+  /* Design 5 (owner, 2026-10-22). The video card's line naming the part to
+     erase: one line, the whole of it on the tip. */
+  .video-card .s.erase-range { color: var(--muted-foreground); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  /* The box's own part of the picture, enlarged, at a height that never
+     moves the cards under it; its edge is the box's dotted line. */
+  .erase-crop-pic { position: relative; height: 80px; margin-top: 8px; overflow: hidden;
+    border-radius: 4px; background: var(--thumb-bg); }
+  .erase-crop-pic canvas { display: block; width: 100%; height: 100%; }
+  .erase-crop-box { position: absolute; box-sizing: border-box; border: 1.5px dashed var(--success);
+    border-radius: 3px; }
+  .erase-crop-box.finding { border-color: var(--destructive); }
+  .erase-card .erase-crop-time { margin-top: 4px; font-variant-numeric: tabular-nums; }
+  /* The line for the state the screen is in, at the foot of the column. */
+  .erase-tip { margin-top: auto; }
+  .erase-tip .lu { color: var(--primary-ink); }
+  /* Placing the box, the result card stands in that line's room: the column
+     at 1280x800 has no more than that. */
+  #tabErase .result-box { margin: 0; }
+  /* One pixel tighter: the column was 385.5px in 385, which drew a scrollbar (Mac check, 2026-10-22). */
+  #tabErase .result-box .m { margin-top: 2px; }
   /* What Export has to say, and only after it has said it. */
   .erase-saved { display: inline-flex; align-items: center; gap: 6px;
     font-size: var(--font-label); color: var(--muted-foreground); }
@@ -1003,6 +1014,19 @@
   /* One focus ring, the field's own: none around the words. The icon stays
      beside the words, focused or not; a click anywhere in the field types. */
   .home-banner-linkin input:focus, .home-banner-linkin input:focus-visible { outline: none; box-shadow: none; }
+  /* Save video points at the field, and an empty project's New project at
+     its Import block's (2026-10-21): the ring blinks white twice, then the
+     caret is there. With less motion asked for, the ring stands still for
+     that second instead. ui/src/linkField.mjs askForLink puts the mark on
+     and takes it off. */
+  @keyframes link-ask {
+    0%, 100% { box-shadow: 0 0 0 2px rgba(11, 18, 32, 0.5); }
+    50% { box-shadow: 0 0 0 2px rgba(11, 18, 32, 0.5), 0 0 0 5px #ffffff, 0 0 16px 6px rgba(255, 255, 255, 0.6); }
+  }
+  .home-banner-linkin.link-field.ask, .import-link.ask { animation: link-ask 0.5s ease-in-out 2; }
+  @media (prefers-reduced-motion: reduce) {
+    .home-banner-linkin.link-field.ask, .import-link.ask { animation: none; box-shadow: 0 0 0 2px rgba(11, 18, 32, 0.5), 0 0 0 5px #ffffff; }
+  }
 
   /* The row under the banner: the Dub Agent wider, then the three tools.
      Two by two when the column is narrow (the agent open beside it). */
@@ -1052,6 +1076,8 @@
     display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; font-size: 11px;
     font-weight: 500; color: var(--foreground); border: none; cursor: pointer; font-family: inherit; }
   .home-sbtn:hover { background: var(--accent); }
+  /* Collapse / Expand: Search's shape, right beside the heading. */
+  .projects-head .proj-fold { margin-left: 0; }
   .projects-search-box { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
     border-radius: var(--radius-sm); background: var(--well); color: var(--muted-foreground); }
   .projects-search-box input { flex: 1; border: none; background: none; padding: 0;
@@ -1093,7 +1119,8 @@
   .proj-more:hover { background: var(--secondary); color: var(--foreground); }
   .proj-card:hover .proj-more, .proj-card:focus-within .proj-more { display: inline-flex; }
 
-  .proj-menu { position: fixed; z-index: 25; min-width: 130px; background: var(--canvas);
+  /* Over the update banner (60): a card in the bottom row opens its menu under it (Windows, 2026-10-24). */
+  .proj-menu { position: fixed; z-index: 61; min-width: 130px; background: var(--canvas);
     border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px;
     box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
   .proj-menu button { display: block; width: 100%; text-align: left; padding: 6px 10px;
@@ -1213,11 +1240,10 @@
 
   /* === import === */
   /* The Dubbing tab with no video yet: the shared Import block and the line
-     that says how an import is going (ui/src/draftImport.mjs). The Audio tab
-     carries the same line under its own block. */
+     that says how an import is going (ui/src/draftImport.mjs). */
   /* A tab with no video yet (ui/src/importBlock.mjs emptyTabHtml): what the
      tab is for, one sentence, and the Import block, one group in the middle
-     of the panel -- the same group at the same place on Dubbing, Audio and
+     of the panel -- the same group at the same place on Dubbing, Burn in subtitles and
      Erase. What an import has to say hangs under the group, out of the
      flow, so a line of status never moves it. */
   .tab-empty { flex: 1; min-height: 0; box-sizing: border-box; padding: 12px; overflow: hidden;
@@ -1246,9 +1272,9 @@
   .draft-card.video-card .m { font-size: var(--font-ui); }
 
   /* A draft's "Before dubbing" card, in the Dubbing tab. The language
-     dropdowns and Advanced options that land in #draftOptionsSlot are the New
+     dropdowns and the stage rows that land in #draftOptionsSlot are the New
      project dialog's own (ui/src/newProject.mjs moveOptionsInto) -- their look
-     is that dialog's .option-grid/.field/.advanced-btn, unchanged. */
+     is that dialog's .option-grid/.field/.stage-head, unchanged. */
   .draft-setup { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px;
     padding: 14px 12px; overflow: auto;
     /* What is scrolled into view here -- a refused Start's reason, a focused
@@ -1260,8 +1286,21 @@
     display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
   .draft-card { background: var(--well); border: 1px solid var(--well-line); border-radius: var(--radius);
     padding: 10px 12px; }
-  /* Stuck to the foot of the card: with Advanced options open the card
-     scrolls, and Start dubbing must not scroll away with it (QA 2026-09-29). */
+  /* Replace · Remove on the Video card's label line, in the words of the
+     erase card's Reset (owner, 2026-10-22). The line under the card is
+     there only while it has something to say. */
+  .draft-part { position: relative; }
+  .draft-part .vc-acts { position: absolute; right: 13px; top: 11px; display: inline-flex; align-items: center;
+    gap: 6px; font-size: var(--font-label); color: var(--muted-foreground); }
+  .draft-part .vc-del { color: var(--destructive); }
+  .draft-import-status { text-align: left; }
+  .draft-import-status:empty { display: none; }
+  /* What the dubbing hands back, under the last choice (owner, 2026-10-22,
+     remarks 10+11): the erase card's label and line, set a little apart. */
+  .draft-result { margin: 12px 0 10px; }
+  .draft-result .m { line-height: 1.5; }
+  /* Stuck to the foot of the card: with the six stage rows always in sight
+     the card scrolls, and Start dubbing must not scroll away with it (QA 2026-09-29). */
   .draft-foot { margin-top: auto; padding: 10px 0 0; border-top: 1px solid var(--border);
     display: flex; align-items: center; gap: 10px; font-size: var(--font-label); color: var(--muted-foreground);
     position: sticky; bottom: -14px; margin-bottom: -14px; padding-bottom: 14px; z-index: 1;
@@ -1276,7 +1315,9 @@
   .script-status { position: absolute; right: 16px; bottom: 14px; z-index: 2;
     padding: 6px 11px; border: 1px solid var(--border); border-radius: 999px;
     background: var(--background); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
-    font-size: var(--font-label); color: var(--primary); }
+    font-size: var(--font-label); color: var(--primary);
+    /* Perso's own words go on a line of their own under ours (app/api/script.py). */
+    white-space: pre-line; }
   .script-status:empty { display: none; }
   .script-empty { padding: 30px 14px; text-align: center;
     color: var(--muted-foreground); font-size: var(--font-ui); }
@@ -1318,6 +1359,8 @@
     letter-spacing: .04em; text-transform: uppercase; color: var(--muted-foreground); }
   /* The line the video is on right now, so the eye can follow the script. */
   .sc-row.sc-now { background: color-mix(in srgb, var(--primary) 14%, transparent); }
+  /* The line last pressed (ui/src/scriptTable.mjs), a bar down its left edge. */
+  .sc-row.sc-sel { box-shadow: inset 3px 0 0 var(--primary); }
   .sc-n { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
   /* Translate again: a tick box before each line's number, the count and the
      three buttons at the right of the pane's name. */
@@ -1325,6 +1368,11 @@
   .sc-pick { margin: 0; width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
   .sc-row.sc-picked { background: color-mix(in srgb, var(--primary) 10%, transparent); }
   .sc-pick-n { margin-left: auto; font-size: var(--font-label); font-weight: 400; color: var(--muted-foreground); }
+  /* What translated the script, grey beside its count: it takes the room left
+     on the row, and is the first thing to give way (an ellipsis, the whole
+     on hover) rather than push the row onto two lines. */
+  .sc-model { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: var(--font-label); font-weight: 400; color: var(--muted-foreground); }
   /* The script's three buttons. The panel is 430 to 490px wide on a laptop
      and the pane's name and the three together need more than that, so
      they have a row of their own under the name: three fixed columns, so a
@@ -1389,17 +1437,21 @@
   .sc-len b { font-weight: 600; color: var(--foreground); }
   /* The verdict (length-dots mockup, owner 2026-10-20): a dot in front of
      the numbers and the difference after them, in one colour -- red over
-     time, or cut short by the assembly step whatever its own numbers say
+     time, or by what the assembly step cut off whatever its own numbers say
      (lineVerdict, ui/src/scriptTable.mjs); orange much shorter; green fits,
-     with no difference to show. A dot where the pill was, so the cell keeps
-     its width and the words beside it lose nothing. */
-  .sc-v-over, .sc-v-cut { --verdict: var(--destructive); }
+     with a tick for the dot and no difference to show (owner, 2026-10-22).
+     A dot where the pill was, so the cell keeps its width and the words
+     beside it lose nothing. */
+  .sc-v-over { --verdict: var(--destructive); }
   .sc-v-short { --verdict: var(--timeline-short); }
   .sc-v-fit { --verdict: var(--success); }
   /* On the baseline, where an 8px dot sits on the digits' centre to 0.4px;
      vertical-align: middle put it 0.7px low (measured, 2026-10-20). */
   .sc-dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px;
     border-radius: 50%; background: var(--verdict); }
+  /* The tick a line that fits has in the dot's place, as the mockup draws it. */
+  .sc-tick { display: inline-flex; width: 12px; margin-right: 4px; vertical-align: -2px; color: var(--verdict); }
+  .sc-tick .lu { stroke-width: 2.4; }
   .sc-diff { color: var(--verdict); font-weight: 600; }
 
   /* ---------------- The script table, narrow ---------------- */
@@ -1434,8 +1486,10 @@
        58 is the widest verdict there is, "cut 0.3s", measured: at 44 (and 40
        and 30 in the tiers below) it ran under the revert button beside it,
        and on a 1280px window so did every "+0.5s" (2026-09-30). With a dot in
-       front where a pill's padding was, it is 57.9 (2026-10-20). The last
-       track above is this cell: 10 + 58 + 6 + 22 + 6 + 22. */
+       front where a pill's padding was, it is 57.9 (2026-10-20). A cut reads
+       "+0.3s" now, and the widest left is a two-digit "+12.3초", 56.0
+       (measured, 2026-10-22). The last track above is this cell:
+       10 + 58 + 6 + 22 + 6 + 22. */
     .sc-tools { grid-template-columns: 58px 22px 22px; gap: 6px; }
   }
 
@@ -1561,14 +1615,18 @@
 
   /* === script: the cut-off notice (point 3, user 2026-09-29) === */
   /* One line above the table, from job.result.clipped: the lines the
-     assembly step had to cut short. A click scrolls to the first of them --
-     the red dot and "cut" on each such row (lineVerdict in scriptRow) are
-     the per-line mark. */
+     assembly step had to cut short by a tenth of a second or more. A click
+     scrolls to the first of them -- the red dot and "+0.3s" on each such row
+     (lineVerdict in scriptRow) are the per-line mark. */
   .sc-clipped { display: flex; align-items: center; gap: 8px;
     padding: 8px 14px; font-size: var(--font-label); font-weight: 600;
     color: var(--destructive); cursor: pointer; }
   .sc-clipped svg { flex-shrink: 0; }
   .sc-clipped:hover, .sc-clipped:focus-visible { text-decoration: underline; outline: none; }
+  /* The lines with no voice (scriptTable.mjs silentNotice): the same line,
+     words only, nothing to press. */
+  .sc-clipped.sc-silent { cursor: default; }
+  .sc-clipped.sc-silent:hover { text-decoration: none; }
 
   /* ---------------- Done: the video pane ---------------- */
 
@@ -1635,7 +1693,7 @@
      measures here is what the export draws. max-width 92% is SUB_MAX_WIDTH
      in the script below. */
   .sub-ov-text { position: absolute; left: 0; right: 0; margin: 0 auto;
-    width: max-content; max-width: 92%; pointer-events: auto; cursor: grab;
+    width: max-content; max-width: 92%; pointer-events: auto;
     user-select: none; touch-action: none; font-weight: 700; line-height: normal;
     font-family: "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans CJK KR", sans-serif;
     white-space: pre-wrap; }
@@ -1712,7 +1770,19 @@
   .cap-empty { flex: 1; display: flex; align-items: center; justify-content: center;
     padding: 16px; text-align: center; font-size: var(--font-label); color: var(--muted-foreground); }
   .cap-main { flex: 1; min-height: 0; display: flex; }
-  .cap-main[hidden], .cap-empty[hidden] { display: none; }
+  .cap-main[hidden], .cap-empty[hidden], .cap-files[hidden] { display: none; }
+  /* On its own (captionsTab.mjs): the video and the subtitle file at the
+     top, the looks dim under them until both are in; once they are, the two
+     files side by side over the looks. */
+  .cap-alone { flex: none; padding-bottom: 4px; }
+  .cap-alone .video-card { align-self: stretch; text-align: left; }
+  .cap-alone .cap-srt { margin-top: 10px; padding-block: 14px; }
+  .cap-alone .import-status { margin-top: 8px; }
+  /* The tab scrolls as one then, so the dim looks show whole under the blocks. */
+  .cap-tab:has(> .cap-alone:not([hidden])) { overflow-y: auto; }
+  .cap-tab:has(> .cap-alone:not([hidden])) > .cap-main { flex: none; }
+  .cap-main.cap-off { opacity: 0.45; }
+  .cap-files { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; padding: 10px 12px 0; }
   .cap-side { width: 120px; flex: 0 0 auto; box-sizing: border-box; border-right: 1px solid var(--border);
     padding: 15px 8px; display: flex; flex-direction: column; gap: 8px; }
   .cap-pill { height: 24px; border-radius: var(--radius-sm); background: var(--secondary);
@@ -1749,23 +1819,43 @@
   .cap-saved { margin-left: auto; color: var(--foreground); }
   .cap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px;
     padding: 0 12px 12px; overflow-y: auto; min-height: 0; align-content: start; }
+  /* What the looks make, under the grid, which scrolls above it. */
+  .cap-content .result-box { margin: 0 12px 12px; }
   .cap-card { display: flex; flex-direction: column; gap: 5px; border: 0; background: none; padding: 0;
     font: inherit; font-size: var(--font-label); color: var(--muted-foreground); text-align: left;
     cursor: pointer; }
   .cap-card.on { color: var(--foreground); }
+  /* The words alone, no frame of the video behind them (owner, 2026-10-23). */
   .cap-pv { height: 56px; box-sizing: border-box; border-radius: var(--radius-sm); overflow: hidden;
-    background: var(--thumb-bg) center / cover no-repeat; border: 1.5px solid transparent;
-    display: flex; align-items: flex-end; justify-content: center; padding-bottom: 7px;
+    background: none; border: 1.5px solid transparent;
+    display: flex; align-items: center; justify-content: center;
     font-weight: 700; }
   .cap-card:hover .cap-pv { border-color: var(--primary-line); }
   .cap-card.on .cap-pv { border-color: var(--primary); }
   /* The look's own class (.sub-ov-*) draws the words and their weight, in
-     the burn's font; the tile only sizes them. The word is kept short
-     (captionsTab.mjs sampleWord), so nothing clips a glow. */
+     the burn's font; the tile only sizes them. The words are short ("Abc
+     123"), so nothing clips a glow. */
   .cap-sample { font-size: 12px; line-height: 1.2; white-space: nowrap;
     font-family: "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans CJK KR", sans-serif; }
   /* A narrow panel gives the tiles the side menu's room. */
   @container scriptpane (max-width: 380px) { .cap-side { display: none; } }
+  /* The same looks over a dub's picture (owner, 2026-10-23): a small chip
+     10px above the subtitle while the video stands still, and the twelve
+     opened above it in two rows of six -- never below. 560px wide, placed by
+     ui/src/captionsTab.mjs; never wider or taller than the panel, which clips. */
+  .sub-style-chip { position: absolute; left: 50%; transform: translateX(-50%); pointer-events: auto;
+    display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
+    border: 0; border-radius: 6px; background: rgba(0, 0, 0, 0.6); color: #fff;
+    font: inherit; font-size: var(--font-label); white-space: nowrap; cursor: pointer; }
+  .sub-style-chip:hover, .sub-style-chip[aria-expanded="true"] { background: rgba(0, 0, 0, 0.8); }
+  .video-style-pop { position: absolute; z-index: 6; box-sizing: border-box;
+    width: min(560px, calc(100% - 16px)); max-height: calc(100% - 47px); overflow-y: auto; padding: 12px;
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--popover, var(--background));
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5); }
+  .video-style-pop .cap-label { margin: 0 0 8px; }
+  .video-style-pop .cap-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); padding: 0; overflow: visible; }
+  .video-style-result { margin: 12px 0 0; }
+  .video-style-result .m { line-height: 1.5; }
 
   .video-bigplay { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
     width: 64px; height: 64px; border-radius: 50%; border: none; cursor: pointer;
@@ -2015,13 +2105,6 @@
   .tl-lane { position: relative; height: 26px; }
   .tl-lane-video { height: 74px; }
   .tl-lane-dub { height: 30px; }
-  /* A separated draft's two sounds (the Audio tab): a lane each, the voice in
-     the accent colour and the background in green; dim while silenced. */
-  .tl-stem { position: absolute; top: 0; height: 26px; box-sizing: border-box; border-radius: 4px;
-    overflow: hidden; background: var(--well); display: flex; flex-direction: column; }
-  .tl-stem-voice .tl-wave svg { fill: var(--primary); }
-  .tl-stem-background .tl-wave svg { fill: var(--success); }
-  .tl-lane-stem.off, .tl-name-stem.off span { opacity: 0.35; }
 
   /* The video: its name and length, the film strip, the waveform. */
   .tl-vclip { position: absolute; top: 0; height: 74px; box-sizing: border-box; border-radius: 4px;
@@ -2193,7 +2276,9 @@
   /* Quiet enough not to compete with the links above it, and it wraps rather
      than pushing the dialog wider -- a project name can be long. */
   .export-where { margin: 12px 0 0; font-size: var(--font-label); color: var(--muted-foreground);
-    line-height: 1.45; word-break: break-word; }
+    /* Korean wraps between words, not inside one (저장해요 split in two, 2026-10-22); a
+       long file name without spaces still wraps somewhere. */
+    line-height: 1.45; word-break: keep-all; overflow-wrap: anywhere; }
 
 
   /* ---------------- Settings modal ---------------- */
@@ -2247,8 +2332,14 @@
   .modal-foot .btn-secondary, .modal-foot .btn-outline { background: #3a404a; }
   .modal-foot .btn-secondary:hover:not(:disabled), .modal-foot .btn-outline:hover:not(:disabled) { background: var(--divider); }
   /* The models dialog's line is the message of that dialog, not a hint under
-     something else, so it is the message size too. */
-  #mnLine { font-size: var(--font-ui); }
+     something else, so it is the message size too. It is two lines, the
+     sentence and then the room left and the memory (ui/src/modelsDialog.mjs),
+     in a dialog wider than the other confirms so the second one fits whole
+     (owner, 2026-10-22, 5): measured with four figures of room left
+     ("1834.2 GB"), 351px of English and 299 of Korean. */
+  #mnLine { font-size: var(--font-ui); line-height: 16px; white-space: pre-line; }
+  #modelsNeededOverlay .modal.modal-alert { width: 390px; }
+  html:lang(ko) #modelsNeededOverlay .modal.modal-alert { width: 340px; }
   /* One size for a settings row and everything inside it: the labels and the
      model names had no size of their own and were reading at the root's 16px,
      a size nothing else on screen wears any more. */
@@ -2341,18 +2432,27 @@
   /* 158 + 10 puts every control at x=204 of the window, where the mockup's are. */
   .set-row { display: grid; grid-template-columns: 158px minmax(0, 1fr); column-gap: 10px;
     align-items: center; min-height: 46px; padding: 10px 0; font-size: 11.5px; }
-  .set-row + .set-row, .set-panel .model-row + .model-row,
-  .set-summary + #modelsList > .model-group-head:first-child { border-top: 1px solid var(--border); }
+  .set-row + .set-row, .set-panel .model-row + .model-row { border-top: 1px solid var(--border); }
   .set-row > label, .set-row > span:first-child { color: var(--foreground); }
   .set-ctl { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
   .set-ctl.set-inline { flex-direction: row; align-items: center; gap: 8px; }
   .set-wide { grid-column: 1 / -1; padding-top: 8px; }
+  /* A row that is one line of words across both columns (Storage's download
+     folder), broken anywhere when a long path needs it. */
+  .set-line { grid-column: 1 / -1; overflow-wrap: anywhere; }
   .set-panel input[type="password"], .set-panel input[type="text"], .set-panel select {
     height: 24px; padding: 0 8px; border: 1px solid transparent; border-radius: 5px;
     background-color: var(--secondary); font-size: 11.5px; }
   .set-panel input:focus, .set-panel select:focus { border-color: var(--primary); }
   .set-panel .settings-hint, .set-panel .job-notice, .set-panel .settings-link { margin-top: 0; font-size: 11px; }
   .set-panel .settings-hint:empty { display: none; }
+  /* Privacy's job logs: what goes, where, what never goes and why, a sentence
+     a line, with a little air between sentences. Five lines tall in Korean and
+     seven in English, the row keeps its label beside the switch rather than
+     halfway down the words. */
+  #reportsHint > span { display: block; }
+  #reportsHint > span + span { margin-top: 3px; }
+  .set-row:has(> .set-ctl > #reportsHint) { align-items: start; }
   .set-panel .settings-link { font-weight: 500; color: var(--primary-ink); }
   .set-panel .about-brand .settings-link { font-size: 11.5px; }
   .set-panel .btn { height: 24px; border: 0; border-radius: 6px; background: var(--secondary);
@@ -2374,15 +2474,28 @@
   /* One line unless a busy status adds a second (below): spanning an empty
      second line set the name 4px above the button's middle. */
   .set-panel .model-row > .btn { grid-row: 1; grid-column: 4; min-width: 76px; }
-  /* A heading over each purpose's rows, in the summary's quiet grey, with what
-     the group takes on disk at the right; its line is a row's line. */
-  .set-panel .model-group-head { display: flex; justify-content: space-between; align-items: baseline;
-    padding: 14px 0 6px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted-foreground); }
-  /* What a ready row is for, after its "Ready", in plain grey. */
+  /* A band over each purpose's rows, with what the group takes on disk at the
+     right. A heading in the rows' own grey went unseen among them, and so did
+     a band one shade off the panel (owner, 2026-10-22, 12): this one is the
+     pill grey, 12 points of lightness over the rows, with a light rule on top
+     and room before it. It reaches the panel's edges (its 24px sides, below). */
+  .set-panel .model-group-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px;
+    align-items: baseline; margin: 12px -24px 0; padding: 9px 24px; background: var(--secondary);
+    border-top: 1px solid var(--divider); font-size: 13px; font-weight: 600; line-height: 18px; color: var(--foreground); }
+  .set-panel .model-group-head:first-child { margin-top: 0; }
+  .set-panel .model-group-head > .model-size { font-weight: 500; }
+  /* What the group is there for, under its name. */
+  .set-panel .model-group-note { grid-column: 1 / -1; font-size: 11px; font-weight: 400; line-height: 16px;
+    color: var(--muted-foreground); }
+  /* What a ready row is for, after its "Ready", in plain grey -- and a
+     program not here yet, with no "Ready" before it, in that place. */
   .set-panel .model-note { margin-left: 10px; color: var(--muted-foreground); font-weight: 400; }
+  .set-panel .model-row > .settings-hint:not(.model-ok):not(.model-status-long) > .model-note { margin-left: 0; }
   /* The 512px sheet leaves that cell about 100px: a note that does not fit
-     wraps under "Ready" rather than ending in an ellipsis. */
-  .set-panel .model-row > .settings-hint:has(> .model-note) { white-space: normal; overflow: visible; text-overflow: clip; }
+     wraps under "Ready" rather than ending in an ellipsis -- and never leaves
+     a word alone on its last line ("Gemma / 3)"). */
+  .set-panel .model-row > .settings-hint:has(> .model-note) { white-space: normal; overflow: visible; text-overflow: clip;
+    text-wrap: pretty; }
   .set-panel #modelsError { padding: 8px 0; }
   /* The count of what Save would write sits in the 16px between the panel and
      the buttons, and takes a little more only when it has something to say. */
@@ -2483,17 +2596,6 @@
   .trim-range:focus { outline: none; }
   .trim-range:focus-visible::-webkit-slider-thumb { box-shadow: var(--focus-ring); }
   .option-grid.two { grid-template-columns: 1fr 1fr; }
-  /* A whole-width bordered row rather than a link, so it reads as the lid on
-     everything the user does not normally have to open. */
-  .advanced-btn { width: 100%; padding: 0 12px; justify-content: space-between;
-    background: var(--background); border: 1px solid var(--control-line); font-weight: 500; }
-  .advanced-btn > span:first-child { display: inline-flex; align-items: center; gap: 8px; }
-  .advanced-btn .chev { color: var(--muted-foreground); display: inline-flex;
-    transition: transform 0.15s ease; }
-  /* Open turns the chevron over. The arrow is one SVG that points down and is
-     flipped here, rather than two glyphs swapped by hand. */
-  .advanced-btn.open .chev { transform: rotate(180deg); }
-  .advanced-btn.open, .advanced-btn.open .chev { border-color: var(--primary); color: var(--primary); }
   /* A sentence, not a field: it belongs under the whole grid rather than in a
      column beside one. The grid's own gap already spaces it. */
   /* The two that end here sit left, the one that goes on to a dub sits right,
@@ -2559,7 +2661,7 @@
      46 with a 24 control; a 55 footer with 86x28 buttons. */
 
   /* -- New project: the picture on the left, the decisions on the right.
-     The body is one fixed height, so opening Advanced scrolls the right
+     The body is one fixed height, so the options scroll in the right
      column and the window stays where it is. */
   .project-modal { width: min(720px, 92vw); max-height: 92vh; display: flex; flex-direction: column;
     overflow: hidden; }
@@ -2618,6 +2720,15 @@
   .opt-row > select, .opt-row > input { grid-column: 2; grid-row: 1; height: 24px; padding: 0 8px;
     border: 1px solid transparent; border-radius: 5px; background-color: var(--secondary); font-size: 11.5px; }
   .opt-row > select:focus, .opt-row > input:focus { border-color: var(--primary); }
+  /* Processing: Local model | Perso API, two halves in a dropdown's place
+     (owner, 2026-10-22) -- the export dialog's MP3 / WAV segment, as wide as
+     the dropdowns under it. The choice itself is #dubModeSelect, hidden. */
+  .opt-row > .mode-seg { grid-column: 2; grid-row: 1; display: flex; height: 24px; padding: 2px; box-sizing: border-box;
+    border-radius: 5px; background: var(--secondary); }
+  .mode-seg button { flex: 1 1 0; min-width: 0; padding: 0 8px; border: 0; border-radius: 4px; background: none;
+    font: inherit; font-size: 11.5px; color: var(--muted-foreground); cursor: pointer; white-space: nowrap; }
+  .mode-seg button[aria-checked="true"] { background: var(--primary); color: var(--primary-foreground); }
+  .mode-seg button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   /* The Dubbing model: a button on the dropdowns' fill and, pressed, a list
      in the ratio menu's dress with a line of what each model is under its
      name (ui/src/newProject.mjs paintPersoModel). The list is fixed to the
@@ -2645,20 +2756,47 @@
   .model-name { font-size: 11.5px; font-weight: 600; }
   .model-pick-btn .model-name { font-weight: 400; }
   .model-caption { font-size: 10.5px; color: var(--muted-foreground); }
+  /* The Target language's list (owner, 2026-10-22): the model list's dress,
+     a search field at its top, the languages scrolling under it, and how many
+     of how many a search has left. */
+  .lang-search { display: flex; align-items: center; gap: 7px; height: 28px; margin: 0 0 4px; padding: 0 9px;
+    border: 1px solid var(--primary); border-radius: 6px; background: var(--field); color: var(--muted-foreground); }
+  .lang-search input { flex: 1; min-width: 0; height: 26px; padding: 0; border: 0; border-radius: 0; background: none;
+    color: var(--foreground); font: inherit; font-size: 11.5px; }
+  .lang-search input:focus { border: 0; box-shadow: none; }
+  .lang-opts { position: relative; display: flex; flex-direction: column; gap: 1px; max-height: 240px; overflow-y: auto; }
+  .lang-count { margin-top: 4px; padding: 6px 9px 2px; border-top: 1px solid var(--border); font-size: 10.5px;
+    color: var(--muted-foreground); }
+  .lang-count[hidden] { display: none; }
   .model-pro { flex: none; padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px;
     font-size: 10px; color: var(--muted-foreground); white-space: nowrap; }
+  /* A Perso API dubbing's stage rows, greyed (ui/src/app.mjs paintDubMode):
+     each reads "Perso" over the choice made for this computer, which stays
+     the dropdown's value for when Local model is chosen again (owner,
+     2026-10-22). The word sits where the dropdown's own would, as dim. The
+     four stages are buttons now (ui/src/stagePicker.mjs) that say Perso
+     themselves, so it is painted only over a dropdown still on screen. */
+  .advanced-body.by-perso .opt-row > select { -webkit-text-fill-color: transparent; }
+  .advanced-body.by-perso .opt-row:has(> select:not([hidden]))::after { content: "Perso"; grid-column: 2; grid-row: 1;
+    padding: 0 9px; font-size: 11.5px; color: var(--foreground); opacity: 0.45; pointer-events: none; }
+  /* A stage's button says Ready at its right once all the choice needs is on
+     this computer, and each line of its list ends in the model's state
+     (ui/src/stagePicker.mjs). Greyed with the dropdowns for a Perso dubbing. */
+  .model-pick-btn .model-state { margin-left: auto; font-size: 10.5px; white-space: nowrap; }
+  .model-pick-btn:has(.model-state)::after { margin-left: 8px; }
+  .model-pick-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .model-state.st-ok, .model-caption .st-ok { color: var(--success-ink); font-weight: 600; }
+  .model-caption .st-busy { color: var(--destructive); font-weight: 600; }
+  .model-caption .st-before { color: var(--foreground); font-weight: 500; }
   .opt-row > .settings-hint { grid-column: 2; margin: 5px 0 0; font-size: 11px; color: var(--muted-foreground); }
   .opt-row > .settings-hint:empty { display: none; }
   .opt-row > .settings-hint.model-busy { color: var(--destructive); }
   .opt-row > .settings-hint.model-ok { color: var(--success-ink); }
   .opt-row .keys-link { padding: 0 8px; height: 22px; font-size: 11px; font-weight: 500; }
-  .advanced-btn, .advanced-btn.open { display: flex; align-items: center; justify-content: flex-start; gap: 6px;
-    width: 100%; height: auto; padding: 10px 0 8px; border: 0; border-radius: 0; background: none;
-    color: var(--foreground); font-family: inherit; font-size: 11.5px; font-weight: 500; cursor: pointer; }
-  .advanced-btn .chev, .advanced-btn.open .chev { color: var(--icon); }
-  .advanced-btn .chev .icon { width: 13px; height: 13px; stroke-width: 1.5; }
-  .advanced-btn.open .chev { transform: rotate(90deg); }
-  .advanced-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  /* "Dubbing step settings" over the six stage rows, in the type the
+     Advanced options fold had, with no arrow: the rows are always in sight
+     (owner, 2026-10-22, remark 2). */
+  .stage-head { padding: 10px 0 8px; font-size: 11.5px; font-weight: 500; color: var(--foreground); }
 
 
   /* -- Settings: the measured 22 for a field, and 24 at the panel's sides. */
@@ -2680,6 +2818,12 @@
   .export-modal .export-list a .export-state .icon { width: 16px; height: 16px; stroke-width: 1.5; color: inherit; }
   .export-modal .export-list a.saved .export-state { color: var(--success); }
   .export-modal .export-where { font-size: 12px; line-height: 1.5; }
+  /* The line under the title that says what comes out (owner, 2026-10-22). */
+  .export-modal .export-headline { margin: 0 0 10px; font-size: 12px; color: var(--muted-foreground); }
+  /* Change · Use default at the end of the line: the erase card's words at the
+     line's own size, kept together when a long folder name wraps the line. */
+  .export-where .erase-link { font-size: inherit; }
+  .export-where .export-links { white-space: nowrap; }
   /* === export === */
   /* Audio only's MP3 / WAV switch, at the right of its row (mockup
      export-ratio 1): the Captions tab's segment, lit in the primary colour. */
@@ -2709,6 +2853,11 @@
   .export-list a[aria-checked="true"] .export-check { background: var(--primary); border-color: var(--primary); }
   .export-list a[aria-checked="true"] .export-check .icon { visibility: visible; }
   .export-modal .export-list a .export-state { min-width: 16px; }
+  /* A dubbing's three headings, Video, Subtitles and Audio (owner,
+     2026-10-22): quiet, and closer to the rows under them than to the ones
+     above. */
+  .export-list .export-group { margin: 6px 0 -2px; font-size: 11px; color: var(--muted-foreground); }
+  .export-list .export-group:first-child { margin-top: 0; }
   /* === /export === */
   /* === qa-fixes === */
   /* 2. Narrower than the 590px tier fits (a 1280px window with the Dub Agent
@@ -2742,6 +2891,8 @@
   .import-block.drag-over { border-color: var(--primary); outline: 2px solid var(--primary); outline-offset: -2px; }
   .import-block:focus { outline: none; }
   .import-block:focus-visible { border-color: var(--primary); }
+  /* Save video's: the link field alone, nothing to click or drop. */
+  .import-block.link-only { cursor: default; }
   .import-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; }
   .import-plus { width: 16px; height: 16px; border-radius: 5px; background: var(--primary); color: #fff;
     display: grid; place-items: center; flex: none; }

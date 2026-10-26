@@ -70,6 +70,7 @@ from app.jobs import JobKind, JobStatus, kind_of
 from app.pipeline import run_dub
 from app.source_fetch import fetch as fetch_source
 from app.text.naming import project_name, safe_name
+from app.translate import translator_model
 
 router = APIRouter()
 logger = logging.getLogger("persodub.api.dub")
@@ -107,7 +108,7 @@ def _valid_language_code(code: str, dub_mode: str = "local") -> bool:
 # Which engines a job is made with, and which models that still needs
 # ---------------------------------------------------------------------------
 
-def _ollama_unavailable_message(engine_name: str, status: str, model_tag: str) -> str:
+def _ollama_unavailable_message(engine_name: str, status: str) -> str:
     """422 detail for a gemma/qwen preflight failure -- distinguishes an
     unreachable Ollama server from one that's reachable but just hasn't
     pulled the model yet, so a busy-but-valid Ollama isn't misreported as
@@ -127,10 +128,10 @@ def _ollama_unavailable_message(engine_name: str, status: str, model_tag: str) -
             "Local {engine} translation is not available on this machine "
             "(Ollama is not running or not reachable). Choose Gemini in the "
             "Translation dropdown, or make sure Ollama is running.", engine=engine_name)
-    return t(
-        "Local {engine} translation is not available on this machine "
-        "(the model is not pulled). Choose Gemini in the Translation dropdown, "
-        "or run: ollama pull {tag}", engine=engine_name, tag=model_tag)
+    # Only Qwen gets here, and it is no row in Settings > Models: a model the
+    # app downloads is the download dialog instead (_ollama_preflight).
+    return t("The {engine} translation model is not downloaded yet. Choose another translator.",
+             engine=engine_name)
 
 
 def _engines_used(stt_engine=None, translate_engine=None, n_takes=None, sep_engine=None,
@@ -146,12 +147,14 @@ def _engines_used(stt_engine=None, translate_engine=None, n_takes=None, sep_engi
     """
     resolved_stt = (stt_engine or default_stt_engine() or "").lower()
     resolved_sep = (sep_engine or dub_setup.default_for("separation")).lower()
+    translator = (translate_engine or dub_setup.default_for("translator")).lower() or None
     return {
         "stt_engine": "perso" if resolved_stt == "perso" else "whisper",
-        "translator": (translate_engine or dub_setup.default_for("translator")).lower() or None,
+        "translator": translator,
+        "translator_model": translator_model(translator),
         "tts": tts_engine or dub_setup.default_for("voice"),
         "quality": n_takes if n_takes is not None else (dub_setup.default_n_takes() or QWEN_N_TAKES),
-        "separation": "perso" if resolved_sep == "perso" else "demucs",
+        "separation": resolved_sep if resolved_sep in ("perso", "roformer") else "demucs",
     }
 
 
@@ -260,7 +263,7 @@ def _ollama_preflight(info):
     # A model the app downloads is the 409 dialog when it is missing; one the
     # app does not download (Qwen) can only be refused until it is pulled.
     if status == "unreachable" or (status != "available" and not info.catalog_id):
-        raise HTTPException(422, _ollama_unavailable_message(info.label, status, info.ollama_model))
+        raise HTTPException(422, _ollama_unavailable_message(info.label, status))
     # Same rule "Try again" applies, asked with the status already in hand
     # so a start still probes Ollama exactly once.
     return need_ollama, dub_launch.translate_model_missing(info.name, status)
@@ -296,7 +299,8 @@ def _require_local_models(engines: dict, translator) -> None:
         translate_missing_id = dub_launch.translate_model_missing(translator)
     missing = launch_api.missing_models(engines.get("stt_engine") != "perso", translate_missing_id,
                                         need_engine=True, need_ollama=need_ollama,
-                                        separation_local=engines.get("separation") != "perso")
+                                        separation_local=engines.get("separation") != "perso",
+                                        need_roformer=engines.get("separation") == "roformer")
     if missing:
         launch_api.raise_models_needed(missing)
     _require_voice_engine_running()
@@ -437,7 +441,7 @@ def dub_job_redub(jid: str):
     # folder, whichever door put it there -- the work builder looks for it.
     shutil.copyfile(script, os.path.join(work, "sub.srt"))
 
-    engines = _inherited_engines(job, ("stt_engine", "translator", "tts", "quality"))
+    engines = _inherited_engines(job, ("stt_engine", "translator", "translator_model", "tts", "quality"))
 
     # Only the voices are made again -- no STT, no translation -- but a voice
     # model (or the engine pack) removed since must resurface as the dialog,
@@ -507,7 +511,8 @@ def dub_job_again(jid: str):
     job = state.job_store.get(jid)
     if job is None:
         raise HTTPException(status_code=404, detail=t("Unknown job: {jid}", jid=jid))
-    if kind_of(job) != JobKind.DUB:
+    # A video with the user's own subtitles is dubbed from its Dubbing tab.
+    if kind_of(job) not in (JobKind.DUB, JobKind.CAPTIONS):
         raise _not_a_dubbing(job, "do again")
     title = job.get("title") or job.get("project") or "video"
     original = downloads_api.reopen_original(job, title)
@@ -583,16 +588,17 @@ def dub_job_resume(jid: str, body: Optional[ResumeRequest] = None):
     engines = _inherited_engines(job, _RERUN_ENGINES)
     _require_local_models(engines, None if translator or translated else engines.get("translator"))
     check_space(state.WORKSPACE)
+    # Another translator takes over with its own model, which the screen names.
+    switched = {"translator": translator, "translator_model": translator_model(translator)} if translator else {}
     if not state.job_store.claim(jid, RESUMABLE, status=JobStatus.QUEUED, error=None, error_shown=None,
-                                 error_detail=None, cancel_requested=False, notices=[],
-                                 **({"translator": translator} if translator else {})):
+                                 error_detail=None, cancel_requested=False, notices=[], **switched):
         raise HTTPException(status_code=409, detail=t("This project is already running again."))
     state.job_store.append_log(jid, "Resuming from where it stopped…")
     if translator:
         was = engines_status.TRANSLATOR_NAMES.get(job.get("translator"))
         state.job_store.append_log(jid, "Translating with %s%s." % (
             engines_status.TRANSLATOR_NAMES[translator], " instead of %s" % was if was else ""))
-    record = {**job, "work_dir": work_dir, **({"translator": translator} if translator else {})}
+    record = {**job, "work_dir": work_dir, **switched}
     state.job_store.start(jid, lambda log: _work_for(
         record, jid, resume=True, voices_only=bool(job.get("voices_only")))(log))
     return {"job_id": jid}
@@ -645,6 +651,8 @@ def dub_job_retry(jid: str):
     engines = {}
     if job.get("dub_mode") != "perso":
         engines = _inherited_engines(job, _RERUN_ENGINES)
+        # Translated again today, so with today's model of that translator.
+        engines["translator_model"] = translator_model(engines.get("translator"))
         # A script the first run was given is copied in below and dubbed as it
         # is, so no translator is asked for its model or runtime -- the same
         # rule as a start (_translator_preflight).
@@ -855,7 +863,7 @@ def _start_plan(*, video, source_url, download_id, language, language_code, num_
     # Blanks take the app's saved defaults (app/setup.py): what the Settings
     # screen or the Dub Agent's set_default chose, in force without a restart.
     sep_engine = (sep_engine or "").strip().lower() or dub_setup.default_for("separation")
-    if sep_engine not in ("local", "demucs", "perso"):
+    if sep_engine not in ("local", "demucs", "roformer", "perso"):
         raise HTTPException(422, t("Unknown sep_engine: {name}", name=sep_engine))
     dub_mode = (dub_mode or "").strip().lower() or dub_setup.default_for("dub_mode")
     if dub_mode not in ("local", "perso"):
@@ -969,7 +977,8 @@ def _start_preflight(plan: _StartPlan, has_script: bool) -> Optional[str]:
         # voices run in it too).
         missing = launch_api.missing_models(need_whisper, translate_missing_id,
                                   need_engine=True, need_ollama=need_ollama,
-                                  separation_local=plan.sep_engine != "perso")
+                                  separation_local=plan.sep_engine != "perso",
+                                  need_roformer=plan.sep_engine == "roformer")
         if missing:
             launch_api.raise_models_needed(missing)
         _require_voice_engine_running()
@@ -1194,8 +1203,8 @@ def dub_start(
     language): one video's languages are one project on Home.
     perso_model = the Perso voice model of a Perso cloud dubbing, any one Perso's
     language list names ("ORIOLE", "LINNET_4", "FINCH", ...), which the target
-    language must have; omitted, ORIOLE
-    when the language has it, else the first it has (app/languages.py model_for).
+    language must have; omitted, LINNET_4
+    when the language has it, else ORIOLE, else the first it has (app/languages.py model_for).
     """
     try:
         plan = _start_plan(

@@ -10,7 +10,7 @@
 
   The new-layout frame (mockup approved 2026-09-29):
   - Skeleton: one 36px top bar (Home at the left, the job's name in the
-    middle, Settings, the pane buttons and Export at the right), a
+    middle, Settings and the pane buttons at the right), a
     collapsible projects sidebar, and the screens (home / running / erase /
     done) swapped by showScreen(). The finished screen is three panels in a
     row -- the tabbed left panel, the video, the agent -- with the timeline
@@ -65,7 +65,8 @@
   <!-- ============ TOPBAR ============ -->
   <!-- The window's one bar, 36px across the whole width (new-layout mockup,
        user 2026-09-29): the job's name in the middle, and on the right
-       Settings, the three pane buttons and Export. On the Mac and Windows the
+       Settings and the three pane buttons (#exportBtn left for the video
+       panel's tab row, 2026-10-22). On the Mac and Windows the
        system's title bar is gone and the window's own buttons sit in this bar;
        the stylesheet orders the buttons for each (2026-10-21). Home and New
        project live in the left panel's tab row (owner, 2026-09-30); while that
@@ -88,11 +89,12 @@
     <!-- Blue while a model downloads in the background; clicking reopens
          the progress dialog (or Settings when none is pending). -->
     <button class="topbar-dl" id="topbarDl" type="button" hidden></button>
-    <!-- The way back INTO the job Home just left. Only on the
-         first screen, and only while there is such a job (see paintForward). -->
+    <!-- The way back INTO the job Home just left: an arrow that curls back,
+         and that job's name (a bare arrow read as "next", 2026-10-21). Only
+         on the first screen, and only while there is such a job (see paintForward). -->
     <button class="topbar-back" id="topbarForward" type="button"
-            aria-label="Back to the project you left" hidden>
-      <svg class="lu" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+            aria-label="Reopen the last project" hidden>
+      <svg class="lu" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg><span id="topbarForwardName"></span>
     </button>
     <button class="topbar-icon" id="settingsBtn" type="button" title="Settings" aria-label="Open settings" data-i18n-title="Settings" data-i18n-aria-label="Open settings">
       <svg class="lu" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
@@ -110,7 +112,6 @@
       <svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><rect class="fill" x="14" y="6" width="5" height="12" rx="1"/></svg>
     </button>
     </span>
-    <button data-i18n class="btn btn-primary" id="exportBtn" type="button" hidden>Export</button>
   </div>
 
   <div class="shell">
@@ -154,8 +155,8 @@
           </div>
           <div data-i18n class="home-grp">Tools</div>
           <button class="home-nav" id="homeNavDub" type="button"><svg class="icon" viewBox="0 0 24 24"><path d="M8.8 20v-4.1l1.9.2a2.3 2.3 0 0 0 2.164-2.1V8.3A5.37 5.37 0 0 0 2 8.25c0 2.8.656 3.054 1 4.55a5.77 5.77 0 0 1 .029 2.758L2 20"/><path d="M19.8 17.8a7.5 7.5 0 0 0 .003-10.603"/><path d="M17 15a3.5 3.5 0 0 0-.025-4.975"/></svg><span data-i18n>Dubbing</span></button>
-          <button class="home-nav" id="homeNavAudio" type="button"><svg class="icon" viewBox="0 0 24 24"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg><span data-i18n>Separate audio</span></button>
           <button class="home-nav" id="homeNavErase" type="button"><svg class="icon" viewBox="0 0 24 24"><path d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21"/><path d="m5.082 11.09 8.828 8.828"/></svg><span data-i18n>Erase subtitles</span></button>
+          <button class="home-nav" id="homeNavCaptions" type="button"><svg class="icon" viewBox="0 0 24 24"><rect width="18" height="14" x="3" y="5" rx="2" ry="2"/><path d="M7 15h4M15 15h2M7 11h2M13 11h4"/></svg><span data-i18n>Burn in subtitles</span></button>
           <button class="home-nav" id="homeNavSave" type="button"><svg class="icon" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg><span data-i18n>Save video</span></button>
           <div class="home-sep"></div>
           <div data-i18n class="home-grp">Management</div>
@@ -179,7 +180,7 @@
               <span data-i18n class="home-banner-title">Create project</span>
               <span data-i18n class="home-banner-title home-banner-title-drop">Drop to start a new project</span>
             </div>
-            <div data-i18n class="home-banner-sub">Drop videos here, or click to choose</div>
+            <div data-i18n class="home-banner-sub">Upload a video to dub it, erase or burn in subtitles, or save it from a link. Drop it here or click to choose</div>
             <!-- The link field: it is a selling point, not a second step, so it
                  sits in the banner itself now (user, 2026-09-30) rather than in
                  its own card below. stopPropagation on click/mousedown keeps it
@@ -190,7 +191,7 @@
           </div>
 
           <!-- The row under the banner (the mockup's first screen): the Dub
-               Agent first and wider, then the three tools. The chips put their
+               Agent first and wider, then the four tools (owner, 2026-10-23). The chips put their
                sentence in the agent's box without sending it. -->
           <div class="home-cards">
             <div class="home-card home-agent-card" id="homeAgentCard">
@@ -208,20 +209,20 @@
               <div data-i18n class="home-card-title">Dubbing</div>
               <div data-i18n class="home-card-desc">Voice a video in another language</div>
             </button>
-            <button class="home-card home-card-btn" id="homeAudioCard" type="button">
-              <span class="home-card-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg></span>
-              <div data-i18n class="home-card-title">Separate audio</div>
-              <div data-i18n class="home-card-desc">Split voice and background</div>
-            </button>
             <button class="home-card home-card-btn" id="homeEraseCard" type="button">
               <span class="home-card-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21"/><path d="m5.082 11.09 8.828 8.828"/></svg></span>
               <div data-i18n class="home-card-title">Erase subtitles</div>
-              <div data-i18n class="home-card-desc">Take burned-in subtitles out</div>
+              <div data-i18n class="home-card-desc">Erases burned-in subtitles. Dub the erased video for clean subtitles in the new language.</div>
+            </button>
+            <button class="home-card home-card-btn" id="homeCaptionsCard" type="button">
+              <span class="home-card-icon"><svg class="icon" viewBox="0 0 24 24"><rect width="18" height="14" x="3" y="5" rx="2" ry="2"/><path d="M7 15h4M15 15h2M7 11h2M13 11h4"/></svg></span>
+              <div data-i18n class="home-card-title">Burn in subtitles</div>
+              <div data-i18n class="home-card-desc">Put a subtitle file on a video in the style you choose</div>
             </button>
             <button class="home-card home-card-btn" id="homeSaveCard" type="button">
               <span class="home-card-icon"><svg class="icon" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></span>
               <div data-i18n class="home-card-title">Save video</div>
-              <div data-i18n class="home-card-desc">Download from a link</div>
+              <div data-i18n class="home-card-desc">Saves a video from a link</div>
             </button>
           </div>
           <div class="link-card" id="linkCard" hidden></div>
@@ -239,7 +240,11 @@
                GET /api/dub/jobs list ui/src/projects.mjs reads for the
                sidebar and the card above. -->
           <div class="projects-head" id="projectsHead">
-            <h3 data-i18n>Projects</h3><span class="projects-count" id="projectsCount"></span>
+            <h3 data-i18n>Projects</h3>
+            <!-- Collapse / Expand: the cards fold away to this row, and stay
+                 so next time (owner, 2026-10-23; ui/src/homeScreen.mjs). -->
+            <button class="home-sbtn proj-fold" id="projectFoldBtn" type="button" aria-controls="projectsGrid"
+                    aria-expanded="true"></button><span class="projects-count" id="projectsCount"></span>
             <button class="home-sbtn" id="projectSearchBtn" type="button">
               <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg><span data-i18n>Search</span></button>
           </div>
@@ -282,12 +287,15 @@
                 <span class="left-sep" aria-hidden="true"></span>
                 <button class="left-tab on" type="button" role="tab" data-tab="dubbing" aria-selected="true">
                   <svg class="lu" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.8 20v-4.1l1.9.2a2.3 2.3 0 0 0 2.164-2.1V8.3A5.37 5.37 0 0 0 2 8.25c0 2.8.656 3.054 1 4.55a5.77 5.77 0 0 1 .029 2.758L2 20"/><path d="M19.8 17.8a7.5 7.5 0 0 0 .003-10.603"/><path d="M17 15a3.5 3.5 0 0 0-.025-4.975"/></svg>Dubbing</button>
-                <button class="left-tab" type="button" role="tab" data-tab="audio" aria-selected="false">
-                  <svg class="lu" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>Separate audio</button>
-                <button class="left-tab" type="button" role="tab" data-tab="captions" aria-selected="false" disabled title="After dubbing">
-                  <svg class="lu" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="14" x="3" y="5" rx="2" ry="2"/><path d="M7 15h4M15 15h2M7 11h2M13 11h4"/></svg>Captions</button>
                 <button class="left-tab" type="button" role="tab" data-tab="erase" aria-selected="false">
                   <svg class="lu" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21"/><path d="m5.082 11.09 8.828 8.828"/></svg>Erase</button>
+                <button class="left-tab" type="button" role="tab" data-tab="captions" aria-selected="false">
+                  <svg class="lu" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="14" x="3" y="5" rx="2" ry="2"/><path d="M7 15h4M15 15h2M7 11h2M13 11h4"/></svg>Burn in subtitles</button>
+                <!-- Save video: the project's own video as a file, through the
+                     Download dialog with that one row (ui/src/app.mjs); with
+                     no video yet, its body's link field. -->
+                <button class="left-tab" type="button" role="tab" data-tab="save" aria-selected="false">
+                  <svg class="lu" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Save video</button>
                 <button class="left-tab way-out way-new" id="newProjectBtn" type="button" aria-label="New project" data-i18n-aria-label="New project" hidden>
                   <svg class="lu" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg><span>New project</span></button>
               </div>
@@ -305,7 +313,7 @@
               </div>
               <!-- A draft's own face of this tab: no job yet, so nothing to
                    script -- the part of the video to dub, the two languages,
-                   Advanced options and Start dubbing (ui/src/draftSetup.mjs).
+                   the stage rows and Start dubbing (ui/src/draftSetup.mjs).
                    The Script pane below is hidden while this shows, and shown
                    again the moment a real job exists. -->
               <div class="draft-setup" id="draftSetup" hidden>
@@ -315,37 +323,61 @@
                   <button class="btn btn-outline btn-sm draft-back" id="draftBackBtn" type="button" hidden data-i18n>Back</button>
                 </div>
                 <!-- Which video, and how much of it is kept
-                     (ui/src/format.mjs videoCardHtml). -->
-                <div class="draft-card video-card" id="draftPartCard"></div>
+                     (ui/src/format.mjs videoCardHtml), with Replace and
+                     Remove at its top right (owner, 2026-10-22;
+                     ui/src/draftSetup.mjs), and under it what a video taking
+                     its place is doing, or why it could not (ui/src/draftImport.mjs). -->
+                <div class="draft-part">
+                  <div class="draft-card video-card" id="draftPartCard"></div>
+                  <span class="vc-acts"><button data-i18n class="erase-link" id="draftReplaceBtn" type="button">Replace</button><span aria-hidden="true">·</span><button data-i18n class="erase-link vc-del" id="draftRemoveBtn" type="button">Remove</button></span>
+                </div>
+                <div class="import-status draft-import-status" id="draftImportStatus"></div>
                 <!-- Over 30 minutes kept: said plainly, not refused (ui/src/draftSetup.mjs). -->
                 <div data-i18n class="job-notice" id="draftLongHint" hidden>Over 30 minutes. Dubbing takes much longer and depends on your computer. Cutting into parts is recommended.</div>
                 <div id="draftOptionsSlot"></div>
+                <!-- What the dubbing hands back, under the last choice in the
+                     erase card's dress, the same for Local model and Perso API
+                     (owner, 2026-10-22, remarks 10+11). -->
+                <div class="erase-card draft-result" id="draftResult"><div data-i18n class="k">What you get</div><div class="m"><span data-i18n>Dubbed video, subtitles and audio files</span></div></div>
                 <div class="form-error" id="draftError"></div>
                 <div class="draft-foot">
                   <span id="draftFootLabel"></span>
                   <button data-i18n class="btn btn-primary" id="draftStartBtn" type="button">Start dubbing</button>
                 </div>
               </div>
+              <!-- A video with the user's own subtitles (a Burn in subtitles
+                   project): no script to show here, only the way to dub the
+                   same video in a new project (ui/src/draftSetup.mjs). -->
+              <div class="tab-empty" id="dubbingCaptions" hidden>
+                <div class="tab-empty-group">
+                  <div data-i18n class="tab-empty-sub">This project is a burn-in subtitles job</div>
+                  <button data-i18n class="btn btn-primary btn-sm" id="dubbingCaptionsBtn" type="button">Prepare this video for dubbing</button>
+                  <div class="tab-empty-under"><div class="import-status error" id="dubbingCaptionsError"></div></div>
+                </div>
+              </div>
               <!-- The pane's name, the way the video pane has its tabs and the
                    timeline its heading row: three named boxes with a 6px gap
                    between them (layout G, user 2026-09-08). #scriptCount is
-                   filled by scriptTable.mjs with how many lines there are. -->
+                   filled by scriptTable.mjs with how many lines there are,
+                   and #scriptModel beside it with what translated them. -->
               <div class="pane-head" id="dubbingPaneHead"><span data-i18n>Script</span> <span class="m" id="scriptCount"></span>
+                <span class="sc-model" id="scriptModel"></span>
                 <!-- "N selected": the lines ticked in the table, which
                      Translate again then keeps to. -->
                 <span class="sc-pick-n" id="scriptPickCount"></span>
                 <!-- The script's three buttons, always in this place (mockup
                      script-one-ui). scriptTable.mjs shows them for a script
                      that can be edited, counts the changed lines into the
-                     second and rests the third on a project Perso did not dub. -->
+                     second and rests the third on a project Perso did not dub,
+                     and writes what each one does on it. -->
                 <div class="sc-acts" id="scriptActs" hidden>
-                  <button class="btn btn-outline btn-sm" id="retranslateBtn" type="button" title="Translation only." data-i18n-title="Translation only.">
+                  <button class="btn btn-outline btn-sm" id="retranslateBtn" type="button">
                     <svg class="lu" width="13" height="13" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
-                    Translate again</button>
-                  <button class="btn btn-outline btn-sm" id="remakeVoicesBtn" type="button" title="Changed lines only." disabled data-i18n-title="Changed lines only.">
+                    Retranslate unfit lines</button>
+                  <button class="btn btn-outline btn-sm" id="remakeVoicesBtn" type="button" disabled>
                     <svg class="lu" width="13" height="13" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
                     Remake voices<span id="remakeVoicesCount"></span></button>
-                  <button class="btn btn-outline btn-sm" id="allAtOnceBtn" type="button" title="Translation and voices.">
+                  <button class="btn btn-outline btn-sm" id="allAtOnceBtn" type="button">
                     <svg class="lu" width="13" height="13" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
                     All at once</button>
                 </div>
@@ -365,12 +397,39 @@
                    and their models (user, 2026-09-30). -->
               <div class="script-note" id="scriptJobNote" hidden></div>
               </div>
-              <!-- === captions: the subtitle tools, moved here from the bar
-                   that floated over the video (mockup editorc, user
-                   2026-09-29). ui/src/captionsTab.mjs paints it; the page's
-                   subtitle code owns the buttons' work. -->
+              <!-- === captions: Burn in subtitles. On a burn-in project, the
+                   subtitle tools, moved here from the bar that floated over
+                   the video (mockup editorc, user 2026-09-29); anywhere else,
+                   the way to start one. ui/src/captionsTab.mjs paints it; the
+                   page's subtitle code owns the buttons' work. -->
               <div class="tab-body cap-tab" id="tabCaptions" role="tabpanel" hidden>
                 <div class="cap-empty" id="capEmpty" hidden></div>
+                <!-- Not a burn-in project: a video (the open project's, the
+                     draft's, or one brought in) and its subtitle file, made
+                     a project of their own (owner, 2026-10-22, 2026-10-23).
+                     The looks below stay on show, dim, until both are there. -->
+                <div class="tab-empty cap-alone" id="capAlone" hidden>
+                  <div class="tab-empty-group">
+                    <div id="capImportSlot"></div>
+                    <div class="erase-card video-card" id="capVideoCard" hidden></div>
+                    <div class="import-block cap-srt" id="capSrtZone" tabindex="0" role="button">
+                      <div class="import-head"><span class="import-plus"><svg class="lu" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg></span><span data-i18n>Subtitle file (.srt)</span></div>
+                      <div class="import-sub" id="capSrtSub"></div>
+                    </div>
+                    <input type="file" id="capVideoInput" accept="video/*" hidden>
+                    <input type="file" id="capSrtInput" accept=".srt" hidden>
+                    <div class="import-status" id="capImportStatus"></div>
+                  </div>
+                </div>
+                <!-- A project made of the two: which video, which file. -->
+                <div class="cap-files" id="capFiles" hidden>
+                  <div class="erase-card video-card" id="capFileVideo"></div>
+                  <div class="erase-card video-card">
+                    <div data-i18n class="k">Subtitle file (.srt)</div>
+                    <div class="m vc-name" id="capFileSrtName"></div>
+                    <div class="s" id="capFileSrtLines"></div>
+                  </div>
+                </div>
                 <div class="cap-main" id="capMain">
                   <div class="cap-side">
                     <div class="cap-pill"><span data-i18n>Captions</span> <svg class="lu" width="10" height="10" viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg></div>
@@ -396,6 +455,25 @@
                          look is written to the job the moment it is changed. -->
                     <div class="cap-label"><span data-i18n>Styles · 12</span><span class="cap-saved" id="subSaved"></span></div>
                     <div class="cap-grid" id="subStyleMenu"></div>
+                    <!-- What the looks make (owner, 2026-10-22). -->
+                    <div class="erase-card result-box" id="capResult">
+                      <div data-i18n class="k">What you get</div>
+                      <div data-i18n class="m">The video with subtitles burned in, and the subtitle file</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <!-- Save video with no video yet: a link field alone, which
+                   brings the video into this project (ui/src/draftImport.mjs).
+                   With a video in, the tab opens the Download dialog instead
+                   and shows no body. -->
+              <div class="tab-body" id="tabSave" role="tabpanel" hidden>
+                <div class="tab-empty" id="saveImport" hidden>
+                  <div class="tab-empty-group">
+                    <div id="saveImportSlot"></div>
+                    <div class="tab-empty-under">
+                      <div class="import-status" id="saveImportStatus"></div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -456,64 +534,6 @@
                   <p class="delete-error" id="doneRetryError"></p>
                 </div>
               </div>
-              <!-- Separate audio: the voice and the background of the draft's
-                   kept parts, apart (ui/src/audioTab.mjs). Before, running
-                   and done are one body; the foot carries the buttons. -->
-              <div class="tab-body erase-tab audio-tab" id="tabAudio" role="tabpanel" hidden>
-                <div class="erase-content">
-                  <div data-i18n class="erase-label">Separate audio</div>
-                  <div class="erase-desc">Splits the sound into voice and background.</div>
-                  <div class="tab-empty" id="audioEmpty">
-                    <div class="tab-empty-group">
-                      <div id="audioImportSlot"></div>
-                      <input type="file" id="audioInput" accept="video/*" hidden>
-                      <div class="tab-empty-under">
-                        <div class="erase-dl" id="audioEmptyNote" hidden></div>
-                        <!-- How an import is going (ui/src/draftImport.mjs). -->
-                        <div class="import-status" id="audioImportStatus"></div>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="erase-body" id="audioBody" hidden>
-                    <div class="erase-card video-card" id="audioPartCard"></div>
-                    <div class="erase-card" id="audioEngineCard">
-                      <label data-i18n class="k" for="audioEngine">Runs on</label>
-                      <select id="audioEngine"><option value="local" selected data-i18n>This computer</option><option value="perso">Perso API</option></select>
-                      <div class="s" id="audioEngineNote"></div>
-                    </div>
-                    <div class="erase-card" id="audioRunCard" hidden>
-                      <div class="audio-run" id="audioRunLine"></div>
-                      <div class="progress-bar erase-bar" id="audioBarBox"><div id="audioFill"></div></div>
-                      <div class="s erase-state" id="audioState"></div>
-                    </div>
-                    <div class="audio-row" id="audioVoiceRow" hidden>
-                      <button class="audio-play" id="audioVoicePlay" type="button"></button>
-                      <span data-i18n class="audio-name">Voice</span><span class="audio-note" data-i18n id="audioVoiceNote">Speech only</span><span class="audio-wave" id="audioVoiceWave"></span>
-                    </div>
-                    <div class="audio-row" id="audioBackgroundRow" hidden>
-                      <button class="audio-play" id="audioBackgroundPlay" type="button"></button>
-                      <span data-i18n class="audio-name">Background</span><span class="audio-note" data-i18n id="audioBackgroundNote">Music and effects</span><span class="audio-wave" id="audioBackgroundWave"></span>
-                    </div>
-                    <div class="erase-error" id="audioError"></div>
-                    <details class="raw-log erase-log" id="audioLogDetails" hidden>
-                      <summary><svg class="icon icon-sm chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg> <span data-i18n>Raw log</span></summary>
-                      <div class="log-box" id="audioLogBox"></div>
-                    </details>
-                  </div>
-                  <div class="erase-row" id="audioRow" hidden>
-                    <span class="topbar-est" id="audioFootLabel"></span>
-                    <button data-i18n class="btn btn-outline btn-sm" id="audioStopBtn" type="button" hidden>Stop</button>
-                    <button data-i18n class="btn btn-outline btn-sm" id="audioBackBtn" type="button" hidden>Back</button>
-                    <button data-i18n class="btn btn-primary btn-sm" id="audioRetryBtn" type="button" hidden>Try again</button>
-                    <button data-i18n class="btn btn-outline btn-sm" id="audioDubBtn" type="button" hidden>Dubbing</button>
-                    <button data-i18n class="btn btn-primary btn-sm" id="audioExportBtn" type="button" hidden>Export</button>
-                    <button data-i18n class="btn btn-primary btn-sm" id="audioRunBtn" type="button" hidden>Separate</button>
-                  </div>
-                  <!-- The two sounds, played under the draft's video in its place. -->
-                  <audio id="audioVoice" preload="auto"></audio>
-                  <audio id="audioBackground" preload="auto"></audio>
-                </div>
-              </div>
               <!-- Taking the subtitles burned into a video back out of it
                    (ui/src/eraseScreen.mjs). The panel asks which video, then
                    which area; the box is drawn on the video in #erasePane,
@@ -558,17 +578,34 @@
                       <div class="m"><span id="erasePartRange"></span><span class="pct" id="erasePct" hidden></span></div>
                       <div class="progress-bar erase-bar" id="eraseBarBox" hidden><div id="eraseFill"></div></div>
                       <div class="s" id="erasePartNote"></div>
+                      <div class="s" id="eraseDoneNote"></div>
                       <div class="s erase-state" id="eraseState"></div>
                     </div>
                     <!-- Which area: the one box on the video. -->
                     <div class="erase-card" id="eraseAreaCard">
                       <div data-i18n class="k">Area</div>
                       <div data-i18n class="m">Box over the subtitles</div>
+                      <!-- The box's own part of the picture at the playhead,
+                           enlarged, its edge dotted over it: writing that sticks
+                           out of the box shows here (design 5, 2026-10-22). -->
+                      <div id="eraseCrop" hidden>
+                        <div class="erase-crop-pic"><canvas id="eraseCropPic"></canvas><i class="erase-crop-box" id="eraseCropBox"></i></div>
+                        <div class="s erase-crop-time" id="eraseCropTime"></div>
+                      </div>
                       <div class="s" id="eraseAreaNote"></div>
                       <div class="s" id="eraseAreaTip" hidden></div>
                       <div class="s erase-big" id="eraseBigBox" hidden></div>
                       <button data-i18n class="erase-link" id="eraseResetBtn" type="button">Reset</button>
                     </div>
+                    <!-- Placing the box: what the erase makes, in the room the
+                         line below had (owner, 2026-10-22). -->
+                    <div class="erase-card result-box" id="eraseResult" hidden>
+                      <div data-i18n class="k">What you get</div>
+                      <div data-i18n class="m">The video with its subtitles erased</div>
+                    </div>
+                    <!-- One line for the state the screen is in: erasing, or
+                         done (design 5, 2026-10-22). -->
+                    <div class="erase-notice erase-tip" id="eraseTip" hidden><svg class="lu" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg><span id="eraseTipText"></span></div>
                     <!-- Where Export answers. A line, not a dialog: the file
                          is already written by the time this appears. -->
                     <span class="erase-saved" id="eraseSaved" hidden><span data-i18n>Saved to</span> <span id="eraseSavedWhere">Downloads</span><span id="eraseShowWrap" hidden>· <button data-i18n type="button" class="show-link" id="eraseShowBtn">Show</button></span></span>
@@ -606,6 +643,22 @@
               <div class="video-tabs" id="videoTabsNormal">
                 <button data-i18n class="vtab" data-src="original" type="button" id="vtabOriginal">Original</button>
                 <button data-i18n class="vtab active" data-src="dubbed" type="button" id="vtabDubbed">Dubbed</button>
+                <!-- What the project hands back, at the right end of the tab
+                     row of whichever video panel is up: people looked for it
+                     beside the video, not among the window's own buttons
+                     (owner, 2026-10-22). One button: ui/src/workFrame.mjs
+                     moves it to the running and erase panels' rows. -->
+                <button data-i18n class="btn btn-primary" id="exportBtn" type="button" hidden>Download</button>
+              </div>
+              <!-- What the Subtitle style chip over the subtitle opens, above
+                   it: the looks in two rows of six, the one on the video
+                   ringed, and what they make (ui/src/captionsTab.mjs). -->
+              <div class="video-style-pop" id="videoStylePop" role="dialog" aria-label="Subtitle style"
+                   data-i18n-aria-label="Subtitle style" hidden>
+                <div class="cap-label"><span data-i18n>Styles · 12</span></div>
+                <div class="cap-grid" id="videoStyleGrid"></div>
+                <div class="erase-card video-style-result"><div data-i18n class="k">What you get</div>
+                  <div class="m"><span data-i18n>The video with subtitles burned in, and the subtitle file</span></div></div>
               </div>
               <div class="video-body">
                 <div class="video-wrap" id="videoWrap">
@@ -613,10 +666,14 @@
                   <div class="ratio-canvas" id="ratioCanvas" hidden></div>
                   <video id="doneVideo" playsinline></video>
                   <!-- The subtitles, live on the player: what the burned file
-                       will say, where and how big. Click to style, drag to
-                       move. Kept in the job's own subtitle_style.json. -->
+                       will say and how big, always at the foot of the picture
+                       (owner, 2026-10-23). Kept in the job's own
+                       subtitle_style.json. While the video stands still, the
+                       chip just above them opens their looks. -->
                   <div class="sub-overlay" id="subOverlay" hidden>
                     <span class="sub-ov-text" id="subOverlayText"></span>
+                    <button class="sub-style-chip" id="subStyleChip" type="button" aria-haspopup="dialog"
+                            aria-expanded="false" hidden><svg class="lu" width="13" height="13" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg><span data-i18n>Subtitle style</span></button>
                   </div>
                   <!-- The ruler's stand-in: wears a look's class so its padding,
                        weight and line height can be read off the CSS. -->
@@ -661,7 +718,7 @@
             <!-- The job's own video, playable while it is dubbed: the file is
                  already on this machine. There is no dubbed one to show yet. -->
             <div class="video-pane" id="runPane">
-              <div class="video-tabs">
+              <div class="video-tabs" id="runTabs">
                 <button class="vtab active" type="button">Original</button>
                 <button class="vtab" type="button" disabled title="After dubbing">Dubbed</button>
               </div>
@@ -833,28 +890,37 @@
         <div class="trim" id="trimBox"></div>
       </div>
       <div class="project-right">
-        <!-- The languages and Advanced options are one block that a draft's
+        <!-- The languages and the stage rows are one block that a draft's
              Dubbing tab borrows (ui/src/newProject.mjs moveOptionsInto), so
              each of the three wears its own look: nothing about them is
              styled by where they happen to sit. Only this box scrolls. -->
         <div class="project-options" id="projectOptions">
           <div class="opt-panel" id="langGrid">
+            <!-- How the dubbing is made, then Perso's voice model when Perso
+                 makes it: above the languages, which follow both (owner,
+                 2026-10-22). The two halves set #dubModeSelect, kept hidden,
+                 which everything that reads the choice goes by
+                 (ui/src/newProject.mjs paintModeSwitch). -->
+            <div class="field opt-row"><label data-i18n id="dubModeLabel">Choose a model</label><div class="mode-seg" id="dubModeSeg" role="radiogroup" aria-labelledby="dubModeLabel"><button type="button" role="radio" id="dubModeLocal" aria-checked="true" data-i18n>Local model</button><button type="button" role="radio" id="dubModePerso" aria-checked="false">Perso API</button></div><select id="dubModeSelect" hidden><option value="local" selected>Local model</option><option value="perso">Perso API</option></select><div class="settings-hint" id="dubModeHint"></div></div>
+            <!-- Perso's voice models, when Perso does the dubbing; the target
+                 languages follow the one chosen (ui/src/newProject.mjs paintPersoModel). -->
+            <div class="field opt-row" id="persoModelRow" hidden><label data-i18n id="persoModelLabel">Dubbing model</label><div class="model-pick" id="persoModelPick"></div><div class="settings-hint" id="persoModelHint"></div></div>
             <div class="field opt-row"><label data-i18n for="sourceLangSelect">Original language</label><select id="sourceLangSelect"><option value="" selected data-i18n>Auto-detect</option></select></div>
-            <div class="field opt-row"><label data-i18n for="targetLangSelect">Target language</label><select id="targetLangSelect"></select></div>
+            <!-- A list with a search field, in the Dubbing model's dress
+                 (owner, 2026-10-22); it sets #targetLangSelect, kept hidden
+                 (ui/src/newProject.mjs paintTargetPick). -->
+            <div class="field opt-row"><label data-i18n id="targetLangLabel">Target language</label><div class="model-pick" id="targetLangPick"></div><select id="targetLangSelect" hidden></select></div>
           </div>
           <!-- The voice engine that failed to start, for a dub on this computer,
                said here rather than only after Start (ui/src/dubApi.mjs
                applyEngineAvailability). Travels with the languages. -->
           <div class="form-error engine-warning" id="engineWarning"></div>
-          <button class="advanced-btn" id="advancedBtn" type="button" aria-expanded="false">
-            <span class="chev"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></span><span data-i18n>Advanced options</span>
-          </button>
-          <div class="opt-panel advanced-body" id="advancedBody" hidden>
-            <div class="field opt-row"><label data-i18n for="dubModeSelect">Dubbing</label><select id="dubModeSelect"><option value="local" selected data-i18n>On this computer</option><option value="perso">Perso API</option></select><div class="settings-hint" id="dubModeHint"></div></div>
-            <!-- Perso's voice models, when Perso does the dubbing; the target
-                 languages follow the one chosen (ui/src/newProject.mjs paintPersoModel). -->
-            <div class="field opt-row" id="persoModelRow" hidden><label data-i18n id="persoModelLabel">Dubbing model</label><div class="model-pick" id="persoModelPick"></div><div class="settings-hint" id="persoModelHint"></div></div>
-            <div class="field opt-row"><label data-i18n for="sepSelect">Audio separation</label><select id="sepSelect"><option value="local" selected>Demucs</option><option value="perso">Perso API</option></select><div class="settings-hint" id="sepHint"></div></div>
+          <!-- The six stage rows, always in sight under a plain heading in the
+               type the Advanced options fold had, with no arrow: there is
+               nothing to open (owner, 2026-10-22, remark 2). -->
+          <div data-i18n class="stage-head" id="stageHead">Dubbing step settings</div>
+          <div class="opt-panel advanced-body" id="advancedBody">
+            <div class="field opt-row"><label data-i18n for="sepSelect">Voice separation</label><select id="sepSelect"><option value="local" selected>Demucs</option><option value="roformer">Mel-Band RoFormer</option><option value="perso">Perso API</option></select><div class="settings-hint" id="sepHint"></div><div class="settings-hint model-line" id="sepModelHint" hidden></div></div>
             <div class="field opt-row"><label data-i18n for="sttSelect">Speech-to-text</label><select id="sttSelect"><option value="local" selected>Whisper</option><option value="perso">Perso API</option></select><div class="settings-hint" id="sttHint"></div><div class="settings-hint model-line" id="sttModelHint" hidden></div></div>
             <div class="field opt-row"><label data-i18n for="translateSelect">Translation</label><select id="translateSelect"><option value="chatgpt" selected>ChatGPT</option><option value="hunyuan">Hunyuan (1.8B)</option><option value="gemma">Gemma 3 (12B)</option><option value="gemini">Gemini API</option></select><div class="settings-hint" id="translateHint"></div><div class="settings-hint model-line" id="translateModelHint" hidden></div></div>
             <div class="field opt-row"><label data-i18n for="voiceSelect">Text-to-speech</label><select id="voiceSelect"><option value="qwen3" selected>Qwen3-TTS</option></select><div class="settings-hint" id="voiceHint"></div><div class="settings-hint model-line" id="voiceModelHint" hidden></div></div>
@@ -888,24 +954,30 @@
 <div class="modal-overlay" id="exportOverlay">
   <div class="modal export-modal" style="width: min(420px, 92vw)">
     <div class="modal-head">
-      <h2 data-i18n>Export</h2>
+      <h2 data-i18n>Download</h2>
       <button class="modal-close" id="exportCloseX" type="button" aria-label="Close" data-i18n-aria-label="Close" hidden>
         <svg class="icon" viewBox="0 0 24 24"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
       </button>
     </div>
     <div class="modal-body">
       <div class="modal-inner">
+      <!-- What comes out of the dialog, in one line under its title (owner,
+           2026-10-22: every screen says what its work makes). -->
+      <p class="export-headline" data-i18n>Each checked row becomes one file</p>
       <div class="export-list" id="exportList"></div>
       <!-- Where a download lands. The desktop shell saves without a save
            dialog, so nothing on screen moves when a link is clicked, and the
            user -- with no sign it worked -- clicks it again. Filled in by
-           ui/src/exportDialog.mjs. -->
-      <p class="export-where" id="exportWhere"></p>
+           ui/src/exportDialog.mjs. In the desktop shell the line ends in
+           Change and, once a folder is picked, Use default: words, not
+           buttons, and the two go to the next line together when a long
+           folder name wraps it (owner, 2026-10-22). -->
+      <p class="export-where"><span id="exportWhere"></span><span id="exportFolder" hidden> · <span class="export-links"><button type="button" class="erase-link" id="exportFolderPick" data-i18n>Change</button><span id="exportFolderResetWrap" hidden> · <button type="button" class="erase-link" id="exportFolderReset" data-i18n>Use default</button></span></span></span></p>
       </div>
     </div>
     <div class="modal-foot">
       <button class="btn btn-secondary" id="exportCloseBtn" type="button">Cancel</button>
-      <button class="btn btn-primary" id="exportGoBtn" type="button">Export</button>
+      <button class="btn btn-primary" id="exportGoBtn" type="button">Download</button>
     </div>
   </div>
 </div>
@@ -934,10 +1006,9 @@
     <div class="modal-head"><h2 id="helpTitle">What PersoDub does</h2></div>
     <div class="modal-body">
       <div class="modal-inner">
-        <div class="help-item"><b>Dubbing</b><p>Voices a video in another language, in each speaker&#8217;s own voice. You get the dubbed video, its subtitles and a script you can fix line by line.</p><div class="help-where">This computer (10 languages, free) or Perso API (100+ languages, credits).</div></div>
-        <div class="help-item"><b>Separate audio</b><p>Splits the sound into Voice (only the speech) and Background (music, effects, noise). Save either one, or go on to Dubbing.</p><div class="help-where">This computer or Perso API.</div></div>
-        <div class="help-item"><b>Erase subtitles</b><p>Takes subtitles burned into the picture out. Box them, press Erase, and dub the clean video.</p><div class="help-where">This computer. The eraser downloads the first time.</div></div>
-        <div class="help-item"><b>Save video</b><p>Paste a YouTube, TikTok or Reels link. The video is fetched to this computer; Export saves it, or dub it, separate it or erase it from there.</p><div class="help-where">This computer.</div></div>
+        <div class="help-item"><b>Dubbing</b><p>Voices a video in another language, in each speaker&#8217;s own voice. You get the dubbed video, its subtitles and a script you can fix line by line.</p><div class="help-where">Local model (10 languages, free) or Perso API (100+ languages in all, depending on the dubbing model; credits).</div></div>
+        <div class="help-item"><b>Erase subtitles</b><p>Why: Original subtitles left in the video overlap the translated ones.</p><p>How: Fit the box → Erase subtitles → Dubbing → Burn in subtitles.</p><div class="help-where">Time: About 10 min for a 10-second video (Local model).</div></div>
+        <div class="help-item"><b>Save video</b><p>Paste a YouTube, TikTok or Reels link. The video is fetched to this computer; Download saves it, or dub it or erase it from there.</p><div class="help-where">This computer.</div></div>
         <div class="help-item"><b>Dub Agent</b><p>Ask in plain words, such as &#8220;Korean dubbing for this link&#8221; or &#8220;make line 9 fit&#8221;. It works through the same tools and shows each step.</p><div class="help-where">Claude Code, installed and signed in, or Codex, which the app can download and sign in.</div></div>
         <p class="help-links"><a href="#" id="helpGuide">User guide</a> · <a href="#" id="helpFaq">FAQ</a></p>
       </div>
@@ -1082,6 +1153,8 @@
           <label data-i18n for="persoKeyInput">Perso API key</label>
           <div class="set-ctl">
             <input type="password" id="persoKeyInput" placeholder="Not set" data-i18n-placeholder="Not set" spellcheck="false">
+            <!-- Which steps each key and sign-in is for (owner, 2026-10-21). -->
+            <div data-i18n class="settings-hint" id="persoKeyHint">Used when Choose a model, Voice separation or Speech-to-text is set to Perso API. Uses Perso credits.</div>
             <!-- The only path from this app to a Perso account. href is replaced with the
                  UTM-tagged link from /api/settings on open; this plain URL is the fallback
                  so the link still works if that request fails. -->
@@ -1106,6 +1179,7 @@
           <label data-i18n for="geminiKeyInput">Google (Gemini) key</label>
           <div class="set-ctl">
             <input type="password" id="geminiKeyInput" placeholder="Not set" data-i18n-placeholder="Not set" spellcheck="false">
+            <div data-i18n class="settings-hint" id="geminiKeyHint">Used only when Translation is set to Gemini API. Uses your own Google API quota.</div>
           </div>
         </div>
         <!-- The ChatGPT translator signs in with the user's own ChatGPT account
@@ -1114,9 +1188,12 @@
              the sign-in (POST /api/agent/login). -->
         <div class="set-row">
           <span>ChatGPT</span>
-          <div class="set-ctl set-inline">
-            <span class="settings-hint" id="chatgptState" aria-live="polite"></span>
-            <button data-i18n class="btn btn-outline btn-sm" id="chatgptSignInBtn" type="button">Sign in with ChatGPT</button>
+          <div class="set-ctl">
+            <div class="set-ctl set-inline">
+              <span class="settings-hint" id="chatgptState" aria-live="polite"></span>
+              <button data-i18n class="btn btn-outline btn-sm" id="chatgptSignInBtn" type="button">Sign in with ChatGPT</button>
+            </div>
+            <div data-i18n class="settings-hint" id="chatgptHint">Used when Translation is ChatGPT (the default on a new install). The Dub Agent's Codex uses this sign-in too.</div>
           </div>
         </div>
         <!-- Keys save with the sheet's Save button (ui/src/settingsDialog.mjs
@@ -1147,6 +1224,12 @@
             <div class="settings-hint" id="storageHint"></div>
           </div>
         </div>
+        <!-- Where downloads go, said and nothing more: Change in the Download
+             dialog picks it (owner, 2026-10-22). Only the desktop shell knows
+             it; in a browser the row stays away. -->
+        <div class="set-row" id="downloadFolderRow" hidden>
+          <span class="set-line" id="downloadFolderLine"></span>
+        </div>
       </div>
 
       <div class="set-panel" id="settingsPanel-privacy" role="tabpanel" aria-labelledby="settingsTab-privacy" hidden>
@@ -1161,13 +1244,21 @@
           </div>
         </div>
         <div class="set-row">
-          <label data-i18n for="reportsToggle">Automatic failure reports</label>
+          <label data-i18n for="reportsToggle">Send job logs</label>
           <div class="set-ctl">
             <input type="checkbox" class="switch" id="reportsToggle" checked>
-            <!-- Separate from the counts: this one carries what broke, so it is
-                 its own choice. Nothing personal leaves -- keys and folder names
-                 are taken out first (desktop/src/report.js). -->
-            <div data-i18n class="settings-hint" id="reportsHint">Sends the error and its log, your computer's specs and the app version. No video, file names, keys or personal data.</div>
+            <!-- Separate from the counts: this one carries the logs of finished
+                 and failed jobs, so it is its own choice. Nothing personal
+                 leaves -- keys and folder names are taken out first
+                 (desktop/src/report.js). What goes, where, for how long, what
+                 never goes and what it is for, a sentence a line (owner,
+                 2026-10-22, 9). -->
+            <div class="settings-hint" id="reportsHint">
+              <span data-i18n>Keeps a record of finished and failed jobs (masked logs, time per step, device ID) on a private dashboard for 30 days.</span>
+              <span data-i18n>Only failed jobs go into a public GitHub issue, as a summary of the cause.</span>
+              <span data-i18n>Titles, file names, links and dialogue are not sent.</span>
+              <span data-i18n>What you send helps make PersoDub better.</span>
+            </div>
           </div>
         </div>
       </div>

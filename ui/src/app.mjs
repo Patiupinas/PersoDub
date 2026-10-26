@@ -4,15 +4,16 @@
 // behaviour. initEscapeKey() runs first, so Escape is answered before any
 // dialog's own listener; openLastScreen() runs last, once everything it can
 // open is wired; and the hooks assigned further down (workFrame,
-// leaveEraseTimeline, fitWorkLayout, showAudioLanes, dubRestart) are read only
+// leaveEraseTimeline, fitWorkLayout, dubRestart) are read only
 // when called, or checked for null first.
 //
 // Its imports are "./x.mjs": app/main.py stamps that form (and "/js/x.mjs")
 // with the launch token, so an update never runs this file against a module a
 // browser kept from the version before.
 import { LANGUAGES, buildDubFormData, startDubJob, pollDubJob, cancelDubJob, parseProgress, applyEngineAvailability, probeSource, engineChips, engineLine, voiceLabel, dubAgainSource, holdDownload, downloadVideoUrl } from "./dubApi.mjs";
-import { gb, neededModelId, neededPackIds, modelStatusLine, downloadChipText } from "./modelsUi.mjs";
+import { gb, stageNeeds, modelStatusLine, downloadChipText } from "./modelsUi.mjs";
 import { initModelsUi } from "./modelsDialog.mjs";
+import { initStagePickers } from "./stagePicker.mjs";
 import { initSubtitleOverlay } from "./subtitleOverlay.mjs";
 import { initEscapeKey } from "./escapeKey.mjs";
 // Escape closes what is on top, and one menu is open at a time
@@ -26,7 +27,7 @@ import { initNewProjectUi } from "./newProject.mjs";
 import { initEraseScreenUi, PACK_ID as ERASER_PACK_ID } from "./eraseScreen.mjs";
 import { initProjectsUi, shownName } from "./projects.mjs";
 import { initHomeScreen } from "./homeScreen.mjs";
-import { initHomeSidebar, homeAgentHidden, openHomeAgent } from "./homeSidebar.mjs";
+import { initHomeSidebar, homeAgentHidden, openHomeAgent, pointAtLink } from "./homeSidebar.mjs";
 import { countedOnce } from "./reportedOnce.mjs";
 import { initRunningScreenUi, stoppedMark } from "./runningScreen.mjs";
 import { translatorChoices } from "./translatorChoice.mjs";
@@ -39,8 +40,7 @@ import { initLeftTabs } from "./leftTabs.mjs";
 import { initWorkFrame } from "./workFrame.mjs";
 import { initPlayerFoot, clockLine } from "./playerFoot.mjs";
 import { initDraftImport } from "./draftImport.mjs";
-import { initAudioTab } from "./audioTab.mjs";
-import { openSeparated } from "./dubApi.mjs";
+import { openSeparated, importCaptions, eraseToDub, fetchDownload } from "./dubApi.mjs";
 import { initNewProjectWindow } from "./newProjectWindow.mjs";
 import { initDraftSetup } from "./draftSetup.mjs";
 import { initLanguageRow } from "./languageRow.mjs";
@@ -50,7 +50,7 @@ import { clearDraft, getDraft, onDraftChange, setDraft, setRanges, setDraftRatio
 import { readKept, keepDraft, dropKept, draftMark } from "./keptDrafts.mjs";
 import { initRatioUi } from "./ratio.mjs";
 import { wireUpdates } from "./updateWindow.mjs";
-import { fmtClock, fmtClockTenths, fmtLength, formatBytes, escapeHtml, errorText, serverText, statusParts, rawLogLines, restartFailure } from "./format.mjs";
+import { fmtClock, fmtClockTenths, fmtLength, formatBytes, escapeHtml, errorText, serverText, statusParts, rawLogLines, restartFailure, restartRanOutOfMemory } from "./format.mjs";
 import { languageName, pageLanguage, savedSettings, t } from "./i18n.mjs";
 import { paintMarkupWords } from "./markupWords.mjs";
 
@@ -190,6 +190,8 @@ const settings = initSettingsUi({
   $,
   onSaved: () => applyEngineAvailabilityToForm(),
   refreshModelCatalog: () => models.refreshModels(),
+  // Storage says where downloads go; only the desktop shell knows.
+  shell: window.persodubShell || null,
 });
 
 $("settingsBtn").addEventListener("click", settings.openSettings);
@@ -302,15 +304,13 @@ const models = initModelsUi({
   // Keep the catalog fresh while Settings shows it.
   keepPolling: () => $("settingsOverlay").classList.contains("open"),
   ramOk: () => ramOk,
+  // The Delete dialog is made further down; it is asked only on a press.
+  askToDelete: (q) => confirmDialogs.askToDelete(q),
 });
-
-// Everything a dropdown choice needs, in the order it downloads: the pack it
-// runs in first (as in the dub's own 409), then its model. Only the rows
-// that are not ready -- an empty list means the choice is good to go.
-function hintNeeds(role, value) {
-  const ids = [...neededPackIds(role, value), neededModelId(role, value)].filter(Boolean);
-  return ids.map((id) => models.modelRow(id)).filter((r) => r && r.state !== "ready");
-}
+// The four stage dropdowns as buttons whose lists hold every choice, the
+// models not downloaded yet included (ui/src/stagePicker.mjs); painted with
+// the lines under them.
+const stagePickers = initStagePickers({ $, rowOf: (id) => models.modelRow(id) });
 
 // One line under the dropdown, one button. Nothing missing: hidden (or Ready,
 // once this session saw it busy). Something downloading or stopped: that
@@ -358,19 +358,30 @@ function paintHint(el, needs, ready) {
   el.append(span, btn);
 }
 
+// Each field's line: what its choice still needs, each thing counted once
+// (ui/src/modelsUi.mjs stageNeeds). Cloud dubbing needs no local models --
+// their download lines would only confuse; the per-stage dropdowns are
+// greyed by paintDubMode below.
+const STAGE_FIELDS = [["sep", "sepSelect", "sepModelHint"], ["stt", "sttSelect", "sttModelHint"],
+                      ["translate", "translateSelect", "translateModelHint"], ["voice", "voiceSelect", "voiceModelHint"]];
+function stageLines() {
+  if ($("dubModeSelect").value === "perso") return STAGE_FIELDS.map(() => ({ needs: [], ready: false }));
+  return stageNeeds(STAGE_FIELDS.map(([role, sel]) => [role, $(sel).value]), models.modelRow);
+}
+/** What a dubbing on the form's choices downloads first, in bytes (0: nothing). */
+function firstDownloadBytes() {
+  return stageLines().reduce((n, line) => n + line.needs.reduce((m, r) => m + r.bytes, 0), 0);
+}
+// The draft's foot says that size too (ui/src/draftSetup.mjs); wired below,
+// once the draft screen is.
+let paintDraftFoot = () => {};
+
 // The parts of the model UI this page owns: the three dropdown hints and the
 // topbar download chip.
 function paintModelStatusLines(rows) {
-  // Cloud dubbing needs no local models -- their download lines would only
-  // confuse; the per-stage dropdowns are greyed by paintDubMode below.
-  const cloud = $("dubModeSelect").value === "perso";
-  for (const [role, sel, hint] of [["stt", "sttSelect", "sttModelHint"],
-                                    ["translate", "translateSelect", "translateModelHint"],
-                                    ["voice", "voiceSelect", "voiceModelHint"]]) {
-    const value = $(sel).value;
-    const needsAnything = !cloud && (neededPackIds(role, value).length || neededModelId(role, value));
-    paintHint($(hint), cloud ? [] : hintNeeds(role, value), !!needsAnything);
-  }
+  stageLines().forEach((line, i) => paintHint($(STAGE_FIELDS[i][2]), line.needs, line.ready));
+  stagePickers.paint();
+  paintDraftFoot();
   // The one under way, not one queued behind it: before its first byte it
   // has no figure either (Windows C2, 2026-10-21).
   const dl = rows.find((m) => m.state === "downloading" && m.progress != null)
@@ -388,32 +399,43 @@ function paintModelStatusLines(rows) {
 }
 
 $("topbarDl").addEventListener("click", () => models.reopenDialogOrSettings());
-for (const id of ["sttSelect", "translateSelect", "voiceSelect"]) {
+for (const id of ["sepSelect", "sttSelect", "translateSelect", "voiceSelect"]) {
   $(id).addEventListener("change", () => models.repaint());
 }
+// The translator decides two of the warnings over the options: its runtime
+// off, and a memory slow for it.
+$("translateSelect").addEventListener("change", () => applyEngineAvailabilityToForm());
 // One sentence per line (they read as a wall when joined -- user feedback):
 // the hint slots render these with pre-line whitespace. Getters, so each is
 // read in the language of the moment. The Perso API dubbing hint names the
 // free first minute (owner, 2026-10-21): it is what gets people to sign up.
+// And that the video leaves this computer (owner, 2026-10-22): the intro
+// page promises it stays, for the local path.
 const ENGINE_HINTS = {
   dubMode: { get local() { return [t("Runs on this computer, free."), t("You can edit the script after.")]; },
-             get perso() { return [t("Perso does the dubbing start to finish."), t("Sign up and the first minute is free. Credits after that.")]; } },
-  sep: { get local() { return [t("Runs on this computer, free."), t("For accuracy, use the API.")]; },
+             get perso() { return [t("Perso does the dubbing start to finish."), t("Sign up and the first minute is free. Credits after that."),
+                                   t("The video is uploaded to Perso.")]; } },
+  sep: { get local() { return [t("Runs on this computer, free."), t("For accuracy, use the Perso API.")]; },
+         get roformer() { return [t("Runs on this computer, free."), t("For accuracy, use the Perso API.")]; },
          get perso() { return [t("Most accurate."), t("Uses Perso credits.")]; } },
-  stt: { get local() { return [t("Runs on this computer, free."), t("For accuracy, use the API.")]; },
+  stt: { get local() { return [t("Runs on this computer, free."), t("For accuracy, use the Perso API.")]; },
          get perso() { return [t("Most accurate."), t("Uses Perso credits.")]; } },
-  translate: { get hunyuan() { return [t("Runs on this computer, free and fastest."), t("For accuracy, use the API.")]; },
-               get gemma() { return [t("Runs on this computer, free."), t("For accuracy, use the API.")]; },
-               get gemini() { return [t("Most accurate."), t("Needs an API key.")]; },
+  translate: { get hunyuan() { return [t("Runs on this computer, free and fastest."), t("For accuracy, use the Gemini API.")]; },
+               get gemma() { return [t("Runs on this computer, free."), t("For accuracy, use the Gemini API.")]; },
+               get gemini() { return [t("Most accurate."), t("Needs a Google (Gemini) key in Settings > API keys.")]; },
                get chatgpt() { return [t("Free within a ChatGPT account's limit. Sign in once, no download.")]; } },
   voice: { get qwen3() { return [t("Runs on this computer, free."), t("Clones each speaker\u2019s voice.")]; } },
 };
+// Perso does every stage of a Perso API dubbing: the greyed rows say so, not
+// what they would do on this computer (owner, 2026-10-22).
+const byPerso = () => $("dubModeSelect").value === "perso";
 function updateEngineHints() {
+  const stage = (hints, value) => (byPerso() ? [t("Perso handles this.")] : hints[value] || []).join("\n");
   $("dubModeHint").textContent = (ENGINE_HINTS.dubMode[$("dubModeSelect").value] || []).join("\n");
-  $("sepHint").textContent = (ENGINE_HINTS.sep[$("sepSelect").value] || []).join("\n");
-  $("sttHint").textContent = (ENGINE_HINTS.stt[$("sttSelect").value] || []).join("\n");
-  $("translateHint").textContent = (ENGINE_HINTS.translate[$("translateSelect").value] || []).join("\n");
-  $("voiceHint").textContent = (ENGINE_HINTS.voice[$("voiceSelect").value] || []).join("\n");
+  $("sepHint").textContent = stage(ENGINE_HINTS.sep, $("sepSelect").value);
+  $("sttHint").textContent = stage(ENGINE_HINTS.stt, $("sttSelect").value);
+  $("translateHint").textContent = stage(ENGINE_HINTS.translate, $("translateSelect").value);
+  $("voiceHint").textContent = stage(ENGINE_HINTS.voice, $("voiceSelect").value);
 }
 for (const id of ["dubModeSelect", "sepSelect", "sttSelect", "translateSelect", "voiceSelect"]) {
   $(id).addEventListener("change", updateEngineHints);
@@ -426,6 +448,10 @@ function paintDubMode() {
   for (const id of ["sepSelect", "sttSelect", "translateSelect", "voiceSelect", "qualitySelect"]) {
     $(id).disabled = cloud;
   }
+  // ...and each greyed one reads "Perso" (static/css/app.css .by-perso), over
+  // the choice made for this computer, which is still its value and is back
+  // in sight the moment Local model is chosen again.
+  $("advancedBody").classList.toggle("by-perso", cloud);
 }
 // The voice engine's warning is for a dub on this computer only: asked again
 // when the choice changes.
@@ -492,7 +518,8 @@ function setTopbar({ title, subtitle = "", running = false, done = false, back =
   $("newProjectBtn").hidden = !back;
   $("cancelBtn").hidden = !running;
   // Only a finished job has anything to hand back. On the work screen the
-  // button is there all along, and dim until then.
+  // button is there all along (in the video panel's tab row since
+  // 2026-10-22, ui/src/workFrame.mjs), and dim until then.
   $("exportBtn").hidden = !done && !back;
   // A draft with a video on its timeline has its kept parts to hand back,
   // on the Erase tab too -- which says itself (`exportable`) whether that
@@ -543,7 +570,9 @@ function paintForward() {
   // Only on the first screen: inside a job the back arrow is the way out, and
   // an arrow pointing the other way would have nowhere to go.
   btn.hidden = !lastJobId || document.body.dataset.screen !== "home";
-  const what = lastJobName ? t("Back to {name}", { name: lastJobName }) : t("Back to the project you left");
+  // The job's name on the button, so it reads as that job and not as "next".
+  $("topbarForwardName").textContent = lastJobName || t("Last project");
+  const what = lastJobName ? t("Reopen {name}", { name: lastJobName }) : t("Reopen the last project");
   btn.setAttribute("aria-label", what);
   btn.title = what;
 }
@@ -560,6 +589,8 @@ function showHome() {
   // other dubbing's language.
   state.draftFromJob = null;
   state.draftProject = null;
+  // A Save video press is for the link pasted on that visit to Home only.
+  saveVideoNext = false;
   paintDraftBack();
   showScreen("home");
   setTopbar({ title: "PersoDub", subtitle: t("Local dubbing") });
@@ -581,6 +612,11 @@ async function openLastScreen() {
   await resumeJob(last);
 }
 
+// The folder the Download dialog's Change picked ("" while downloads go to
+// Downloads), for the lines that say which folder a file was saved in
+// (ui/src/format.mjs downloadsLabel). Asked of the desktop shell each time.
+const pickedFolder = async () => (await window.persodubShell?.downloadFolder?.()?.catch(() => null))?.chosen || "";
+
 // ---------------- New project dialog ----------------
 // Opens the moment a video or a link is ready, and is the only place a job can
 // be started from. Everything it holds -- the thumbnail and its trim bar, the
@@ -596,7 +632,7 @@ const newProject = initNewProjectUi({
   applyEngineAvailability: applyEngineAvailabilityToForm,
   // The download line under each dropdown too: a remembered translator that
   // is still downloading must say so the moment the dialog puts it back.
-  updateEngineHints: () => { updateEngineHints(); models.repaint(); },
+  updateEngineHints: () => { updateEngineHints(); updateQualityHint(); models.repaint(); },
   paintDubMode,
   playRange,
   cancelRange,
@@ -620,6 +656,7 @@ const newProject = initNewProjectUi({
   // Only the desktop app can open a folder (see the erase screen's own Show).
   reveal: window.persodubShell?.revealPath
     ? (path) => window.persodubShell.revealPath(path) : null,
+  pickedFolder,
   // Where the last project's choices are kept for the next one.
   storage: localStorage,
 });
@@ -649,6 +686,8 @@ const eraseScreen = initEraseScreenUi({
     projects.renderHistory().catch(() => {});
     projects.renderQueueCard().catch(() => {});
   },
+  // From its erase's start a video's card on Home is that erase's own.
+  onEraseStarted: draftBecameJob,
   // The way on from an erased video: a new project on the cleaned file rather
   // than the one with the writing still on it, on its Dubbing tab.
   onDub: (held) => openDraftHere({ downloadId: held.downloadId, name: held.title,
@@ -657,17 +696,33 @@ const eraseScreen = initEraseScreenUi({
   // open, and the "Show" beside "Saved to Downloads" stays away.
   reveal: window.persodubShell?.revealPath
     ? (path) => window.persodubShell.revealPath(path) : null,
+  pickedFolder,
   // The timeline under it is the one the dub and the draft use (read late:
   // it is wired further down).
   showTimeline: (info) => timeline.showErase(info),
 });
-// The work screen's left panel: Dubbing, Audio, Captions, and Erase, which
-// is the way to the erase screen (ui/src/leftTabs.mjs).
+// The work screen's left panel: Dubbing, Erase, which is the way to the erase
+// screen, Captions (Burn in subtitles) and Save video (ui/src/leftTabs.mjs).
 const leftTabs = initLeftTabs({ $, onErase: () => {
   // Lit here as well as by the screen's name: with no job to go back to, the
   // erase screen can be standing under another tab.
   leftTabs.show("erase");
   openEraseForProject();
+},
+// Save video: the project's own video as a file -- the Download dialog with
+// that one row ticked and no other (owner, 2026-10-23). A project's is its
+// original; a draft's, or the erase screen's, the video it shows, cuts and
+// all. With no video yet it is the tab of a link field that brings one in
+// (owner, 2026-10-24); the erase screen's empty face leaves for it.
+onSave: () => {
+  const erase = document.body.dataset.screen === "erase";
+  if (!state.jobId && !getDraft() && !(erase && (eraseScreen.sourceId() || eraseScreen.hasJob()))) {
+    if (erase) draftSetup.showDraftScreen();
+    leftTabs.show("save");
+    return;
+  }
+  const row = state.jobId && document.body.dataset.screen !== "erase" ? ["original"] : ["video"];
+  exportDialog.open(row, row);
 } });
 // A dub that is open (running, finished or stopped): its Erase tab starts
 // from that project's own video, held again the way + Add language holds it,
@@ -695,7 +750,8 @@ async function openEraseForProject() {
   }
 }
 // Any other tab pressed there is the way back to the job that is open. With
-// no job open the tab's own body is all there is to show.
+// no job open the tab's own body is all there is to show. Burn in subtitles
+// stays on the erase screen: it starts from the video there (workFrame).
 workFrame = initWorkFrame({
   $, tabs: leftTabs,
   getScreen: () => document.body.dataset.screen,
@@ -709,8 +765,8 @@ workFrame = initWorkFrame({
       leftTabs.show("erase");
       if (eraseScreen.erasedJob()) $("eraseDubBtn").click();
     }
-    // No job: the draft the Erase tab was cutting, as the Dubbing and Audio
-    // tabs show it (or the empty new project, to bring one in).
+    // No job: the draft the Erase tab was cutting, as the Dubbing tab shows
+    // it (or the empty new project, to bring one in).
     else draftSetup.showDraftScreen();
   },
 });
@@ -730,6 +786,16 @@ const draftImport = initDraftImport({
   $, state,
   getScreen: () => document.body.dataset.screen,
   checkFile: (file) => videoProblem(file),
+  // A video replaced on the draft is let go the way one an erase was started
+  // on is: its Draft card leaves Home, so drafts do not pile up (owner, 2026-10-22).
+  onReplaced: (downloadId) => forgetDraft(downloadId),
+  // A link pasted on Save video is saved once it is in: the Dubbing tab
+  // under it, as for any draft, and the Download dialog's Video row.
+  onSaveLinkReady: () => {
+    if (state.jobId || document.body.dataset.screen !== "done") return;
+    leftTabs.show("dubbing");
+    exportDialog.open(["video"], ["video"]);
+  },
 });
 const draftSetup = initDraftSetup({
   $, state, showScreen, setTopbar,
@@ -748,56 +814,16 @@ const draftSetup = initDraftSetup({
   },
   setDubRestart: (fn) => { dubRestart = fn; },
   getScreen: () => document.body.dataset.screen,
-  // A dubbing of a cut the Audio tab already separated takes its two sounds.
-  stemsFrom: () => (audioTab.separatedJob() || {}).id || "",
+  // Remove on the Video card: the Home card's Delete, asked the same way,
+  // and then the empty project, top bar and all (owner, 2026-10-22).
+  removeDraft: (d) => confirmDialogs.askDelete({ draftId: d.downloadId, project: d.name || "this draft",
+                                                onGone: () => draftSetup.showDraftScreen() }),
+  firstDownloadBytes,
 });
-// ---------------- Separate audio ----------------
-let showAudioLanes = () => {};
-// The Audio tab (#tabAudio) belongs to ui/src/audioTab.mjs: the draft's kept
-// parts, separated into voice and background as a job of its own. What the
-// page hands it is the page's: the way a video comes in, the stop question,
-// the windows a start can come back short of, and the Export dialog.
-const audioTab = initAudioTab({
-  $, state,
-  getVideo: () => $("doneVideo"),
-  goToTab: (name) => $("leftTabs").querySelector(`[data-tab="${name}"]`).click(),
-  importSource: (source) => draftImport.importSource(source),
-  say: (text, isError) => draftImport.say(text, isError),
-  askStop: () => confirmDialogs.askCancelDub(t("Stop separating?")),
-  // The engine pack is missing (the download notice, then the start again),
-  // no Perso key or no workspace picked (the key window, then again), or no
-  // room on the disk.
-  onStartRefused: (e, retry) => {
-    // The engine's words, English on purpose: the refusals are known by them.
-    const text = serverText(e);
-    if (e && e.status === 409 && e.detail && e.detail.missing) {
-      dubRestart = retry;
-      models.refreshModels().then(() => models.showModelsDialog(e.detail));
-      return true;
-    }
-    if (e && e.status === 422 && /Select a Perso workspace/.test(text)) {
-      keyWindow.askKey("perso", null, null, { spaceOnly: true, then: retry });
-      return true;
-    }
-    if (e && e.status === 422 && /needs an API key/.test(text)) {
-      keyWindow.askKey("perso", null, null, { then: retry });
-      return true;
-    }
-    return confirmDialogs.showIfOutOfSpace(e);
-  },
-  onJobsChanged: () => {
-    projects.renderHistory().catch(() => {});
-    projects.renderQueueCard().catch(() => {});
-  },
-  openExport: () => exportDialog.open(),
-  // The timeline is wired further down; until then there is none to tell.
-  showTimeline: (info) => showAudioLanes(info),
-});
-// The tab is repainted when it is come to: whether a job owns the screen is
-// read then.
-$("leftTabs").addEventListener("click", () => audioTab.paint());
-// A row in the Projects list: the separation's video is held again and
-// opened as a draft, on its Audio tab, with its two sounds.
+paintDraftFoot = draftSetup.paintFoot;
+// A row in the Projects list: a separation made before Separate audio left
+// the tools (owner, 2026-10-23). Its video is held again and opened as a
+// draft on the Dubbing tab, with the parts it kept.
 async function openSeparatedJob(job) {
   const held = await openSeparated(job.id);
   resetForNewJob();
@@ -805,9 +831,8 @@ async function openSeparatedJob(job) {
   state.draftFromJob = null;
   state.draftProject = null;
   paintDraftBack();
-  audioTab.adopt(job, held);
   await draftSetup.openDraft({ downloadId: held.download_id, name: job.title || held.title,
-                               duration: held.duration_sec }, { tab: "audio", ranges: held.ranges });
+                               duration: held.duration_sec }, { tab: "dubbing", ranges: held.ranges });
 }
 
 // The top bar's New project: what the Home banner does with a video, from
@@ -819,7 +844,21 @@ initNewProjectWindow({
   leaveJob: () => resetForNewJob(),
   openDraft: (source) => draftSetup.openDraft(source),
   openNewProject: (source) => newProject.openNewProject(source),
+  emptyImport: emptyImportLink,
 });
+// An empty new project already shows the Import block New project would
+// open again in a window (2026-10-21): the link id of the one on screen, or
+// null. Each tab shows its block only while it has no video -- the Erase tab
+// even with an older draft still held, which Home's Erase card keeps -- so
+// the block being on screen is the test; under a hidden left panel, tab or
+// face it is not. The erase screen is known by its name, since its tab can
+// stand under another.
+function emptyImportLink() {
+  if (state.jobId) return null;
+  const tab = document.body.dataset.screen === "erase" ? "erase" : leftTabs.current();
+  const id = { dubbing: "dubbingLink", erase: "eraseLink", captions: "capLink" }[tab];
+  return id && $(`${id}Input`).offsetParent ? id : null;
+}
 // A new draft opened from wherever the person stands -- a dubbing's
 // + Add language, a finished erase's Dub this video: the job on screen is let
 // go first, the way Home lets it go, and stays behind the top bar's forward
@@ -829,8 +868,10 @@ function openDraftHere(source, opts, project = null) {
   // resetForNewJob passes through Home, which forgets the dub to go back
   // to: note it first and put it back after.
   const from = state.jobId || null;
-  // From an erased video the way back is to that erase, not to a dubbing.
-  const fromErase = document.body.dataset.screen === "erase";
+  // From an erased video the way back is to that erase, not to a dubbing;
+  // the same from a video with the user's own subtitles.
+  const fromErase = document.body.dataset.screen === "erase"
+    || (!!state.job && state.job.id === from && state.job.kind === "captions");
   resetForNewJob();
   state.draftFromJob = from;
   state.draftBackTip = fromErase ? "Back" : "Back to the dubbing";
@@ -875,6 +916,8 @@ const languageRow = initLanguageRow({
   onOpenJob: (jobId) => resumeJob(jobId),
   openDraft: openDraftHere,
   nameOf: (job) => shownName(job),
+  // Read when + Add language is pressed: the table is wired further down.
+  linesOf: (jobId) => scriptTable.linesOf(jobId),
 });
 // The project's own page, from the logo in Settings > About. window.open
 // rather than an <a>: the shell hands every http(s) open to the OS browser
@@ -965,6 +1008,9 @@ wireUpdates({ $, shell: window.persodubShell || null, releases: `${REPO_URL}/rel
 // leaving Home, makes an answer still on its way nobody's.
 let probeTimer = null;
 let probeSeq = 0;
+// Save video was pressed: the link read next opens the Export dialog by
+// itself once its video is in (2026-10-21). Home clears it (showHome).
+let saveVideoNext = false;
 function clearLink() {
   clearTimeout(probeTimer);
   probeSeq += 1;
@@ -1036,8 +1082,12 @@ $("linkInput").addEventListener("input", () => {
       state.linkProbe = { url, ...info };
       renderLinkCard(info);
       // A read link opens straight into its own draft, already on the
-      // timeline -- the same shortcut a single dropped file gets.
-      draftSetup.openDraft({ link: url });
+      // timeline -- the same shortcut a single dropped file gets. After Save
+      // video, Export opens on its own, Video ticked, when this link's video
+      // is in (onReady is told by the importer for this link alone).
+      const save = saveVideoNext;
+      saveVideoNext = false;
+      draftSetup.openDraft({ link: url, onReady: save ? () => exportDialog.open(["video"]) : null });
     } catch (e) {
       if (probeIsStale(mySeq)) return;
       renderLinkError(errorText(e));
@@ -1290,6 +1340,7 @@ const home = initHomeScreen({
   onError: homeError,
   onOpenDraft: (id) => reopenDraft(id),
   onDeleteDraft: (d) => confirmDialogs.askDelete({ draftId: d.downloadId, project: d.name || "this draft" }),
+  storage: localStorage,
 });
 
 // ---------------- Drafts left before dubbing ----------------
@@ -1298,11 +1349,24 @@ const home = initHomeScreen({
 // and Home shows it as a "Draft" card that opens it again with its cuts. It
 // is let go when it is dubbed, deleted, or its video is no longer there.
 let keptDrafts = readKept(localStorage);
+// The videos an erase or a separation was started on in this run: that job's
+// own card ("Erasing", then "Erased" or "Failed"; the same for separating)
+// stands for each on Home, so none is kept as a draft again (2026-10-21).
+const startedOn = new Set();
+function draftBecameJob(downloadId) {
+  startedOn.add(downloadId);
+  forgetDraft(downloadId);
+}
 function rememberDraft() {
   const d = getDraft();
   // A video held beside an open project (its Erase tab's) is not a draft.
-  if (!d || !d.downloadId || state.jobId) return;
-  keptDrafts = keepDraft(localStorage, d, keptDrafts);
+  if (!d || !d.downloadId || state.jobId || startedOn.has(d.downloadId)) return;
+  // The tab it is on, so its card says what it was being made into and
+  // opens there again. Home is a card being opened: it keeps the one it had.
+  const screen = document.body.dataset.screen;
+  const tab = screen === "erase" ? "erase" : screen === "home"
+    ? (keptDrafts.find((k) => k.downloadId === d.downloadId) || {}).tab : leftTabs.current();
+  keptDrafts = keepDraft(localStorage, { ...d, tab }, keptDrafts);
   home.renderDrafts(keptDrafts);
 }
 function forgetDraft(downloadId) {
@@ -1339,8 +1403,10 @@ async function reopenDraft(downloadId) {
     newProject.startOnDefaults().then(draftSetup.paint, () => {});
   }
   $("draftError").textContent = "";
+  // On the tab it was left on (2026-10-21): the Erase tab is a screen of its own.
+  if (kept.tab === "erase") { eraseScreen.openEraseTab(); return; }
   draftSetup.showDraftScreen();
-  leftTabs.show("dubbing");
+  leftTabs.show(kept.tab);
 }
 // At launch: each kept draft's video is held again, so its card has a picture
 // and opens at once; one whose file is gone is let go without a word.
@@ -1364,10 +1430,12 @@ initHomeSidebar({
   // file or a link, where the bare file picker took only a file (owner, 2026-10-09).
   onDubbing: () => draftSetup.openDraft(null, { tab: "dubbing" }),
   onErase: () => eraseScreen.openErase(),
-  // An empty new project, on its Audio tab.
-  onAudio: () => draftSetup.openDraft(null, { tab: "audio" }),
-  // A link pasted into the banner is how a video gets saved.
-  onSaveVideo: () => { $("linkInput").scrollIntoView({ block: "nearest" }); $("linkInput").focus(); },
+  // An empty new project on Burn in subtitles: a video and a subtitle file
+  // make a burn-in project there (owner, 2026-10-23).
+  onCaptions: () => draftSetup.openDraft(null, { tab: "captions" }),
+  // A link pasted into the banner is how a video gets saved: the field is
+  // pointed at, and the link pasted next opens Export once it is in.
+  onSaveVideo: () => { pointAtLink($); saveVideoNext = true; },
   onSettings: () => settings.openSettings(),
   onHelp: () => openHelp(),
   loadWhatsNew: async () => (await fetch("/api/whats-new")).json(),
@@ -1430,7 +1498,7 @@ async function resumeJob(jobId) {
     // Erasing subtitles is the other work this app does, and it has a screen of
     // its own: the same row, the same click, a different place to land.
     if (job.kind === "erase") { eraseScreen.openEraseJob(job); return; }
-    // Separate audio is a tab of a draft: its video comes back as one.
+    // A separation made before it left the tools: its video comes back as a draft.
     if (job.kind === "separate") { await openSeparatedJob(job); return; }
     // Asked for by name, from wherever the person happens to be standing: this
     // one is allowed to change the screen.
@@ -1462,9 +1530,10 @@ const QUALITY_HINTS = {
   get high() { return t("Best of 4 takes per line. About 4× slower."); },
 };
 function updateQualityHint() {
-  $("qualityHint").textContent = QUALITY_HINTS[$("qualitySelect").value] || "";
+  $("qualityHint").textContent = byPerso() ? t("Perso handles this.") : QUALITY_HINTS[$("qualitySelect").value] || "";
 }
 $("qualitySelect").addEventListener("change", updateQualityHint);
+$("dubModeSelect").addEventListener("change", updateQualityHint);
 updateQualityHint();
 
 // ---------------- Start dubbing ----------------
@@ -1486,15 +1555,17 @@ function langsLabel() {
 // errorEl: the dialog's own line -- or, for a draft's Start dubbing
 // (ui/src/draftSetup.mjs), that panel's own -- since this is the one status
 // word shown while the engine comes back up.
-// {ok, why}: why is the line said under the refusal when it did not come back
-// (ui/src/format.mjs restartFailure) -- without it the same "try again" came
-// back and the shell's reason was thrown away.
+// {ok, why, alone}: why is the line said under the refusal when it did not
+// come back (ui/src/format.mjs restartFailure) -- without it the same "try
+// again" came back and the shell's reason was thrown away. alone: the memory
+// ran out again, and that line says all of it.
 async function restartVoiceEngine(errorEl) {
   const shell = window.persodubShell;
   if (!shell || !shell.installPack) return { ok: false, why: "" };
   errorEl.textContent = t("Starting the voice engine…");
   const r = await shell.installPack("engine").catch(() => ({ ok: false }));
-  return r && r.ok ? { ok: true } : { ok: false, why: restartFailure(r && r.reason) };
+  return r && r.ok ? { ok: true }
+    : { ok: false, why: restartFailure(r && r.reason), alone: restartRanOutOfMemory(r && r.reason) };
 }
 
 // Posts the form and walks through every way a start can come back short --
@@ -1545,11 +1616,11 @@ async function submitDubStart({ fd, label, errorEl, retry, retried = false }) {
         return submitDubStart({ fd, label, errorEl, retry, retried: true });
       }
       // The refusal, and under it why starting the engine again did not work.
-      errorEl.textContent = [errorText(e), restart.why].filter(Boolean).join("\n");
+      errorEl.textContent = restart.alone ? restart.why : [errorText(e), restart.why].filter(Boolean).join("\n");
     } else if (!confirmDialogs.showIfOutOfSpace(e)) {
       errorEl.textContent = errorText(e);
     }
-    // With the advanced options open the line sits below the fold, where a
+    // Under the six stage rows the line sits below the fold, where a
     // refused Start looked like nothing happened (2026-10-20).
     if (errorEl.textContent) errorEl.scrollIntoView({ block: "nearest" });
     return false;
@@ -1731,7 +1802,8 @@ async function handleJobUpdate(job, { opened = false } = {}) {
   // which is the case that produced the empty second report: a job's log is
   // not saved to disk, so after a restart there is nothing left to send and
   // the relay files the blank as a failure of its own (2026-09-18).
-  if (!countedOnce(job.id)) {
+  // A video with the user's own subtitles is not a dubbing to count.
+  if (job.kind !== "captions" && !countedOnce(job.id)) {
     window.persodubShell?.countDub?.(job.status, (job.logs || []).slice(1).slice(-6).join("\n"), job.id);
   }
 
@@ -1939,29 +2011,33 @@ async function exportContext() {
   // button, so the shape is the one its draft was left on; an erase opened
   // from Projects has no draft behind it and is saved as it is.
   if (document.body.dataset.screen === "erase" && eraseScreen.erasedJob()) {
-    return { kind: "erase", ratio: (getDraft() || {}).ratio || "original", where: t("Saves to Downloads"), save: (what) => eraseScreen.exportErased(what) };
+    return { kind: "erase", ratio: (getDraft() || {}).ratio || "original", where: t("Saved in Downloads"), save: (what) => eraseScreen.exportErased(what) };
   }
   // Any other erase screen hands back only the draft it shows: an empty one
   // saved whatever draft was still held (Windows test E9).
   if (document.body.dataset.screen === "erase" && !eraseScreen.exportsDraft()) return null;
-  // The Audio tab with its two sounds: those are what it hands back. Links,
-  // the way a dubbing's own two are.
-  const separated = !state.jobId && leftTabs.current() === "audio" && audioTab.separatedJob();
-  if (separated) {
-    return { kind: "separate", jobId: separated.id, project: String((getDraft() || {}).name || "").replace(/\.[A-Za-z0-9]{2,4}$/, "") || "audio",
-             where: t("Saves to Downloads") };
-  }
   // A draft with a video on the timeline, before any dub.
   if (!state.jobId && draftSetup.canExport()) {
-    return { kind: "draft", ratio, where: t("Saves to Downloads"), save: (what) => draftSetup.saveDraft(what) };
+    return { kind: "draft", ratio, where: t("Saved in Downloads"), save: (what) => draftSetup.saveDraft(what) };
   }
   const job = state.job;
   if (!job) return null;
+  // A video with the user's own subtitles: that video in the look picked, and the file.
+  if (job.kind === "captions") {
+    const { preset, query } = subtitles.exportParams();
+    return { kind: "captions", jobId: job.id, ratio, where: whereDownloadsGo(job),
+             subtitled: { href: `/api/dub/result/${job.id}/subtitled?preset=${preset}${query}&download=1`,
+                          name: `video-sub-${preset}.mp4` } };
+  }
   // The subtitles are only offered when there are some (an older job may have
   // none). Asked with HEAD: whether the file exists is the whole question, and
   // fetching it to find out downloaded the subtitles nobody had asked for yet.
   const hasSrt = await fetch(`/api/dub/result/${job.id}/srt`, { method: "HEAD" })
     .then((r) => r.ok).catch(() => false);
+  // The script goes out as Perso's spreadsheet whenever the job has one: a
+  // dubbing made here has it when it has that subtitles file, and one made on
+  // Perso keeps its lines there, where app/api/script.py reads them back.
+  const hasScript = hasSrt || (job.dub_mode === "perso" && !!job.perso_project_seq);
   // The original's voice and background, each only while the job's folder
   // still has it (a dubbing made wholly on Perso has neither).
   const stems = await fetch(`/api/dub/result/${job.id}/stems`)
@@ -1975,13 +2051,17 @@ async function exportContext() {
   const mark = doneVersion ? `&v=${doneVersion}` : "";
   const { preset: subPreset, query: posQ } = subtitles.exportParams();
   return {
-    kind: "dub", jobId: job.id, target, mark, hasSrt, stems, project: job.project, fromLink: !!job.from_link, ratio,
+    kind: "dub", jobId: job.id, target, mark, hasSrt, hasScript, stems, project: job.project, fromLink: !!job.from_link, ratio,
+    // The script's file name: the project as the screens show it, and both languages.
+    title: shownName(job), source: job.source_lang,
     // The same URL the player is on, remake mark and all: without it a download
     // taken straight after a remake can be served the old video from cache.
     videoHref: donePlayer.doneVideoSrc(job, "dubbed"),
     subtitled: { href: `/api/dub/result/${job.id}/subtitled?preset=${subPreset}${posQ}&download=1${mark}`,
                  name: `dub_${target}-sub-${subPreset}.mp4` },
-    where: whereDownloadsGo(job),
+    // The day with the project: the dated folder the files go in, inside a
+    // folder picked with Change as inside Downloads.
+    where: whereDownloadsGo(job), day: job.day,
   };
 }
 const exportDialog = initExportDialog({
@@ -1989,9 +2069,10 @@ const exportDialog = initExportDialog({
 });
 $("exportBtn").addEventListener("click", () => exportDialog.open());
 // Why Export is dim, on its tip. Three places switch it on and off, so the tip
-// follows the button itself rather than each of them.
+// follows the button itself rather than each of them. The Save video tab is
+// never dim: with no video it is the way to bring one in (owner, 2026-10-24).
 new MutationObserver(() => {
-  $("exportBtn").title = $("exportBtn").disabled ? t("Nothing to export yet") : "";
+  $("exportBtn").title = $("exportBtn").disabled ? t("Nothing to download yet") : "";
 }).observe($("exportBtn"), { attributes: true, attributeFilter: ["disabled"] });
 
 // A button keeps the keyboard after the mouse presses it, and the timeline's
@@ -2017,8 +2098,8 @@ document.addEventListener("keydown", (e) => {
 function whereDownloadsGo(job) {
   if (!window.persodubShell) return t("Saves to the Downloads folder");
   return job?.day && job?.project
-    ? t("Saves to Downloads / {day} / {project}", { day: job.day, project: job.project })
-    : t("Saves to Downloads");
+    ? t("Saved in Downloads / {day} / {project}", { day: job.day, project: job.project })
+    : t("Saved in Downloads");
 }
 
 // ---------------- the script table ----------------
@@ -2056,6 +2137,15 @@ const scriptTable = initScriptTableUi({
     dubRestart = retry;
     models.refreshModels().then(() => models.showModelsDialog(detail));
   },
+  // A line pressed: the video stops just inside its start (exactly on it, the
+  // line before, which ends there, is the one lit: donePlayer isNowLine), the
+  // clock, the row and the playhead follow, and the strip scrolls to it.
+  onSeekLine: (start) => {
+    cancelRange(doneVideo);
+    doneVideo.currentTime = start + 0.001;
+    donePlayer.paintPlayhead();
+    timeline.revealTime(start);
+  },
 });
 
 // ---------------- Subtitles on the player ----------------
@@ -2076,7 +2166,41 @@ const subtitles = initSubtitleOverlay({
   },
   getDoneSource: donePlayer.getDoneSource,
   showVideoSource: donePlayer.showVideoSource,
+  // The Captions tab with no project open: the video comes in as the draft,
+  // and the video with its subtitle file is opened as a finished project,
+  // the way Projects opens a dub, on this tab.
+  alone: {
+    importSource: (source) => draftImport.importSource(source),
+    say: (text, isError) => draftImport.say(text, isError),
+    // A project's own video, held again the way + Add language holds it; an
+    // erased video, held the way its Dubbing button holds it.
+    hold: async (from) => (await (from.erase ? eraseToDub(from.id) : dubAgainSource(from.id))).download_id,
+    erased: () => { const v = eraseScreen.erasedVideo(); return v && { ...v, erase: true }; },
+    lengthOf: (id) => fetchDownload(id).then((d) => d.duration_sec || 0, () => 0),
+    upload: (downloadId, file) => importCaptions({ downloadId, file }),
+    openJob: async (jid) => {
+      draftBecameJob((getDraft() || {}).downloadId);
+      projects.renderHistory().catch(() => {});
+      await resumeJob(jid);
+      leftTabs.show("captions");
+    },
+  },
 });
+// A video with the user's own subtitles, on its Dubbing tab: the same video
+// held again (POST /api/dub/jobs/{id}/again) and opened as a new project to dub.
+$("dubbingCaptionsBtn").addEventListener("click", async () => {
+  const jid = state.jobId;
+  $("dubbingCaptionsError").textContent = "";
+  try {
+    const src = await dubAgainSource(jid);
+    if (state.jobId !== jid) return;
+    openDraftHere({ downloadId: src.download_id, name: src.title, duration: src.duration_sec }, { tab: "dubbing" });
+  } catch (e) {
+    $("dubbingCaptionsError").textContent = errorText(e);
+  }
+});
+// Come to with no project open, the tab draws its own way in.
+$("leftTabs").addEventListener("click", () => subtitles.paintCaptions());
 
 // ---------------- Ratio and Preview ----------------
 // The two buttons at the right of the player's foot (ui/src/ratio.mjs): the
@@ -2135,8 +2259,6 @@ function toggleErasePlay() {
   if (v.paused || v.ended) v.play().catch(() => {}); else v.pause();
 }
 const timeline = initTimelineUi({
-  // A Voice or Background lane's speaker (a separated draft, the Audio tab).
-  onStemMute: (which) => audioTab.toggleMute(which),
   $,
   getVideo: () => (onEraseTab() ? $("eraseVideo") : doneVideo),
   getClock: () => (onEraseTab() ? clockLine($("eraseVideo")) : donePlayer.getDoneClock()),
@@ -2155,6 +2277,7 @@ const timeline = initTimelineUi({
   paintPlayhead: () => (onEraseTab() ? paintErasePlayhead() : donePlayer.paintPlayhead()),
   toggleDonePlay: () => (onEraseTab() ? toggleErasePlay() : donePlayer.toggleDonePlay()),
   markClippedNames: projects.markClippedNames,
+  ownSubtitles: () => !!state.job && state.job.id === state.jobId && state.job.kind === "captions",
 });
 // The keyboard, the observer that re-measures the track and the window resize
 // that puts the remembered pane sizes back -- everything that listens outside
@@ -2162,7 +2285,6 @@ const timeline = initTimelineUi({
 timeline.attach();
 leaveEraseTimeline = () => timeline.showErase(null);
 fitWorkLayout = () => timeline.fitLayout();
-showAudioLanes = (info) => timeline.showAudio(info);
 // After the player row's own listeners, so the clock under the erase video
 // ends up counting kept time the way the strip does.
 for (const e of ["play", "playing", "pause", "ended", "emptied", "timeupdate", "loadedmetadata", "seeked"]) {

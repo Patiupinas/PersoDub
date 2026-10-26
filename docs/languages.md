@@ -4,7 +4,7 @@
 Italian · Portuguese · Russian · Spanish
 
 **With the Perso API (100+):** the languages follow the voice model picked under
-**Dubbing model**: Oriole (the default) has 77, Linnet 4 has 80, Linnet 3 has 34, Wren has 32, Finch has 79, Nightingale has 102. Finch and Nightingale need a Perso Pro plan.
+**Dubbing model**: Oriole has 77, Linnet 4 has 80, Linnet 3 has 34, Wren has 32, Finch has 79, Nightingale has 102. Until you choose one, a language is dubbed with Linnet 4, or with Oriole where Linnet 4 does not have it. Finch and Nightingale need a Perso Pro plan.
 
 **All six models (32):** Arabic · Bulgarian · Chinese · Croatian · Czech · Danish · Dutch · English (US) · Filipino · Finnish · French · German · Greek · Hindi · Hungarian · Indonesian · Italian · Japanese · Korean · Malay · Norwegian · Polish · Portuguese (Brazil) · Romanian · Russian · Slovak · Spanish (Mexico) · Swedish · Tamil · Turkish · Ukrainian · Vietnamese
 
@@ -21,4 +21,4 @@ Italian · Portuguese · Russian · Spanish
 **Nightingale only (33):** Akan · Albanian · Amharic · Arabic (Egypt) · Basque · Burmese · Chinese (Taiwan) · Dogri · English (Australia) · English (Canada) · French (Canada) · Kikuyu · Kinyarwanda · Kirundi · Luganda · Mongolian · Sepedi · Sesotho · Spanish (Argentina) · Spanish (Chile) · Sundanese · Swati · Tajik · Tibetan · Tsonga · Tswana · Uyghur · Uzbek · Venda · Waray · Wolof · Yoruba · Zulu
 
 **Linnet 4 only (1):** Cantonese
-The cloud lists are Perso's, as of 2026-10-19 in the copy that ships with the app; while a Perso key is saved, the app asks Perso for the current list, at most once a day, and a voice model Perso adds is offered from then on without an app update. Set **Dubbing** to **Perso API** under Advanced options to use them; it needs a Perso key, and how to add one is in [Configuration](configuration.md).
+The cloud lists are Perso's, as of 2026-10-19 in the copy that ships with the app; while a Perso key is saved, the app asks Perso for the current list, at most once a day, and a voice model Perso adds is offered from then on without an app update. Set **Choose a model** to **Perso API** to use them; it needs a Perso key, and how to add one is in [Configuration](configuration.md).

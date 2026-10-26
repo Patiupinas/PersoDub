@@ -20,8 +20,11 @@ import { LANGUAGES, fetchLanguages, startDownload, fetchDownload,
 import { fmtLength } from "./format.mjs";
 import { initTrimBar } from "./trimBar.mjs";
 import { downloadsLabel, errorText } from "./format.mjs";
-import { DEFAULT_MODEL, languagesFor, modelCaption, modelHint, modelInfo, modelsIn } from "./persoModels.mjs";
+import { DEFAULT_MODEL, defaultLanguages, defaultModelFor, languagesFor, modelCaption, modelHint, modelInfo,
+         modelsIn } from "./persoModels.mjs";
 import { readRemembered, rememberChoice, choicesToPutBack } from "./rememberedChoices.mjs";
+import { lucide } from "./icons.mjs";
+import { placeList, listKeys } from "./pickList.mjs";
 import { languageName, t } from "./i18n.mjs";
 
 // The flags are the app's one deliberate use of emoji: where the dub is headed
@@ -98,6 +101,8 @@ export function lengthLine(seconds, trim) {
  * @param {() => void} deps.onPickFile   open the file picker (Replace)
  * @param {(path: string) => void} [deps.reveal]  show a saved file in the
  *        computer's own file window, or null outside the desktop app
+ * @param {() => Promise<string>} [deps.pickedFolder]  the folder the Download
+ *        dialog's Change picked, "" for Downloads, so the saved line names it
  * @param {(source: {downloadId, title, duration_sec, trim}) => void} deps.onErase
  *        hand the held video to the subtitle-erasing screen
  * @param {Storage} [deps.storage]  the browser's localStorage, where the last
@@ -107,7 +112,8 @@ export function lengthLine(seconds, trim) {
 export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
                                    updateEngineHints, paintDubMode,
                                    playRange, cancelRange, labelPx,
-                                   onClosed, onPickFile, onErase, reveal = null, storage = null }) {
+                                   onClosed, onPickFile, onErase, reveal = null, storage = null,
+                                   pickedFolder = async () => "" }) {
   // Populated from dubApi.LANGUAGES (the model's own supported-language table).
   // sourceLangSelect's default is the literal "Auto-detect" <option> written into
   // its markup -- defCode null never matches a real LANGUAGES code, so no
@@ -143,17 +149,28 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
                                              ...(l.models ? { models: l.models } : {}) }));
   let languageLists = { local: asEntries(LANGUAGES), perso: asEntries(LANGUAGES) };
   let persoModel = DEFAULT_MODEL;
+  // Whether the model is one the person chose (or a choice put back). Until
+  // then it is the target language's own default, Linnet 4 or Oriole
+  // (ui/src/persoModels.mjs defaultModelFor), and the target list offers
+  // every language either of the two has.
+  let modelChosen = false;
   // A remembered target the list on screen does not have yet: a Perso one
   // while GET /api/languages has not answered, or while this computer dubs.
   // Picked as soon as a list has it; forgotten once the person picks another.
   let wantedTarget = null;
   function currentLanguages() {
     const mode = $("dubModeSelect") ? $("dubModeSelect").value : "local";
-    return mode === "perso" ? languagesFor(languageLists.perso, persoModel) : languageLists.local;
+    if (mode !== "perso") return languageLists.local;
+    return modelChosen ? languagesFor(languageLists.perso, persoModel) : defaultLanguages(languageLists.perso);
   }
   function refillTargetLanguages() {
     const sel = $("targetLangSelect");
     if (!sel) return;
+    // A remembered model Perso no longer names (once its list has answered)
+    // gives way to the default rather than starting a dubbing Perso refuses.
+    if (languageLists.perso.some((l) => l.models) && !modelsIn(languageLists.perso).includes(persoModel)) {
+      modelChosen = false;
+    }
     const list = currentLanguages();
     const want = wantedTarget && list.some((l) => l.id === wantedTarget) ? wantedTarget : null;
     if (want) wantedTarget = null;
@@ -166,10 +183,12 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
       const flag = (local && LOCAL_FLAGS[l.code]) || LANG_FLAGS[l.id] || (!l.tag && LANG_FLAGS[l.code]);
       const name = languageName(l.id, l.name);
       o.textContent = flag ? `${flag} ${name}` : name;
+      o.dataset.name = l.name;   // English, for the list's search
       sel.appendChild(o);
     }
     sel.value = list.some((l) => l.id === keep) ? keep : "en";
     paintPersoModel();
+    paintTargetPick();
   }
 
   // The Dubbing model: a button naming the chosen model and, pressed, a list
@@ -180,11 +199,6 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
   let pickOpen = false;
   let pickBtn = null;
   function paintPersoModel() {
-    // A remembered model Perso no longer names (once its list has answered)
-    // gives way to the default rather than starting a dubbing Perso refuses.
-    if (languageLists.perso.some((l) => l.models) && !modelsIn(languageLists.perso).includes(persoModel)) {
-      persoModel = DEFAULT_MODEL;
-    }
     $("persoModelRow").hidden = $("dubModeSelect").value !== "perso";
     if ($("persoModelRow").hidden) pickOpen = false;
     const box = $("persoModelPick");
@@ -193,7 +207,10 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
     // it used to swap the language for English without a word, and a Start
     // then dubbed into the wrong language for credits (Windows C11, 2026-10-07).
     const target = $("targetLangSelect") ? $("targetLangSelect").value : "";
-    const targetName = (languageLists.perso.find((l) => l.id === target) || {}).name || target;
+    const entry = languageLists.perso.find((l) => l.id === target);
+    const targetName = (entry || {}).name || target;
+    // Nobody chose one: the language's own, so it follows the language.
+    if (!modelChosen) persoModel = defaultModelFor(entry);
     const chosen = modelInfo(persoModel);
     const btn = document.createElement("button");
     btn.type = "button";
@@ -258,43 +275,23 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
       opt.addEventListener("click", () => {
         if (lacks) return;
         persoModel = id;
+        modelChosen = true;
         pickOpen = false;
         rememberChoice(storage, "persoModel", id, savedDefaults);
         refillTargetLanguages();
+        // Said like a dropdown's choice: the Before dubbing card prices the
+        // dubbing by the model (ui/src/draftSetup.mjs).
+        $("persoModelPick").dispatchEvent(new Event("change"));
         pickBtn?.focus?.();
       });
       list.appendChild(opt);
     }
-    // Up and down move between the models that can be chosen; Escape closes
-    // the list and not the dialog under it.
-    list.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        pickOpen = false;
-        paintPersoModel();
-        pickBtn?.focus?.();
-        return;
-      }
-      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-      e.preventDefault();
-      const opts = [...list.querySelectorAll(".model-opt:not([disabled])")];
-      const at = opts.indexOf(document.activeElement);
-      const next = opts[(at + (e.key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length];
-      if (next) next.focus();
+    listKeys(list, () => {
+      pickOpen = false;
+      paintPersoModel();
+      pickBtn?.focus?.();
     });
-    setTimeout(() => { list.querySelector(".model-opt.on")?.focus?.(); }, 0);
     return list;
-  }
-  // Under the button, as wide as it (300 to 420 pixels), or over it when the
-  // screen has no room below.
-  function placeList(list, btn) {
-    const r = btn.getBoundingClientRect();
-    list.style.left = `${r.left}px`;
-    list.style.width = `${Math.min(Math.max(r.width, 300), 420)}px`;
-    const below = r.bottom + 5;
-    const screen = globalThis.innerHeight ?? Infinity;   // none in the tests' stand-in page
-    list.style.top = below + list.offsetHeight > screen && r.top > list.offsetHeight + 5
-      ? `${r.top - 5 - list.offsetHeight}px` : `${below}px`;
   }
   function closePick() {
     if (!pickOpen) return;
@@ -314,11 +311,181 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
     pickOpen = false;
     paintPersoModel();
   });
+  // The Target language: a button naming the chosen language and, pressed,
+  // the list in the Dubbing model's dress with a search field at its top --
+  // Oriole has 77 languages, found by scrolling until now (owner, 2026-10-22).
+  // Choosing one sets #targetLangSelect, kept hidden, and fires its change,
+  // so everything that reads the language goes on reading it there.
+  let langOpen = false;
+  let langQuery = "";
+  let langBtn = null;
+  function paintTargetPick() {
+    const box = $("targetLangPick");
+    box.innerHTML = "";
+    const sel = $("targetLangSelect");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "targetLangBtn";
+    btn.className = "model-pick-btn";
+    btn.setAttribute("aria-haspopup", "listbox");
+    btn.setAttribute("aria-expanded", String(langOpen));
+    btn.setAttribute("aria-labelledby", "targetLangLabel targetLangBtn");
+    const name = document.createElement("span");
+    name.className = "model-name";
+    name.textContent = ([...sel.options].find((o) => o.value === sel.value) || {}).textContent || "";
+    btn.appendChild(name);
+    btn.addEventListener("click", () => {
+      langOpen = !langOpen;
+      langQuery = "";
+      paintTargetPick();
+    });
+    langBtn = btn;
+    box.appendChild(btn);
+    if (langOpen) {
+      const list = languageList();
+      box.appendChild(list);
+      placeList(list, btn);
+    }
+  }
+  // The search narrows the list to the languages with the typed words in
+  // the name shown, the English name or the code -- "eng" finds English in a
+  // Korean window (owner, 2026-10-22) -- and says how many of how many are
+  // left ("77개 중 2개").
+  const searched = (o) => `${o.textContent} ${o.dataset.name || ""} ${o.value}`.toLowerCase();
+  function languageList() {
+    const list = document.createElement("div");
+    list.id = "targetLangList";
+    list.className = "model-pick-list lang-pick-list";
+    const search = document.createElement("div");
+    search.className = "lang-search";
+    search.innerHTML = lucide("search", 14);
+    const field = document.createElement("input");
+    field.type = "search";
+    field.value = langQuery;
+    field.placeholder = t("Search languages");
+    field.setAttribute("aria-label", t("Search languages"));
+    search.appendChild(field);
+    const opts = document.createElement("div");
+    opts.className = "lang-opts";
+    opts.setAttribute("role", "listbox");
+    opts.setAttribute("aria-labelledby", "targetLangLabel");
+    const count = document.createElement("div");
+    count.className = "lang-count";
+    function fill() {
+      const all = [...$("targetLangSelect").options];
+      const words = langQuery.trim().toLowerCase();
+      const found = words ? all.filter((o) => searched(o).includes(words)) : all;
+      opts.innerHTML = "";
+      for (const o of found) opts.appendChild(languageRow(o));
+      count.textContent = words ? t("{shown} of {all}", { shown: found.length, all: all.length }) : "";
+      count.hidden = !words;
+    }
+    fill();
+    field.addEventListener("input", () => { langQuery = field.value; fill(); });
+    // Enter in the field takes the first one left; up and down move between
+    // the field and the languages; Escape closes the list and not the dialog
+    // under it.
+    list.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        closeLanguages();
+        langBtn?.focus?.();
+        return;
+      }
+      const rows = [...opts.children];
+      if (e.key === "Enter" && e.target === field) {
+        e.preventDefault();
+        if (rows[0]) chooseLanguage(rows[0].dataset.lang);
+        return;
+      }
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault();
+      const at = rows.indexOf(document.activeElement);   // -1: the field
+      const next = e.key === "ArrowDown" ? rows[Math.min(at + 1, rows.length - 1)] : at > 0 ? rows[at - 1] : field;
+      next?.focus?.();
+    });
+    list.append(search, opts, count);
+    setTimeout(() => {
+      field.focus?.({ preventScroll: true });
+      const on = opts.querySelector(".model-opt.on");
+      if (on) opts.scrollTop = on.offsetTop - (opts.clientHeight - on.offsetHeight) / 2;
+    }, 0);
+    return list;
+  }
+  function languageRow(o) {
+    const on = o.value === $("targetLangSelect").value;
+    const opt = document.createElement("button");
+    opt.type = "button";
+    opt.className = on ? "model-opt on" : "model-opt";
+    opt.setAttribute("role", "option");
+    opt.setAttribute("aria-selected", String(on));
+    opt.dataset.lang = o.value;
+    const text = document.createElement("span");
+    text.className = "model-text";
+    const name = document.createElement("span");
+    name.className = "model-name";
+    name.textContent = o.textContent;
+    text.appendChild(name);
+    opt.appendChild(text);
+    opt.addEventListener("click", () => chooseLanguage(o.value));
+    return opt;
+  }
+  function chooseLanguage(id) {
+    langOpen = false;
+    const sel = $("targetLangSelect");
+    if (sel.value === id) paintTargetPick();
+    else {
+      sel.value = id;
+      sel.dispatchEvent(new Event("change"));
+    }
+    langBtn?.focus?.();
+  }
+  function closeLanguages() {
+    if (!langOpen) return;
+    langOpen = false;
+    paintTargetPick();
+  }
+  // Scrolling (but not in the list), resizing or a press anywhere else closes it.
+  globalThis.addEventListener?.("resize", closeLanguages);
+  document.addEventListener("scroll", (e) => {
+    if (e.target && typeof e.target.closest === "function" && e.target.closest("#targetLangList")) return;
+    closeLanguages();
+  }, true);
+  document.addEventListener("pointerdown", (e) => {
+    if (!langOpen || !e.target || typeof e.target.closest !== "function") return;
+    if (e.target.closest("#targetLangPick")) return;
+    closeLanguages();
+  });
+  $("targetLangSelect").addEventListener("change", paintTargetPick);
+  paintTargetPick();
+
   fetchLanguages().then((lists) => {
     languageLists = { local: asEntries(lists.local), perso: asEntries(lists.perso) };
     refillTargetLanguages();
   });
   if ($("dubModeSelect")) $("dubModeSelect").addEventListener("change", refillTargetLanguages);
+
+  // Processing: the two halves above the languages (owner, 2026-10-22) set
+  // #dubModeSelect, kept hidden, and fire its change, so everything that
+  // follows the choice -- the languages, the model row, the hints, the
+  // greying, what is remembered -- follows it as it always has.
+  // paintModeSwitch lights the half the select is on, whoever set it.
+  const MODE_HALVES = { dubModeLocal: "local", dubModePerso: "perso" };
+  function paintModeSwitch() {
+    for (const [id, mode] of Object.entries(MODE_HALVES)) {
+      $(id).setAttribute("aria-checked", String($("dubModeSelect").value === mode));
+    }
+  }
+  for (const [id, mode] of Object.entries(MODE_HALVES)) {
+    $(id).addEventListener("click", () => {
+      const sel = $("dubModeSelect");
+      if (sel.value === mode) return;
+      sel.value = mode;
+      sel.dispatchEvent(new Event("change"));
+    });
+  }
+  $("dubModeSelect").addEventListener("change", paintModeSwitch);
+  paintModeSwitch();
   // A new target language changes which models can be pressed.
   if ($("targetLangSelect")) $("targetLangSelect").addEventListener("change", paintPersoModel);
 
@@ -349,9 +516,11 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
       if (sel && value && sel.querySelector(`option[value="${value}"]`)) sel.value = value;
     };
     pick("dubModeSelect", c.dubMode);
+    paintModeSwitch();
     // The Perso voice model has no saved default: without one handed in, the
-    // row starts on Oriole again.
+    // row starts on the target language's default again.
     persoModel = c.persoModel || DEFAULT_MODEL;
+    modelChosen = !!c.persoModel;
     refillTargetLanguages();
     pick("sepSelect", c.sep);
     pick("sttSelect", c.stt);
@@ -384,7 +553,8 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
   function takeChoices() {
     return { dubMode: $("dubModeSelect").value, sep: $("sepSelect").value,
              stt: $("sttSelect").value, translator: $("translateSelect").value,
-             quality: $("qualitySelect").value, voice: $("voiceSelect").value, persoModel };
+             quality: $("qualitySelect").value, voice: $("voiceSelect").value,
+             persoModel: modelChosen ? persoModel : undefined };
   }
   // What the dialog was set to when it sent its video to the erase screen. The
   // way back reopens the dialog, and reopening starts the dropdowns on the
@@ -521,7 +691,7 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
       if (d.status === "failed") {
         stopWatching();
         $("dlRow").hidden = true;
-        $("projectError").textContent = d.error || t("Could not fetch the video.");
+        $("projectError").textContent = d.error || t("Could not fetch the video from this link. Paste it again in a moment, or drag the video file in.");
         return;
       }
       if (d.status === "ready") { stopWatching(); playHeldVideo(d); return; }
@@ -579,11 +749,11 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
 
   /** Lets a draft's Dubbing tab borrow the block while there is no dialog to
       show it in (ui/src/draftSetup.mjs). Order: languages, the voice
-      engine's warning, then Advanced. */
+      engine's warning, then the stage rows under their heading. */
   function moveOptionsInto(container) {
     container.appendChild($("langGrid"));
     container.appendChild($("engineWarning"));
-    container.appendChild($("advancedBtn"));
+    container.appendChild($("stageHead"));
     container.appendChild($("advancedBody"));
   }
 
@@ -702,12 +872,6 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
     if (e.key === "Escape" && $("projectOverlay").classList.contains("open")) closeNewProject();
   });
   $("projectReplace").addEventListener("click", () => { closeNewProject(); onPickFile(); });
-  $("advancedBtn").addEventListener("click", () => {
-    const open = $("advancedBody").hidden;
-    $("advancedBody").hidden = !open;
-    $("advancedBtn").setAttribute("aria-expanded", String(open));
-    $("advancedBtn").classList.toggle("open", open);
-  });
 
   // Start is wired here so the dialog owns every button inside it; what the
   // button does -- the job, the running screen, the top bar -- stays on the page.
@@ -732,7 +896,8 @@ export function initNewProjectUi({ $, state, onStart, applyEngineAvailability,
     $("projectShowWrap").hidden = true;
     try {
       const saved = await saveDownloadClip(np.downloadId, np.trim);
-      $("projectSaved").textContent = t("Saved to {folder}", { folder: downloadsLabel(saved.path) || t("Downloads") });
+      const folder = downloadsLabel(saved.path, await pickedFolder()) || t("Downloads");
+      $("projectSaved").textContent = t("Saved to {folder}", { folder });
       // Where it went, for the Show beside that line. Only the desktop app can
       // open a folder; in a browser the line says where and stops there.
       savedClipPath = saved.path || "";

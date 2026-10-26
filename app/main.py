@@ -26,6 +26,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app import codex_fetch, config, state
 from app.api import agent as agent_api
+from app.api import captions as captions_api
 from app.api import clips as clips_api
 from app.api import downloads as downloads_api
 from app.api import dub as dub_api
@@ -114,7 +115,8 @@ async def unhandled_exception(request, exc):
     log.exception("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
     return JSONResponse(
         status_code=500,
-        content={"detail": t("An internal error occurred. Details are in the app log.")},
+        content={"detail": t("Something went wrong in PersoDub. Try again, and if it happens again, "
+                             "quit and reopen PersoDub.")},
     )
 
 
@@ -152,6 +154,7 @@ app.include_router(downloads_api.router)
 app.include_router(dub_api.router)
 app.include_router(erase_api.router)
 app.include_router(separate_api.router)
+app.include_router(captions_api.router)
 app.include_router(media_api.router)
 app.include_router(misc_api.router)
 app.include_router(models_api.router)

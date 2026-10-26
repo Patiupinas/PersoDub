@@ -27,6 +27,7 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { readPage } from "../testlib/readPage.mjs";
+import { lucide } from "./icons.mjs";
 
 // The timeline draws its own head and lane, so their ids live in the module.
 const TIMELINE = fileURLToPath(new URL("./timeline.mjs", import.meta.url));
@@ -36,7 +37,6 @@ const ERASE = fileURLToPath(new URL("./eraseScreen.mjs", import.meta.url));
 // The running screen owns the Cancel button that asks the question.
 const RUNNING = fileURLToPath(new URL("./runningScreen.mjs", import.meta.url));
 const DRAFT_IMPORT = fileURLToPath(new URL("./draftImport.mjs", import.meta.url));
-const AUDIO = fileURLToPath(new URL("./audioTab.mjs", import.meta.url));
 // The subtitles on the player and the work of the Captions tab's tools.
 const SUBTITLES = fileURLToPath(new URL("./subtitleOverlay.mjs", import.meta.url));
 // The finished screen's player: its buttons, clock and Original / Dubbing tabs.
@@ -155,7 +155,7 @@ test("the Erase tab has its faces, and the left tab that opens it", () => {
     "the left panel's Erase tab is the way in");
   // The tab comes back as it was left, or on the new project's video; only
   // the first screen's card opens it empty (eraseScreen.openErase).
-  assert.match(html, /initLeftTabs\(\{ \$, onErase: \(\) => \{[^}]*openEraseForProject\(\);\s*\} \}\);/);
+  assert.match(html, /initLeftTabs\(\{ \$, onErase: \(\) => \{[^}]*openEraseForProject\(\);\s*\},/);
   // An open dub's Erase tab starts from that project's own video; anything
   // else (a draft, no project) opens the tab the way it always did.
   assert.match(html, /const src = await dubAgainSource\(jid\);[^]*?eraseScreen\.openEraseOn\(\{ downloadId: src\.download_id,/);
@@ -231,13 +231,35 @@ test("the erase screen says only what the mockup says", () => {
   const erase = readFileSync(ERASE, "utf8");
   assert.match(erase, /"Finding subtitles…" : "Subtitles"/);
   for (const words of ["Part to erase", "Erasing", "Erased", "Locked while erasing",
-                       "Compare in the Original and Erased tabs",
-                       "on this computer"]) {
+                       "Compare in the Original and Erased tabs"]) {
     assert.ok(erase.includes(words), `the Erase tab no longer says "${words}"`);
   }
   // The Area card's two tips (owner, 2026-09-30), kept in ui/src/eraseArea.mjs.
   assert.match(erase, /AREA_TIPS\[0\]/);
   assert.match(erase, /AREA_TIPS\[1\]/);
+});
+
+// Placing the box, one card right under the Area card says what the erase
+// makes, in the room the line under the cards had: the column at 1280x800 has
+// none to spare (owner, 2026-10-22). ui/src/eraseScreen.mjs shows it.
+test("the Erase tab says what it makes in one card under the Area card, in the help line's room", () => {
+  const html = readPage();
+  const body = html.slice(html.indexOf('id="eraseBody"'), html.indexOf('id="eraseRow"'));
+  assert.match(body, new RegExp('id="eraseResetBtn" type="button">Reset</button>\\s*</div>\\s*(<!--[^]*?-->\\s*)?'
+    + '<div class="erase-card result-box" id="eraseResult" hidden>\\s*<div data-i18n class="k">What you get</div>\\s*'
+    + '<div data-i18n class="m">The video with its subtitles erased</div>\\s*</div>'), "the card is not right under the Area card");
+  assert.ok(body.indexOf('id="eraseResult"') < body.indexOf('id="eraseTip"'));
+  // No margins of its own here: the column has exactly its height left.
+  assert.match(html, /#tabErase \.result-box \{ margin: 0; \}/);
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko["The video with its subtitles erased"], "자막을 지운 영상이 나와요");
+  // The line it replaced is said nowhere now.
+  const gone = "Dub after erasing and the translated subtitles won't overlap. Fit the box, then play to check the subtitles stay in it from start to end.";
+  assert.ok(!html.includes(gone) && !readFileSync(ERASE, "utf8").includes(gone), "the placing line is back");
+  for (const code of ["en", "ko"]) {
+    const table = JSON.parse(readFileSync(new URL(`../../static/i18n/ui.${code}.json`, import.meta.url), "utf8"));
+    assert.ok(!Object.hasOwn(table, gone), `ui.${code}.json still has the placing line`);
+  }
 });
 
 // The two controls of an erase belong beside the picture they are about --
@@ -539,6 +561,21 @@ test("the subtitle tools live in the Captions tab and the video stays clean", ()
   assert.equal(html.split("/* === captions === */").length, 2);
 });
 
+// Under the looks, one card says what the tab makes (owner, 2026-10-22). It
+// is the tab's own: inside #capMain, so an empty tab has none either.
+test("the Subtitle style tab says what it makes, in one card under the looks", () => {
+  const html = readPage();
+  const tab = html.slice(html.indexOf('id="capMain"'), html.indexOf('id="runBody"'));
+  assert.match(tab, new RegExp('<div class="cap-grid" id="subStyleMenu"></div>\\s*(<!--[^]*?-->\\s*)?'
+    + '<div class="erase-card result-box" id="capResult">\\s*<div data-i18n class="k">What you get</div>\\s*'
+    + '<div data-i18n class="m">The video with subtitles burned in, and the subtitle file</div>\\s*</div>\\s*</div>'),
+    "the card is not the last thing under the looks");
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko["The video with subtitles burned in, and the subtitle file"], "자막을 입힌 영상과 자막 파일이 나와요");
+  // The looks scroll above it; the card keeps the grid's side room.
+  assert.match(html, /\.cap-content \.result-box \{ margin: 0 12px 12px; \}/);
+});
+
 test("after an update the page says so in one line and keeps the What's new sheet for the link", () => {
   const html = readPage();
   // The notice and the sheet are ui/src/whatsNew.mjs's, written one level in.
@@ -582,9 +619,11 @@ test("every small confirm wears the warning sign, a question and at most one sho
   const confirms = readFileSync(CONFIRMS, "utf8");
   assert.match(confirms, /\$\("deleteTitle"\)\.textContent = job\.draftId \? t\("Delete this draft\?"\) : t\("Delete this project\?"\);/);
   // Its one line says how many languages go with a project of several
-  // (ui/src/languageRow.mjs deleteLine), and nothing else.
-  assert.equal((html.match(/\$\("deleteMessage"\)\.textContent/g) || []).length, 1);
+  // (ui/src/languageRow.mjs deleteLine), and nothing else; asked about a base
+  // program in Settings > Models, the one line the asker hands it.
+  assert.equal((html.match(/\$\("deleteMessage"\)\.textContent/g) || []).length, 2);
   assert.match(confirms, /\$\("deleteMessage"\)\.textContent = deleteLine\(job\.draftId \? 1 : projectLanguages\(members\)\.length\);/);
+  assert.match(confirms, /\$\("deleteMessage"\)\.textContent = line;/);
   assert.match(html, /<h2>Replace this video\?<\/h2>\s*<p>Cuts are reset\.<\/p>/);
   assert.match(html, /id="cancelDubKeepBtn" type="button">Keep going<[^]*?id="cancelDubConfirmBtn" type="button">Stop</);
   assert.match(html, /\.modal\.modal-alert \{ width: 280px;/);
@@ -654,11 +693,12 @@ test("the player draws subtitles in the burn's font at its natural line height",
 test("the page hands the desktop bridge to the models controller and hints name packs first", () => {
   const html = readPage();
   assert.match(html, /shell: window\.persodubShell \|\| null/);
-  assert.match(html, /function hintNeeds\(role, value\)/);
+  // What each line lists, pack first and each thing once, is
+  // ui/src/modelsUi.mjs stageNeeds (its own tests hold the order).
+  assert.match(html, /stageNeeds\(STAGE_FIELDS\.map\(\(\[role, sel\]\) => \[role, \$\(sel\)\.value\]\), models\.modelRow\)/);
   // One line names everything the choice needs, one button fetches it all.
   assert.match(html, /t\("Needs \{names\} · \{size\} GB", \{ names: needs\.map\(\(r\) => r\.name\)\.join\(" \+ "\)/);
   assert.match(html, /models\.downloadAll\(ids\)/);
-  assert.match(html, /neededPackIds/);
 });
 
 // The voice engine's pack on disk but its process down: the page asks the
@@ -668,8 +708,9 @@ test("a dub refused because the voice engine is not running is retried after the
   assert.match(html, /async function restartVoiceEngine\(errorEl\)/);
   // serverText: the engine's English, which the refusal is known by (ui/src/format.mjs).
   assert.match(html, /voice engine is not running\/\.test\(serverText\(e\)\)\) \{\n\s*const restart = await restartVoiceEngine\(errorEl\);/);
-  // When it does not come back, why is said under the refusal, not thrown away.
-  assert.match(html, /errorEl\.textContent = \[errorText\(e\), restart\.why\]\.filter\(Boolean\)\.join\("\\n"\);/);
+  // When it does not come back, why is said under the refusal, not thrown away
+  // -- or alone, when the memory ran out again and it says all of it (A37).
+  assert.match(html, /errorEl\.textContent = restart\.alone \? restart\.why : \[errorText\(e\), restart\.why\]\.filter\(Boolean\)\.join\("\\n"\);/);
   // And it is scrolled into view: under the advanced options it was below the fold.
   const start = html.slice(html.indexOf("async function submitDubStart"));
   const refused = start.slice(start.indexOf("} catch (e) {"), start.indexOf("return false;"));
@@ -698,25 +739,27 @@ test("the project's page is the repository the shell names, or the public one wi
 });
 
 // The new-layout frame (mockup, user 2026-09-29): one bar with Home at the
-// left, the name in the middle, then Settings, the three pane buttons and
-// Export; under it three panels in a row and the timeline under all three.
-test("the top bar is the name, then Settings, the pane buttons and Export; Home and New project are in the tab row", () => {
+// left, the name in the middle, then Settings and the three pane buttons
+// (Export left it for the video panel's tab row, 2026-10-22); under it three
+// panels in a row and the timeline under all three.
+test("the top bar is the name, then Settings and the pane buttons; Home and New project are in the tab row", () => {
   const html = readPage();
   const bar = html.slice(html.indexOf('<div class="topbar" id="topbar">'), html.indexOf('<div class="shell">'));
   const at = (s) => bar.indexOf(s);
-  for (const id of ["topbarWays", "topbarTitle", "settingsBtn", "paneList", "paneTimeline", "paneAgent", "exportBtn"]) {
+  for (const id of ["topbarWays", "topbarTitle", "settingsBtn", "paneList", "paneTimeline", "paneAgent"]) {
     assert.ok(at(`id="${id}"`) > 0, `${id} is not in the top bar`);
   }
   assert.ok(at('id="topbarWays"') < at('id="topbarTitle"') && at('id="topbarTitle"') < at('id="settingsBtn"')
     && at('id="settingsBtn"') < at('id="paneList"') && at('id="paneList"') < at('id="paneTimeline"')
-    && at('id="paneTimeline"') < at('id="paneAgent"') && at('id="paneAgent"') < at('id="exportBtn"'),
-    "name, Settings, list, timeline, agent, Export");
+    && at('id="paneTimeline"') < at('id="paneAgent"'),
+    "name, Settings, list, timeline, agent");
+  assert.ok(at('id="exportBtn"') < 0, "Export is in the video panel's tab row, not the bar");
   assert.ok(at('id="homeBtn"') < 0 && at('id="newProjectBtn"') < 0, "the two are not written into the bar");
   // Home is a house over its word, first in the left panel's tab row; New
   // project is last. Buttons dressed as tabs: no data-tab, so no "on" state.
   const row = html.slice(html.indexOf('id="leftTabs"'), html.indexOf('id="tabDubbing"'));
-  const order = ['id="homeBtn"', 'class="left-sep"', 'data-tab="dubbing"', 'data-tab="audio"',
-                 'data-tab="captions"', 'data-tab="erase"', 'id="newProjectBtn"'].map((s) => row.indexOf(s));
+  const order = ['id="homeBtn"', 'class="left-sep"', 'data-tab="dubbing"',
+                 'data-tab="erase"', 'data-tab="captions"', 'data-tab="save"', 'id="newProjectBtn"'].map((s) => row.indexOf(s));
   assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1])), "Home, a hairline, the four tabs, New project");
   const home = row.slice(row.indexOf('id="homeBtn"'), row.indexOf("</button>"));
   assert.ok(home.includes("M15 21v-8a1 1 0 0 0-1-1h-4") && home.includes("<span>Home</span>") && !home.includes("data-tab"),
@@ -778,13 +821,23 @@ test("the left panel is a row of tabs, each over a body of its own", () => {
   const tabs = [...pane.matchAll(/data-tab="(\w+)"/g)].map((m) => m[1]);
   // One project holds one video: there is no Media tab to keep it in
   // (owner, 2026-09-30).
-  assert.deepEqual(tabs, ["dubbing", "audio", "captions", "erase"]);
+  // Home's order (owner, 2026-10-23): Burn in subtitles is the tool that
+  // burns a subtitle file in, not a dub's style, and Save video comes last.
+  // Separate audio is no tool of its own (owner, 2026-10-23).
+  assert.deepEqual(tabs, ["dubbing", "erase", "captions", "save"]);
+  const captions = pane.slice(pane.indexOf('data-tab="captions"'));
+  assert.ok(captions.slice(0, captions.indexOf("</button>")).endsWith("</svg>Burn in subtitles"));
+  assert.ok(!captions.slice(0, captions.indexOf(">")).includes("disabled"), "never dimmed: it starts a project anywhere");
+  const save = pane.slice(pane.indexOf('data-tab="save"'));
+  assert.ok(save.slice(0, save.indexOf("</button>")).endsWith("</svg>Save video"));
+  const words = readFileSync(new URL("./markupWords.mjs", import.meta.url), "utf8");
+  assert.match(words, /\['#leftTabs \[data-tab="captions"\]', t\("Burn in subtitles"\)\]/);
+  assert.match(words, /\['#leftTabs \[data-tab="save"\]', t\("Save video"\)\]/);
+  // It opens the Download dialog with the project's own video alone.
+  assert.match(html, /const row = state\.jobId && document\.body\.dataset\.screen !== "erase" \? \["original"\] : \["video"\];\n\s*exportDialog\.open\(row, row\);/);
   assert.ok(!/tabMedia|mediaTab|media-thumb|mediaSearch|mediaImpBtn/.test(html), "nothing of the Media tab is left");
-  assert.match(pane, /<div class="tab-body erase-tab audio-tab" id="tabAudio" role="tabpanel" hidden>/);
+  assert.ok(!html.includes('id="tabAudio"'), "no Audio tab body");
   assert.match(pane, /<button class="left-tab on"[^>]*data-tab="dubbing" aria-selected="true">/, "Dubbing is on to begin with");
-  // The audio tab says what it does, as its Home card does (owner, 2026-10-09).
-  const audioTab = pane.slice(pane.indexOf('data-tab="audio"'));
-  assert.ok(audioTab.slice(0, audioTab.indexOf("</button>")).endsWith("</svg>Separate audio"));
   // Captions holds the subtitle tools (its own test below); Dubbing holds
   // the Import block for a project with no video yet, then the script.
   assert.match(pane, /<div class="tab-body cap-tab" id="tabCaptions" role="tabpanel" hidden>/);
@@ -941,8 +994,8 @@ test("Settings is five tabs, each with its panel, and keeps every control it had
   };
   const home = {
     models: ["modelsFold", "modelsSummary", "modelsList", "modelsError"],
-    keys: ["persoKeyInput", "persoSignupLink", "persoSpaceSelect", "persoSpaceWarning", "geminiKeyInput",
-           "chatgptState", "chatgptSignInBtn", "showKeysToggle"],
+    keys: ["persoKeyInput", "persoKeyHint", "persoSignupLink", "persoSpaceSelect", "persoSpaceWarning", "geminiKeyInput",
+           "geminiKeyHint", "chatgptState", "chatgptSignInBtn", "chatgptHint", "showKeysToggle"],
     storage: ["revealOutputBtn", "storageHint"],
     privacy: ["analyticsToggle", "analyticsHint", "reportsToggle", "reportsHint"],
     about: ["brandBtn", "aboutVersion", "ackToggle", "ackList"],
@@ -969,6 +1022,128 @@ test("Settings is five tabs, each with its panel, and keeps every control it had
   assert.match(html, /onOpenSettings: \(\) => settings\.openSettings\("keys"\)/);
 });
 
+// Settings > Models: each group is a band the eye finds among the rows. A
+// heading in the rows' grey, then a band one shade off the panel, both went
+// unseen (owner, 2026-10-22, 12), so the step is held to a number: the band
+// at least 10 points of lightness (CIELAB L*) over the panel the rows sit on.
+test("a model group's band stands at least 10 points of lightness above its rows", () => {
+  const html = readPage();
+  const band = html.match(/\.set-panel \.model-group-head \{[^}]*\}/)[0];
+  assert.match(band, /background: var\(--secondary\)/);
+  assert.match(band, /border-top: 1px solid var\(--divider\)/);
+  assert.match(band, /font-size: 13px; font-weight: 600/);
+  // Edge to edge: out by the panel's own 24px sides (the Settings test above).
+  assert.match(band, /margin: 12px -24px 0; padding: 9px 24px/);
+  assert.match(html, /\.set-panel \{ flex: 1;[^}]*background: var\(--field\); \}/);
+  const token = (name) => html.match(new RegExp(`--${name}: #([0-9a-f]{6});`))[1];
+  const lightness = (hex) => {
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return y > 216 / 24389 ? 116 * Math.cbrt(y) - 16 : (24389 / 27) * y;
+  };
+  const step = lightness(token("secondary")) - lightness(token("field"));
+  assert.ok(step >= 10, `the band is only ${step.toFixed(1)} points over the rows`);
+});
+
+// The models dialog's line is two lines, the sentence and then the room left
+// with the memory (ui/src/modelsDialog.mjs joins them with a line break). The
+// stylesheet keeps that break, and the dialog is wider than the other confirms
+// so the second line fits whole in either language (owner, 2026-10-22, 5).
+test("the models dialog keeps its line break, and is wider than the other confirms", () => {
+  const html = readPage();
+  assert.match(html.match(/#mnLine \{[^}]*\}/)[0], /white-space: pre-line/);
+  const confirm = Number(html.match(/\.modal\.modal-alert \{ width: (\d+)px;/)[1]);
+  const en = Number(html.match(/\n\s*#modelsNeededOverlay \.modal\.modal-alert \{ width: (\d+)px; \}/)[1]);
+  const ko = Number(html.match(/html:lang\(ko\) #modelsNeededOverlay \.modal\.modal-alert \{ width: (\d+)px; \}/)[1]);
+  assert.equal(confirm, 280);
+  // Measured in Chrome with the app's fonts: the second line with four figures
+  // of room left is 351px of English and 299 of Korean, and the sides take 34.
+  assert.ok(en >= 351 + 34 && ko >= 299 + 34, `${en} and ${ko} are too narrow`);
+});
+
+// Settings > Privacy, Send job logs: what goes and where, for how long, what
+// never goes, and what it is for, a sentence a line (owner, 2026-10-22, 9).
+// It used to call the failed jobs stopped ones, and said nothing of where.
+test("Send job logs says what goes where, what never goes and why, a sentence a line", () => {
+  const html = readPage();
+  const hint = html.match(/<div class="settings-hint" id="reportsHint">([\s\S]*?)<\/div>/)[1];
+  const sentences = [...hint.matchAll(/<span data-i18n>([^<]*)<\/span>/g)].map((m) => m[1]);
+  assert.deepEqual(sentences, [
+    "Keeps a record of finished and failed jobs (masked logs, time per step, device ID) on a private dashboard for 30 days.",
+    "Only failed jobs go into a public GitHub issue, as a summary of the cause.",
+    "Titles, file names, links and dialogue are not sent.",
+    "What you send helps make PersoDub better.",
+  ]);
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.deepEqual(sentences.map((s) => ko[s]), [
+    "끝난 작업과 실패한 작업의 기록(가린 로그, 단계별 시간, 기기 번호)을 비공개 대시보드에 30일 보관해요.",
+    "실패한 작업만 깃헙 공개 이슈에 원인 요약으로 올라가요.",
+    "제목·파일 이름·링크·대사는 안 보내요.",
+    "보내 주시면 PersoDub을 더 좋게 만드는 데 써요.",
+  ]);
+  // Each sentence starts a line of its own, and the label stays by the switch.
+  assert.match(html, /#reportsHint > span \{ display: block; \}/);
+  assert.match(html, /\.set-row:has\(> \.set-ctl > #reportsHint\) \{ align-items: start; \}/);
+  const old = "Keeps the logs of finished and failed jobs for 30 days. Only failed jobs go into a public issue.";
+  for (const code of ["en", "ko"]) {
+    const table = JSON.parse(readFileSync(new URL(`../../static/i18n/ui.${code}.json`, import.meta.url), "utf8"));
+    assert.equal(Object.hasOwn(table, old), false, `the old sentence is still in ui.${code}.json`);
+  }
+});
+
+// Which step each key and the ChatGPT sign-in is for, a small grey line under
+// each like the Privacy tab's (owner, 2026-10-21). And the translator's own
+// lines point the local ones at the Gemini API, which says where its key goes.
+test("each API key and the ChatGPT sign-in say which step uses them", () => {
+  const html = readPage();
+  const keys = html.slice(html.indexOf('id="settingsPanel-keys"'), html.indexOf('id="settingsPanel-storage"'));
+  assert.match(keys, /id="persoKeyInput"[^>]*>\s*<!--[^]*?-->\s*<div data-i18n class="settings-hint" id="persoKeyHint">Used when Choose a model, Voice separation or Speech-to-text is set to Perso API\. Uses Perso credits\.<\/div>/);
+  assert.match(keys, /id="geminiKeyInput"[^>]*>\s*<div data-i18n class="settings-hint" id="geminiKeyHint">Used only when Translation is set to Gemini API\. Uses your own Google API quota\.<\/div>/);
+  // ChatGPT's state and button stay on one line, and its line goes under them.
+  assert.match(keys, /<span>ChatGPT<\/span>\s*<div class="set-ctl">\s*<div class="set-ctl set-inline">\s*<span class="settings-hint" id="chatgptState"[^]*?id="chatgptSignInBtn"[^]*?<\/button>\s*<\/div>\s*<div data-i18n class="settings-hint" id="chatgptHint">Used when Translation is ChatGPT \(the default on a new install\)\. The Dub Agent's Codex uses this sign-in too\.<\/div>\s*<\/div>/);
+  assert.match(html, /get hunyuan\(\) \{ return \[t\("Runs on this computer, free and fastest\."\), t\("For accuracy, use the Gemini API\."\)\]; \}/);
+  assert.match(html, /get gemma\(\) \{ return \[t\("Runs on this computer, free\."\), t\("For accuracy, use the Gemini API\."\)\]; \}/);
+  assert.match(html, /get gemini\(\) \{ return \[t\("Most accurate\."\), t\("Needs a Google \(Gemini\) key in Settings > API keys\."\)\]; \}/);
+  assert.match(html, /get chatgpt\(\) \{ return \[t\("Free within a ChatGPT account's limit\. Sign in once, no download\."\)\]; \}/,
+    "ChatGPT's line is as it was");
+  assert.ok(!html.includes('t("Needs an API key.")'));
+});
+
+// "Use the API" said which API to nobody: separation and speech-to-text point
+// at the Perso API, the translator at the Gemini API (owner, 2026-10-21).
+test("Audio separation and Speech-to-text on this computer point at the Perso API", () => {
+  const html = readPage();
+  assert.match(html, /sep: \{ get local\(\) \{ return \[t\("Runs on this computer, free\."\), t\("For accuracy, use the Perso API\."\)\]; \},/);
+  assert.match(html, /stt: \{ get local\(\) \{ return \[t\("Runs on this computer, free\."\), t\("For accuracy, use the Perso API\."\)\]; \},/);
+});
+
+// The dubbing's own step that splits the voice from the background is Voice
+// separation, so it no longer reads as the Separate audio tab (owner, 2026-10-22):
+// in Korean on the running screen's steps and the finished dubbing's engine
+// line too ("Separating audio" and "Separation" are only ever that step).
+test("the dubbing step is Voice separation, and Separate audio is no tool of its own", () => {
+  const html = readPage();
+  assert.match(html, /<label data-i18n for="sepSelect">Voice separation<\/label>/);
+  assert.ok(!html.includes('data-tab="audio"') && !html.includes('id="homeAudioCard"') && !html.includes('id="homeNavAudio"'));
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko["Voice separation"], "목소리 분리");
+  assert.equal(ko["Separating audio"], "목소리 분리");
+  assert.equal(ko.Separation, "목소리 분리");
+  assert.equal(ko["Separate audio"], "오디오 분리");
+  // And the failure card of a dubbing that stopped on that step.
+  assert.ok(ko["It stopped while separating the audio. Press Resume to go on from where it stopped. "
+    + "If it stops again, you can try the Perso API."].startsWith("목소리를 분리하다가 멈췄어요."));
+});
+
+test("the sentence that named no API is gone from the page and from both tables", () => {
+  assert.ok(!readPage().includes("For accuracy, use the API."));
+  for (const code of ["en", "ko"]) {
+    const table = JSON.parse(readFileSync(new URL(`../../static/i18n/ui.${code}.json`, import.meta.url), "utf8"));
+    assert.ok(!Object.hasOwn(table, "For accuracy, use the API."), `ui.${code}.json still has it`);
+  }
+});
+
 // The dialogs finished to the mockup (2026-09-29). What is pinned is what
 // other files lean on: the ids, the box the options block goes home to, and
 // the classes the block carries with it when a draft borrows it.
@@ -987,7 +1162,7 @@ test("the New project dialog is two columns, and its options carry their own loo
   // line sit under it, outside the scroll.
   const box = at('class="project-options" id="projectOptions"');
   const error = at('id="projectError"');
-  for (const id of ["langGrid", "advancedBtn", "advancedBody"]) {
+  for (const id of ["langGrid", "stageHead", "advancedBody"]) {
     const i = at(`id="${id}"`);
     assert.ok(box < i && i < error, `${id} is home in #projectOptions`);
   }
@@ -997,17 +1172,132 @@ test("the New project dialog is two columns, and its options carry their own loo
     && at('id="saveClipBtn"') < at('id="eraseBtn"') && at('id="eraseBtn"') < at('id="startBtn"'));
   // The look travels on the moved nodes themselves.
   assert.match(dlg, /<div class="opt-panel" id="langGrid">/);
-  assert.match(dlg, /<div class="opt-panel advanced-body" id="advancedBody" hidden>/);
-  assert.equal((dlg.match(/<div class="field opt-row">/g) || []).length, 9, "two languages and seven options, each a row");
+  assert.match(dlg, /<div class="opt-panel advanced-body" id="advancedBody">/);
+  assert.equal((dlg.match(/<div class="field opt-row">/g) || []).length, 9, "Choose a model, two languages and six options, each a row");
+  // Voice separation offers Demucs, Mel-Band RoFormer and Perso API, the RoFormer before it is downloaded too.
+  assert.match(dlg, /<select id="sepSelect"><option value="local" selected>Demucs<\/option><option value="roformer">Mel-Band RoFormer<\/option><option value="perso">Perso API<\/option><\/select>/);
   for (const id of ["sourceLangSelect", "targetLangSelect", "dubModeSelect", "sepSelect", "sttSelect",
                     "translateSelect", "voiceSelect", "qualitySelect", "numSpeakers",
-                    "dubModeHint", "sepHint", "sttHint", "sttModelHint", "translateHint", "translateModelHint",
+                    "dubModeHint", "sepHint", "sepModelHint", "sttHint", "sttModelHint", "translateHint", "translateModelHint",
                     "voiceHint", "voiceModelHint", "qualityHint"]) at(`id="${id}"`);
   assert.doesNotMatch(html, /\.project-(modal|right|options) \.opt-/, "no option rule depends on the dialog around it");
   assert.match(html, /\.project-modal \{ width: min\(720px, 92vw\);/);
   assert.match(html, /grid-template-columns: 320px minmax\(0, 1fr\); gap: 16px; padding: 16px; \}/);
   // Scrolling, the dialog keeps its stuck 55 foot clear the way the draft card does (H29).
   assert.match(html, /@media \(max-width: 759px\) \{\n    \.project-modal \{ overflow-y: auto; scroll-padding-bottom: 55px; \}/);
+});
+
+// The Advanced options fold is gone: the six stage rows are always in sight
+// under a plain heading in the type the fold's button had, with no arrow, and
+// the card they are in scrolls with Start stuck at its foot (owner,
+// 2026-10-22, remark 2). ui/src/dubbingPrep.test.mjs runs it in the page.
+test("the six stage rows are always in sight under Dubbing step settings, with no fold to open", () => {
+  const html = readPage();
+  const block = html.slice(html.indexOf('id="engineWarning"'), html.indexOf('id="projectError"'));
+  assert.match(block, /<div data-i18n class="stage-head" id="stageHead">Dubbing step settings<\/div>\s*<div class="opt-panel advanced-body" id="advancedBody">/);
+  const rows = block.slice(block.indexOf('id="advancedBody"'));
+  assert.deepEqual([...rows.matchAll(/<label data-i18n for="(\w+)">/g)].map((m) => m[1]),
+    ["sepSelect", "sttSelect", "translateSelect", "voiceSelect", "qualitySelect", "numSpeakers"], "six rows, in order");
+  for (const gone of ["advancedBtn", "advanced-btn"]) assert.ok(!html.includes(gone), `no ${gone} left`);
+  assert.doesNotMatch(html, /data-i18n[^>]*>\s*Advanced options\s*</, "no fold's name on screen");
+  assert.match(html, /\.stage-head \{ padding: 10px 0 8px; font-size: 11\.5px; font-weight: 500; color: var\(--foreground\); \}/);
+  // The card scrolls, and Start stays stuck at its foot.
+  assert.match(html, /\.draft-setup \{ flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px;\n    padding: 14px 12px; overflow: auto;/);
+  assert.match(html, /position: sticky; bottom: -14px;/);
+  assert.match(readFileSync(fileURLToPath(new URL("./newProject.mjs", import.meta.url)), "utf8"),
+    /container\.appendChild\(\$\("engineWarning"\)\);\n    container\.appendChild\(\$\("stageHead"\)\);\n    container\.appendChild\(\$\("advancedBody"\)\);/);
+  const table = (code) => JSON.parse(readFileSync(new URL(`../../static/i18n/ui.${code}.json`, import.meta.url), "utf8"));
+  assert.equal(table("ko")["Dubbing step settings"], "더빙 단계별 설정");
+  assert.equal(table("en")["Dubbing step settings"], "Dubbing step settings");
+  assert.ok(!Object.hasOwn(table("ko"), "Advanced options"), "the fold's name is out of the table");
+});
+
+// Choose a model (처리 방식 until the owner named it 모델 선택, 2026-10-22,
+// remark 2 나, the Audio tab's words for its own choice) and the Dubbing
+// model sit above the languages, outside the stage rows, because the
+// languages follow both (owner, 2026-10-22). Choose a model is two halves,
+// Local model and Perso API, over the hidden #dubModeSelect.
+test("Choose a model and the Dubbing model come first in the options block, above the languages", () => {
+  const html = readPage();
+  const grid = html.slice(html.indexOf('<div class="opt-panel" id="langGrid">'), html.indexOf('id="engineWarning"'));
+  const order = ['id="dubModeLabel"', 'id="dubModeSeg"', 'id="dubModeSelect"', 'id="persoModelRow"',
+                 'id="sourceLangSelect"', 'id="targetLangSelect"'].map((s) => grid.indexOf(s));
+  assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1])), "Choose a model, the Dubbing model, then the two languages");
+  assert.match(grid, /<label data-i18n id="dubModeLabel">Choose a model<\/label><div class="mode-seg" id="dubModeSeg" role="radiogroup" aria-labelledby="dubModeLabel"><button type="button" role="radio" id="dubModeLocal" aria-checked="true" data-i18n>Local model<\/button><button type="button" role="radio" id="dubModePerso" aria-checked="false">Perso API<\/button><\/div><select id="dubModeSelect" hidden>/);
+  const advanced = html.slice(html.indexOf('id="advancedBody"'), html.indexOf('id="projectError"'));
+  assert.ok(!advanced.includes("dubModeSelect") && !advanced.includes("persoModelRow"), "neither is among the stage rows");
+  assert.ok(!html.includes(">On this computer<"), "the old name of the choice is gone");
+  assert.match(html, /\.opt-row > \.mode-seg \{ grid-column: 2; grid-row: 1; display: flex; height: 24px;/);
+  assert.match(html, /\.mode-seg button\[aria-checked="true"\] \{ background: var\(--primary\); color: var\(--primary-foreground\); \}/);
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.deepEqual([ko["Choose a model"], ko["Local model"]], ["모델 선택", "로컬 모델"]);
+  // "Model" alone is the Dub Agent's picker, 모델 (ui/src/agentStrip.mjs).
+  assert.equal(ko.Model, "모델");
+  assert.ok(!Object.hasOwn(ko, "On this computer"));
+  assert.ok(!Object.hasOwn(ko, "Processing"), "the old name is out of the table");
+});
+
+// The Target language is a list with a search field, in the Dubbing model's
+// dress, over the hidden #targetLangSelect (owner, 2026-10-22).
+// ui/src/newProject.test.mjs runs it.
+test("the Target language is a list with a search on top, not a bare dropdown", () => {
+  const html = readPage();
+  assert.match(html, /<label data-i18n id="targetLangLabel">Target language<\/label><div class="model-pick" id="targetLangPick"><\/div><select id="targetLangSelect" hidden><\/select>/);
+  assert.match(html, /\.lang-search \{ display: flex; align-items: center; gap: 7px; height: 28px;/);
+  assert.match(html, /\.lang-opts \{ position: relative; display: flex; flex-direction: column; gap: 1px; max-height: 240px; overflow-y: auto; \}/);
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko["Search languages"], "언어 검색");
+  assert.equal(ko["{shown} of {all}"], "{all}개 중 {shown}개");
+});
+
+// The Video card's two ways out, words at its top right in the erase card's
+// Reset dress, and the line under it for a video taking its place (owner,
+// 2026-10-22). ui/src/draftSetup.test.mjs, draftImport.test.mjs and
+// dubbingPrep.test.mjs run them.
+test("the Video card has Replace · Remove at its top right, and a line under it only when it has something to say", () => {
+  const html = readPage();
+  assert.match(html, /<div class="draft-part">\s*<div class="draft-card video-card" id="draftPartCard"><\/div>\s*<span class="vc-acts"><button data-i18n class="erase-link" id="draftReplaceBtn" type="button">Replace<\/button><span aria-hidden="true">·<\/span><button data-i18n class="erase-link vc-del" id="draftRemoveBtn" type="button">Remove<\/button><\/span>\s*<\/div>\s*<div class="import-status draft-import-status" id="draftImportStatus"><\/div>/);
+  assert.match(html, /\.draft-part \{ position: relative; \}/);
+  assert.match(html, /\.draft-part \.vc-acts \{ position: absolute; right: 13px; top: 11px;/);
+  assert.match(html, /\.draft-part \.vc-del \{ color: var\(--destructive\); \}/);
+  assert.match(html, /\.draft-import-status:empty \{ display: none; \}/);
+  // A replaced video's Draft card leaves Home, as one an erase started on does.
+  assert.match(html, /onReplaced: \(downloadId\) => forgetDraft\(downloadId\),/);
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko.Replace, "바꾸기");
+  assert.equal(ko.Remove, "삭제");
+});
+
+// Under the last choice, what the dubbing hands back, in the erase card's
+// dress: a label and one line, the same for both ways of dubbing (owner,
+// 2026-10-22, remarks 10+11). ui/src/dubbingPrep.test.mjs runs it in the page.
+test("Before dubbing says what you get under the last choice: dubbed video, subtitles and audio files", () => {
+  const html = readPage();
+  const card = html.slice(html.indexOf('<div class="draft-setup" id="draftSetup" hidden>'), html.indexOf('id="dubbingPaneHead"'));
+  assert.match(card, /<div id="draftOptionsSlot"><\/div>\s*<!--[^]*?-->\s*<div class="erase-card draft-result" id="draftResult"><div data-i18n class="k">What you get<\/div><div class="m"><span data-i18n>Dubbed video, subtitles and audio files<\/span><\/div><\/div>\s*<div class="form-error" id="draftError"><\/div>\s*<div class="draft-foot">/);
+  assert.match(html, /\.draft-result \{ margin: 12px 0 10px; \}\n  \.draft-result \.m \{ line-height: 1\.5; \}/);
+  // Nothing in the page's code writes over it, in either mode.
+  assert.ok(!html.includes('$("draftResult")'));
+  const table = (code) => JSON.parse(readFileSync(new URL(`../../static/i18n/ui.${code}.json`, import.meta.url), "utf8"));
+  assert.equal(table("ko")["What you get"], "이 작업을 하면 이렇게 나와요");
+  assert.equal(table("ko")["Dubbed video, subtitles and audio files"], "더빙 영상, 자막, 오디오 파일로 나와요");
+  assert.equal(table("en")["What you get"], "What you get");
+  assert.equal(table("en")["Dubbed video, subtitles and audio files"], "Dubbed video, subtitles and audio files");
+});
+
+// With Perso API the stage rows read "Perso" over the dropdowns' own words,
+// which stay their values; only the words are hidden, so the arrow stays
+// (owner, 2026-10-22, the 2-1 picture). ui/src/dubbingPrep.test.mjs runs it.
+// The four stages are buttons that say Perso themselves (ui/src/stagePicker.test.mjs);
+// the word is painted only over a dropdown still on screen, so never twice.
+test("a Perso dubbing's greyed stage rows read Perso, and say Perso handles them", () => {
+  const html = readPage();
+  assert.match(html, /\.advanced-body\.by-perso \.opt-row > select \{ -webkit-text-fill-color: transparent; \}/);
+  assert.match(html, /\.advanced-body\.by-perso \.opt-row:has\(> select:not\(\[hidden\]\)\)::after \{ content: "Perso"; grid-column: 2; grid-row: 1;/);
+  assert.match(html, /\$\("advancedBody"\)\.classList\.toggle\("by-perso", cloud\);/);
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko["Perso handles this."], "Perso가 처리해요.");
+  assert.equal(ko["The video is uploaded to Perso."], "영상이 Perso로 올라가요.");
 });
 
 test("the confirms keep their corner X for its listeners, but hidden", () => {
@@ -1027,13 +1317,94 @@ test("the confirms keep their corner X for its listeners, but hidden", () => {
   assert.ok(!html.includes("upd-close"), "the update window's red dot is back");
 });
 
-test("the Export dialog is rows to tick and a foot with Cancel and Export", () => {
+// People looked for Export beside the video, not among the window's own
+// buttons (feedback sheet, 2026-10-21; owner 4-1 가, 2026-10-22). The one
+// button stands at the right end of the finished panel's tab row in the
+// markup, and each of the three video panels' rows has an id to move it to
+// (ui/src/workFrame.mjs, which is tested there).
+test("Download is one button, at the right end of the video panel's tab row", () => {
+  const html = readPage();
+  assert.equal(html.match(/id="exportBtn"/g).length, 1, "one Export button on the page");
+  const pane = (id, next) => html.slice(html.indexOf(`<div class="video-pane" id="${id}">`), html.indexOf(next));
+  const done = pane("videoPane", 'id="runPane"');
+  const row = done.slice(done.indexOf('<div class="video-tabs" id="videoTabsNormal">'), done.indexOf('<div class="video-body">'));
+  assert.match(row, /id="vtabDubbed">Dubbed<\/button>\s*<!--[^]*?-->\s*<button data-i18n class="btn btn-primary" id="exportBtn" type="button" hidden>Download<\/button>\s*<\/div>/,
+    "last in the finished panel's tab row, after Original and Dubbed");
+  assert.match(pane("runPane", 'id="erasePane"'), /<div class="video-tabs" id="runTabs">\s*<button class="vtab active" type="button">Original<\/button>/);
+  assert.match(pane("erasePane", "<!-- ============ AGENT PANEL"), /<div class="video-tabs erase-tabs" id="eraseTabs">/);
+  // Pushed to the row's right end, in the middle of its height.
+  assert.match(html, /\.video-tabs #exportBtn \{ align-self: center; margin: 0 9px 0 auto; \}/);
+  assert.match(html, /\.video-tabs \{ flex: 0 0 auto; box-sizing: border-box; height: 42px; display: flex;/);
+});
+
+// The Subtitle style tab's looks moved into the dub's last step (owner,
+// 2026-10-22, 지적 14 가): a button just left of Download in the finished
+// panel's tab row opens the same twelve over the top of the picture, in two
+// rows of six with what they make under them (mock 지적 시안 C). The tab
+// itself stays for now. The button's work is ui/src/captionsTab.mjs's.
+// Over a dub's picture (owner, 2026-10-23): no button beside Download, a
+// chip just above the subtitle that opens the same looks above it.
+test("the Subtitle style chip sits in the subtitle overlay and opens the looks, Download alone in the row", () => {
+  const html = readPage();
+  const done = html.slice(html.indexOf('<div class="video-pane" id="videoPane">'), html.indexOf('<div class="video-under"'));
+  const row = done.slice(0, done.indexOf("</div>"));
+  assert.ok(!html.includes('id="videoStyleBtn"'), "no Subtitle style button in the tab row");
+  assert.ok(row.indexOf('id="vtabDubbed"') < row.indexOf('id="exportBtn"'));
+  assert.match(done, /<div class="sub-overlay" id="subOverlay" hidden>\s*<span class="sub-ov-text" id="subOverlayText"><\/span>\s*<button class="sub-style-chip" id="subStyleChip" type="button" aria-haspopup="dialog"\s+aria-expanded="false" hidden><svg[^]*?<\/svg><span data-i18n>Subtitle style<\/span><\/button>\s*<\/div>/);
+  // Its looks: shut to begin with, the tab's own label and tiles, and the
+  // line that says what comes out.
+  const pop = done.slice(done.indexOf('<div class="video-style-pop" id="videoStylePop"'));
+  assert.match(pop, /^<div class="video-style-pop" id="videoStylePop" role="dialog" aria-label="Subtitle style"\s+data-i18n-aria-label="Subtitle style" hidden>/);
+  assert.match(pop, /<div class="cap-label"><span data-i18n>Styles · 12<\/span><\/div>\s*<div class="cap-grid" id="videoStyleGrid"><\/div>/);
+  assert.match(pop, /<div class="erase-card video-style-result"><div data-i18n class="k">What you get<\/div>\s*<div class="m"><span data-i18n>The video with subtitles burned in, and the subtitle file<\/span><\/div><\/div>/);
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko["What you get"], "이 작업을 하면 이렇게 나와요");
+  assert.equal(ko["The video with subtitles burned in, and the subtitle file"], "자막을 입힌 영상과 자막 파일이 나와요");
+  assert.equal(ko["Abc 123"], "가나다 ABC");
+  // The looks 560px wide, placed by script, never wider or taller than the
+  // panel; the tiles carry no frame of the video.
+  assert.match(html, /\.video-style-pop \{ position: absolute; z-index: 6;[^}]*width: min\(560px, calc\(100% - 16px\)\); max-height: calc\(100% - 47px\); overflow-y: auto;/);
+  assert.match(html, /\.video-style-pop \.cap-grid \{ grid-template-columns: repeat\(6, minmax\(0, 1fr\)\);/);
+  assert.match(html, /\.cap-pv \{[^}]*background: none;/);
+  assert.match(html, /\.sub-style-chip \{ position: absolute;[^}]*background: rgba\(0, 0, 0, 0\.6\);/);
+  // Download's subtitled video asks for the look the player shows.
+  assert.match(html, /const \{ preset: subPreset, query: posQ \} = subtitles\.exportParams\(\);/);
+  assert.match(html, /subtitled: \{ href: `\/api\/dub\/result\/\$\{job\.id\}\/subtitled\?preset=\$\{subPreset\}\$\{posQ\}&download=1\$\{mark\}`,/);
+});
+
+test("the Download dialog is rows to tick and a foot with Cancel and Download", () => {
   const html = readPage();
   // The rows themselves are ui/src/exportDialog.mjs, tested there; the page
   // opens the one dialog from the one button.
   assert.match(html, /\$\("exportBtn"\)\.addEventListener\("click", \(\) => exportDialog\.open\(\)\);/);
   assert.match(html, /\/\* === export === \*\//);
-  assert.match(html, /<button class="btn btn-secondary" id="exportCloseBtn" type="button">Cancel<\/button>\s*<button class="btn btn-primary" id="exportGoBtn" type="button">Export<\/button>/);
+  assert.match(html, /<button class="btn btn-secondary" id="exportCloseBtn" type="button">Cancel<\/button>\s*<button class="btn btn-primary" id="exportGoBtn" type="button">Download<\/button>/);
+});
+
+// The feature is called Download on screen (owner, 2026-10-22), 다운로드 in
+// Korean: the button, the dialog's title and its own button, the Audio tab's
+// way into it, the sentences it says while it works, and Help. The ids and
+// the code's names kept "export".
+test("Download is the feature's name on screen: its buttons, its dialog, its sentences and Help", () => {
+  const html = readPage();
+  for (const id of ["exportBtn", "exportGoBtn"]) {
+    assert.match(html, new RegExp(`id="${id}" type="button"(?: hidden)?>Download</button>`), id);
+  }
+  assert.match(html, /<div class="modal export-modal"[^>]*>\s*<div class="modal-head">\s*<h2 data-i18n>Download<\/h2>/);
+  assert.doesNotMatch(html, />\s*Export\s*</, "no element says Export");
+  const words = readFileSync(new URL("./markupWords.mjs", import.meta.url), "utf8");
+  assert.ok(words.includes('["#exportGoBtn", t("Download")]'));
+  const help = "Paste a YouTube, TikTok or Reels link. The video is fetched to this computer; Download saves it, or dub it or erase it from there.";
+  assert.ok(html.includes(`<p>${help}</p>`) && words.includes(`t("${help}")`), "Help says Download");
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko.Download, "다운로드");
+  for (const key of ["Downloading {i} of {n}…", "Could not download this file", "Nothing to download yet", help,
+                     "Paste a link and the video is fetched to this computer. Then Download saves it."]) {
+    assert.match(ko[key], /다운로드/, key);
+  }
+  for (const gone of ["Export", "Exporting {i} of {n}…", "Could not export this file", "Nothing to export yet"]) {
+    assert.ok(!Object.hasOwn(ko, gone), `"${gone}" is said nowhere any more`);
+  }
 });
 
 // qa-fixes 3: a 1280px window with the Dub Agent open left the script pane
@@ -1064,11 +1435,12 @@ test("no narrow tier gives the length verdict under 58px or the clock under 62px
 });
 
 // Clicking the subtitle drawn on the video opens Captions (subSelect) and makes
-// "This line" the scope -- but only for a click, never at the end of a drag.
-test("a plain click on the video's subtitle picks 'This line', a drag does not", () => {
+// "This line" the scope -- but only for a click, never at the end of a drag,
+// and only on a burn-in project: a dub's subtitles are not styled line by line.
+test("a click on the video's subtitle picks 'This line', and nothing drags it up or down", () => {
   const subs = readFileSync(SUBTITLES, "utf8");
-  assert.match(subs,
-    /if \(dragged\) saveSubStyle\(\);\n\s*\/\/[^\n]*\n\s*else \{ subScope = "one"; paintSubToolbar\(\); \}/);
+  assert.match(subs, /subSelect\(true\);\n[^\n]*\n\s*if \(burnIn\(\)\) \{ subScope = "one"; paintSubToolbar\(\); \}/);
+  assert.ok(!/subStyle\.pos = Math/.test(subs), "the position is SUB_POS, never the pointer's");
 });
 
 // Editing before dubbing, the same on every tab (mockup edit-flow, user
@@ -1091,13 +1463,10 @@ test("the edit flow: per-tab foots, no preview strip, and Add language on a dub'
   assert.match(readFileSync(CONFIRMS, "utf8"), /for \(const id of ids\) \{\n\s*const r = await fetch\(`\/api\/dub\/jobs\/\$\{id\}\/workspace`/);
   assert.match(html, /state\.draftFromJob = null;\n\s*state\.draftProject = null;/);
   // An erased video opens a new project on its Dubbing tab.
-  // The Audio and Erase tabs carry the same status line and video card.
-  for (const id of ["audioImportStatus", "audioPartCard", "eraseVideoCard", "draftPartCard"]) {
+  // The Erase tab carries the same video card.
+  for (const id of ["eraseVideoCard", "draftPartCard"]) {
     assert.ok(html.includes(`id="${id}"`), `#${id} is gone`);
   }
-  assert.match(html, /<div class="erase-desc">Splits the sound into voice and background\.<\/div>/);
-  assert.match(html, /id="audioVoiceNote">Speech only</);
-  assert.match(html, /id="audioBackgroundNote">Music and effects</);
   assert.match(html, /onDub: \(held\) => openDraftHere\(\{[^}]*\}, \{ tab: "dubbing" \}\)/);
   // Home's Dubbing card and item open an empty project on its Dubbing tab,
   // whose Import block takes a link too, not the bare file picker (owner, 2026-10-09).
@@ -1121,8 +1490,14 @@ test("a draft is kept when it changes and when it is left, and let go when it is
   assert.match(html, /onDraftChange\(rememberDraft\);/);
   assert.match(html, /function resetForNewJob\(\) \{\n[^}]*?rememberDraft\(\);\n[^}]*?if \(state\.jobId && getDraft\(\)\) clearDraft\(\);/,
     "kept before the screen is left; a video held beside a project goes with that project");
-  // Not a draft: the video an open project's Erase tab holds.
-  assert.match(html, /if \(!d \|\| !d\.downloadId \|\| state\.jobId\) return;\n  keptDrafts = keepDraft\(localStorage, d, keptDrafts\);/);
+  // Not a draft: the video an open project's Erase tab holds, nor one whose
+  // erase was started this run (that job's card stands for it, 2026-10-21).
+  assert.match(html, /if \(!d \|\| !d\.downloadId \|\| state\.jobId \|\| startedOn\.has\(d\.downloadId\)\) return;/);
+  assert.match(html, /function draftBecameJob\(downloadId\) \{\n  startedOn\.add\(downloadId\);\n  forgetDraft\(downloadId\);\n\}/);
+  assert.match(html, /onEraseStarted: draftBecameJob,/);
+  // Kept with the tab it is on, and opened there again; Home keeps the one it had.
+  assert.match(html, /const tab = screen === "erase" \? "erase" : screen === "home"\n    \? \(keptDrafts\.find\(\(k\) => k\.downloadId === d\.downloadId\) \|\| \{\}\)\.tab : leftTabs\.current\(\);\n  keptDrafts = keepDraft\(localStorage, \{ \.\.\.d, tab \}, keptDrafts\);/);
+  assert.match(html, /if \(kept\.tab === "erase"\) \{ eraseScreen\.openEraseTab\(\); return; \}\n  draftSetup\.showDraftScreen\(\);\n  leftTabs\.show\(kept\.tab\);\n\}/);
   assert.match(html, /const started = await submitDubStart\(o\);\n    if \(started && d\) forgetDraft\(d\.downloadId\);/);
   // The delete question is ui/src/confirmDialogs.mjs's, written one level in.
   assert.match(readFileSync(CONFIRMS, "utf8"), /if \(job\.draftId\) \{\n      forgetDraft\(job\.draftId\);/);
@@ -1170,34 +1545,43 @@ test("the three center panels are one panel: one width, one grip, one foot", () 
   }
 });
 
-test("Dubbing, Audio and Erase with no video draw one empty state", async () => {
+test("Dubbing, Erase, Burn in subtitles and Save video with no video draw one empty state", async () => {
   const html = readPage();
   const { emptyTabHtml, EMPTY_TABS } = await import("./importBlock.mjs");
   assert.deepEqual(EMPTY_TABS, {
     dubbing: ["Dubbing", "Voice a video in another language."],
-    audio: ["Separate audio", "Splits the sound into voice and background."],
     erase: ["Erase subtitles", "Takes burned-in subtitles out."],
+    // Burn in subtitles starting a project (owner, 2026-10-22, 2026-10-23).
+    captions: ["Burn in subtitles", "Burns subtitles into a video."],
+    // Save video saves a video from a link (owner, 2026-10-24).
+    save: ["Save video", "Saves a video from a link."],
   });
   // The same three pieces in the same order, whatever the tab.
   const shape = (tab) => emptyTabHtml(tab, "z", "l")
     .replace(EMPTY_TABS[tab][0], "H").replace(EMPTY_TABS[tab][1], "S");
-  assert.equal(shape("audio"), shape("dubbing"));
   assert.equal(shape("erase"), shape("dubbing"));
+  assert.equal(shape("captions"), shape("dubbing"));
   assert.match(shape("dubbing"), /^<div class="tab-empty-title">H<\/div><div class="tab-empty-sub">S<\/div><div class="import-block" id="z"/);
+  // Save video's block is the link field alone: no Import head, no drop line,
+  // nothing that opens the file picker.
+  assert.match(shape("save"), /^<div class="tab-empty-title">H<\/div><div class="tab-empty-sub">S<\/div><div class="import-block link-only" id="z"><label class="import-link" id="lRow">/);
+  assert.ok(!/import-head|import-sub|tabindex/.test(shape("save")));
   // Each tab's face is the one frame: the group, the slot the module fills,
   // and what an import says hung under it.
   for (const [face, slot, says] of [["dubbingImport", "dubbingImportSlot", "dubbingImportStatus"],
-                                    ["audioEmpty", "audioImportSlot", "audioImportStatus"],
-                                    ["eraseDrop", "eraseImportSlot", "eraseDropError"]]) {
+                                    ["eraseDrop", "eraseImportSlot", "eraseDropError"],
+                                    ["saveImport", "saveImportSlot", "saveImportStatus"]]) {
     const at = html.indexOf(`<div class="tab-empty" id="${face}"`);
     assert.ok(at > 0, `${face} is not the shared empty state`);
     const body = html.slice(at, html.indexOf(`id="${says}"`, at));
     assert.match(body, new RegExp(`<div class="tab-empty-group">\\s*(<!--[^]*?-->\\s*)?<div id="${slot}"></div>`));
     assert.ok(body.includes('<div class="tab-empty-under">'), `${face}'s status line is in the group's flow`);
   }
-  for (const [file, tab] of [[DRAFT_IMPORT, "dubbing"], [AUDIO, "audio"], [ERASE, "erase"]]) {
+  for (const [file, tab] of [[DRAFT_IMPORT, "dubbing"], [ERASE, "erase"],
+                             [fileURLToPath(new URL("./captionsTab.mjs", import.meta.url)), "captions"]]) {
     assert.match(readFileSync(file, "utf8"), new RegExp(`outerHTML = emptyTabHtml\\("${tab}", `));
   }
+  assert.match(readFileSync(DRAFT_IMPORT, "utf8"), /outerHTML = emptyTabHtml\("save", /);
   // Centred both ways, and the tab's small top-left name gives way to it.
   assert.match(html, /\.tab-empty \{[^}]*align-items: center; justify-content: center;/);
   assert.match(html, /\.erase-content:has\(> \.tab-empty:not\(\[hidden\]\)\) > :is\(\.erase-label, \.erase-desc\) \{ display: none; \}/);
@@ -1224,11 +1608,14 @@ test("with no video there is no play sign over the panel and the foot's play is 
 });
 
 // The script's three buttons (mockup script-one-ui): always in one place, in
-// one order, each with its hover text; no menu, and no "Proofread" on screen.
-test("the Script pane's head has Translate again, Remake voices and All at once, and no menu", () => {
+// one order, each with its hover text (scriptTable.mjs writes it: what each
+// does depends on the lines); no menu, and no "Proofread" on screen. Beside
+// the line count, what translated the script (B15).
+test("the Script pane's head has Retranslate unfit lines, Remake voices and All at once, and no menu", () => {
   const html = readPage();
   const head = html.slice(html.indexOf('id="dubbingPaneHead"'), html.indexOf('id="doneNotice"'));
-  assert.match(head, /id="retranslateBtn"[^>]*title="Translation only\."[^]*Translate again<\/button>[^]*id="remakeVoicesBtn"[^>]*title="Changed lines only\." disabled[^]*Remake voices<span id="remakeVoicesCount"><\/span><\/button>[^]*id="allAtOnceBtn"[^>]*title="Translation and voices\."[^]*All at once<\/button>/);
+  assert.match(head, /<span class="m" id="scriptCount"><\/span>\s*<span class="sc-model" id="scriptModel"><\/span>/);
+  assert.match(head, /id="retranslateBtn" type="button">[^]*Retranslate unfit lines<\/button>[^]*id="remakeVoicesBtn" type="button" disabled>[^]*Remake voices<span id="remakeVoicesCount"><\/span><\/button>[^]*id="allAtOnceBtn" type="button">[^]*All at once<\/button>/);
   assert.match(head, /id="scriptChanged" hidden/, "the strip under the head");
   assert.ok(!html.includes("retranslateMenu") && !html.includes("retr-menu"), "no menu");
   const table = readFileSync(new URL("./scriptTable.mjs", import.meta.url), "utf8");
@@ -1237,10 +1624,41 @@ test("the Script pane's head has Translate again, Remake voices and All at once,
   }
 });
 
+// A line pressed in the script table (owner, 2026-10-21): the video stops just
+// inside its start, the clock, row and playhead follow, the strip scrolls to
+// it; the line wears a bar down its left edge.
+test("a script line pressed stops the video at its start and the strip is brought to it", () => {
+  const html = readPage();
+  assert.match(html, /onSeekLine: \(start\) => \{\n    cancelRange\(doneVideo\);\n    doneVideo\.currentTime = start \+ 0\.001;\n    donePlayer\.paintPlayhead\(\);\n    timeline\.revealTime\(start\);\n  \},/);
+  assert.match(html, /\.sc-row\.sc-sel \{ box-shadow: inset 3px 0 0 var\(--primary\); \}/);
+});
+
 // Help (owner, 2026-10-09): one button above Send feedback, and one dialog
 // that says what each tool does and where it runs, in the sidebar's order,
 // with the guide and the FAQ under them and OK as its only way out.
-test("Home's Help sits above Send feedback and opens the five tools in order", () => {
+// Home's four tools, the same four in the same order on the cards and in the
+// sidebar (owner, 2026-10-23), and the banner's line naming what a video
+// can be made into.
+test("Home's cards and sidebar are Dubbing, Erase subtitles, Burn in subtitles and Save video", () => {
+  const html = readPage();
+  const cards = html.slice(html.indexOf('<div class="home-cards">'), html.indexOf('id="linkCard"'));
+  assert.deepEqual([...cards.matchAll(/id="home(\w+)Card"/g)].map((m) => m[1]), ["Agent", "Dub", "Erase", "Captions", "Save"]);
+  const side = html.slice(html.indexOf('<aside class="home-side"'), html.indexOf("</aside>"));
+  assert.deepEqual([...side.matchAll(/id="homeNav(\w+)"/g)].map((m) => m[1]), ["Dub", "Erase", "Captions", "Save", "Settings"]);
+  assert.match(cards, /id="homeCaptionsCard" type="button">\s*<span class="home-card-icon"><svg class="icon" viewBox="0 0 24 24"><rect width="18" height="14" x="3" y="5" rx="2" ry="2"\/>[^]*?<div data-i18n class="home-card-title">Burn in subtitles<\/div>\s*<div data-i18n class="home-card-desc">Put a subtitle file on a video in the style you choose<\/div>/);
+  assert.match(cards, /<div data-i18n class="home-card-desc">Saves a video from a link<\/div>/);
+  assert.match(html, /<span data-i18n class="home-banner-title">Create project<\/span>/);
+  assert.match(html, /<div data-i18n class="home-banner-sub">Upload a video to dub it, erase or burn in subtitles, or save it from a link\. Drop it here or click to choose<\/div>/);
+  assert.match(html, /onCaptions: \(\) => draftSetup\.openDraft\(null, \{ tab: "captions" \}\),/);
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko["Upload a video to dub it, erase or burn in subtitles, or save it from a link. Drop it here or click to choose"],
+    "영상을 올리면 더빙 · 자막 지우기 · 자막 입히기 · 링크 저장을 할 수 있어요. 끌어 놓거나 눌러서 골라 주세요");
+  assert.equal(ko["Burn in subtitles"], "자막 입히기");
+  assert.equal(ko["Put a subtitle file on a video in the style you choose"], "영상과 자막 파일을 넣으면 원하는 스타일로 자막을 입혀요");
+  assert.equal(ko["Saves a video from a link"], "링크로 올린 영상을 저장해요");
+});
+
+test("Home's Help sits above Send feedback and opens its tools and the Dub Agent in order", () => {
   const html = readPage();
   const side = html.slice(html.indexOf('class="home-grow"'), html.indexOf('id="homeWhatsNew"'));
   assert.match(side, /<button class="home-fb" id="homeHelp" type="button"><svg class="icon" viewBox="0 0 24 24">[^]*?<\/svg>Help<\/button>\s*<button class="home-fb" id="homeFeedback"/);
@@ -1249,8 +1667,9 @@ test("Home's Help sits above Send feedback and opens the five tools in order", (
   assert.ok(at > 0, "the Help dialog is in the page");
   const dialog = html.slice(at, html.indexOf('<div class="modal-overlay"', at + 1));
   assert.match(dialog, /aria-labelledby="helpTitle"[^>]*>\s*<div class="modal-head"><h2 id="helpTitle">What PersoDub does<\/h2>/);
-  const names = [...dialog.matchAll(/<div class="help-item"><b>([^<]+)<\/b><p>[^<]+<\/p><div class="help-where">[^<]+<\/div><\/div>/g)].map((m) => m[1]);
-  assert.deepEqual(names, ["Dubbing", "Separate audio", "Erase subtitles", "Save video", "Dub Agent"]);
+  const names = [...dialog.matchAll(/<div class="help-item"><b>([^<]+)<\/b>(?:<p>[^<]+<\/p>)+<div class="help-where">[^<]+<\/div><\/div>/g)].map((m) => m[1]);
+  // Separate audio is no tool of its own (owner, 2026-10-23).
+  assert.deepEqual(names, ["Dubbing", "Erase subtitles", "Save video", "Dub Agent"]);
   assert.match(dialog, /<p class="help-links"><a href="#" id="helpGuide">User guide<\/a> · <a href="#" id="helpFaq">FAQ<\/a><\/p>/);
   assert.match(dialog, /<div class="modal-foot"><button class="btn btn-primary" id="helpOk" type="button">OK<\/button><\/div>/);
   assert.ok(!dialog.includes("modal-close"), "no corner X");
@@ -1258,6 +1677,43 @@ test("Home's Help sits above Send feedback and opens the five tools in order", (
   // The links open the repo's docs and stay off the page's own "#".
   assert.match(html, /\[\["helpGuide", "usage"\], \["helpFaq", "faq"\]\]/);
   assert.match(html, /e\.preventDefault\(\);\n    window\.open\(`\$\{REPO_URL\}\/blob\/main\/docs\/\$\{doc\}\.md`, "_blank", "noopener"\);/);
+});
+
+// Help's Erase subtitles says why, how and how long, a line each (owner,
+// 2026-10-22): the markup, the words it is painted with, and the Korean as
+// approved.
+test("Help's Erase subtitles item says why, how and how long", () => {
+  const lines = ["Why: Original subtitles left in the video overlap the translated ones.",
+                 "How: Fit the box → Erase subtitles → Dubbing → Burn in subtitles.",
+                 "Time: About 10 min for a 10-second video (Local model)."];
+  assert.ok(readPage().includes(`<div class="help-item"><b>Erase subtitles</b><p>${lines[0]}</p><p>${lines[1]}</p><div class="help-where">${lines[2]}</div></div>`));
+  const words = readFileSync(new URL("./markupWords.mjs", import.meta.url), "utf8");
+  for (const [at, line] of [["p:nth-of-type(1)", lines[0]], ["p:nth-of-type(2)", lines[1]], [".help-where", lines[2]]]) {
+    assert.ok(words.includes(`["#helpOverlay .help-item:nth-child(2) ${at}", t("${line}")]`), at);
+  }
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.deepEqual(lines.map((l) => ko[l]), ["왜: 원래 자막이 남아 있으면 번역 자막과 겹쳐요.",
+    "어떻게: 상자 맞추기 → 자막 지우기 → 더빙 → 자막 입히기.", "시간: 10초 영상에 약 10분 (로컬 모델)."]);
+});
+
+// Home's Erase subtitles card says what erasing is for, in its small line
+// (owner, 2026-10-22), and the Korean reads as approved.
+test("Home's Erase subtitles card says what erasing is for", () => {
+  const html = readPage();
+  const line = "Erases burned-in subtitles. Dub the erased video for clean subtitles in the new language.";
+  assert.ok(html.includes(`<div data-i18n class="home-card-title">Erase subtitles</div>\n              <div data-i18n class="home-card-desc">${line}</div>`));
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko[line], "영상에 새겨진 자막을 지워요. 지운 영상으로 더빙하면 새 언어 자막을 깨끗하게 입힐 수 있어요.");
+});
+
+// Help's "100+" is every dubbing model's languages together, and the line under
+// the Dubbing model choice says the chosen one's own count (owner, 2026-10-21):
+// the markup and the words it is painted with say the same sentence.
+test("Help says the Perso API's 100+ languages depend on the dubbing model", () => {
+  const where = "Local model (10 languages, free) or Perso API (100+ languages in all, depending on the dubbing model; credits).";
+  assert.ok(readPage().includes(`<div class="help-where">${where}</div>`));
+  const words = readFileSync(new URL("./markupWords.mjs", import.meta.url), "utf8");
+  assert.ok(words.includes(`["#helpOverlay .help-item:nth-child(1) .help-where", t("${where}")]`));
 });
 
 // Windows drew Chromium's stock scrollbar wherever a pane scrolls -- a 17px grey
@@ -1289,17 +1745,18 @@ test("on Windows the page draws its own scrollbars and is moved by its top bar; 
 // it -- the Mac's lights at the left, Windows' three at the right -- and the
 // stylesheet orders one row of buttons two ways. Home's bar holds neither
 // Settings nor the pane buttons.
-test("the Mac's bar starts after its lights and ends Export, Settings, panes; Windows' starts panes, Settings", () => {
+test("the Mac's bar starts after its lights and ends Settings, panes; Windows' starts panes, Settings", () => {
   const html = readPage();
   const rule = (css) => new RegExp(css.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const mac = ':root[data-platform="darwin"]';
   const win = ':root[data-platform="win32"]';
   assert.match(html, rule(`${mac} .topbar { -webkit-app-region: drag; padding-left: 80px; }`));
   assert.match(html, rule(`${mac} .topbar :is(button, input, #topbarTitle) { -webkit-app-region: no-drag; }`));
-  // The bar's row, as written: Settings, the panes, then Export last.
+  // The bar's row, as written: Settings, then the panes. Export is not in it
+  // (the video panel's tab row, 2026-10-22).
   const bar = html.slice(html.indexOf('<div class="topbar" id="topbar">'), html.indexOf('<div class="shell">'));
-  assert.ok(bar.indexOf('id="settingsBtn"') < bar.indexOf('class="panes"') && bar.indexOf('class="panes"') < bar.indexOf('id="exportBtn"'));
-  // Mac: Settings and the panes after everything at order 0, Export included.
+  assert.ok(bar.indexOf('id="settingsBtn"') < bar.indexOf('class="panes"') && !bar.includes('id="exportBtn"'));
+  // Mac: Settings and the panes after everything at order 0.
   assert.match(html, rule(`${mac} .topbar :is(#settingsBtn, .panes) { order: 1; }`));
   // Windows: the panes, then Settings, ahead of everything else.
   assert.match(html, rule(`${win} .topbar .panes { order: -2; }`));
@@ -1307,6 +1764,31 @@ test("the Mac's bar starts after its lights and ends Export, Settings, panes; Wi
   assert.match(html, rule('body[data-screen="home"] .topbar :is(#settingsBtn, .panes) { display: none; }'));
   // The download chip and the way back into a job stay in the bar for Home.
   assert.ok(bar.includes('id="topbarDl"') && bar.includes('id="topbarForward"'));
+});
+
+// A bare arrow on Home read as "next" (2026-10-21). The same button now wears
+// the arrow that curls back and the name of the job it reopens.
+test("the way back into a job is the curled-back arrow and the job's name, cut short at 200px", () => {
+  const html = readPage();
+  const at = html.indexOf('<button class="topbar-back" id="topbarForward"');
+  const btn = html.slice(at, html.indexOf("</button>", at));
+  assert.ok(btn.includes(`${lucide("undo-2", 16)}<span id="topbarForwardName"></span>`));
+  assert.ok(!btn.includes('d="m12 5 7 7-7 7"'), "the bare arrow is gone");
+  assert.equal(html.match(/id="topbarForward"/g).length, 1, "the same button, not a second one");
+  assert.match(html, /\.topbar-back \{ border: none; cursor: pointer; padding: 0 8px; max-width: 200px; height: 26px;\n    flex: 0 0 auto; border-radius: 999px; display: inline-flex; align-items: center; gap: 5px;\n    background: var\(--secondary\);/);
+  assert.match(html, /#topbarForwardName \{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/);
+});
+
+test("the way back names the job on the button and 'Reopen <name>' on its tip", () => {
+  const html = readPage();
+  const at = html.indexOf("function paintForward() {");
+  const body = html.slice(at, html.indexOf("\n}\n", at));
+  assert.match(body, /\$\("topbarForwardName"\)\.textContent = lastJobName \|\| t\("Last project"\);/);
+  assert.match(body, /const what = lastJobName \? t\("Reopen \{name\}", \{ name: lastJobName \}\) : t\("Reopen the last project"\);\n  btn\.setAttribute\("aria-label", what\);\n  btn\.title = what;/);
+  // The owner's words (2026-10-21).
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.equal(ko["Reopen {name}"], "{name} 다시 열기");
+  assert.equal(ko["Last project"], "보던 프로젝트");
 });
 
 // The Dub Agent card heads with the mascot in place of the speech bubble
@@ -1325,4 +1807,46 @@ test("Home's Management group holds Settings alone", () => {
   assert.match(group, />Management</);
   assert.deepEqual([...group.matchAll(/id="(homeNav\w+)"/g)].map((m) => m[1]), ["homeNavSettings"]);
   assert.ok(!html.includes("homeNavProjects"), "nothing is left of the Projects item");
+});
+
+// Save video read as doing nothing (2026-10-21): the banner's link field
+// blinks white twice (a still ring with less motion asked for), and the link
+// read next opens Export by itself, Video ticked, once that link's own video
+// is in. The press is for that visit to Home: Home clears it.
+test("Save video points at the banner's link field, and the link read next opens Export once its video is in", () => {
+  const html = readPage();
+  assert.match(html, /onSaveVideo: \(\) => \{ pointAtLink\(\$\); saveVideoNext = true; \},/);
+  assert.equal(html.match(/saveVideoNext = true/g).length, 1, "nothing else raises it");
+  assert.match(html, /const save = saveVideoNext;\n\s*saveVideoNext = false;\n\s*draftSetup\.openDraft\(\{ link: url, onReady: save \? \(\) => exportDialog\.open\(\["video"\]\) : null \}\);/);
+  const home = html.slice(html.indexOf("function showHome() {"), html.indexOf("async function openLastScreen()"));
+  assert.match(home, /\n  saveVideoNext = false;\n/);
+  // The same blink for an empty project's Import block (New project, below).
+  assert.match(html, /\.home-banner-linkin\.link-field\.ask, \.import-link\.ask \{ animation: link-ask 0\.5s ease-in-out 2; \}/);
+  assert.match(html, /@media \(prefers-reduced-motion: reduce\) \{\n    \.home-banner-linkin\.link-field\.ask, \.import-link\.ask \{ animation: none; box-shadow: 0 0 0 2px rgba\(11, 18, 32, 0\.5\), 0 0 0 5px #ffffff; \}/);
+});
+
+// New project on an empty project opened the same Import block again in a
+// window over it (2026-10-21). The block on screen is pointed at instead: the
+// erase screen by its name, and none under a hidden panel, tab or face.
+test("New project on an empty project points at the Import block on screen", () => {
+  const html = readPage();
+  assert.match(html, /openNewProject: \(source\) => newProject\.openNewProject\(source\),\n  emptyImport: emptyImportLink,\n\}\);/);
+  const at = html.indexOf("function emptyImportLink() {");
+  const body = html.slice(at, html.indexOf("\n}\n", at));
+  assert.match(body, /if \(state\.jobId\) return null;/);
+  assert.doesNotMatch(body, /getDraft\(\)/, "an empty Erase tab can stand beside an older draft still held");
+  assert.match(body, /const tab = document\.body\.dataset\.screen === "erase" \? "erase" : leftTabs\.current\(\);/);
+  assert.match(body, /\{ dubbing: "dubbingLink", erase: "eraseLink", captions: "capLink" \}\[tab\]/);
+  assert.match(body, /return id && \$\(`\$\{id\}Input`\)\.offsetParent \? id : null;/);
+  // Each of those is a link field the shared block draws, under that name.
+  assert.match(readFileSync(DRAFT_IMPORT, "utf8"), /emptyTabHtml\("dubbing", "dubbingZone", "dubbingLink"\)/);
+  assert.match(readFileSync(ERASE, "utf8"), /emptyTabHtml\("erase", "eraseZone", "eraseLink"\)/);
+});
+
+// A card's menu in the bottom row of Home opened under the "Updated" banner,
+// which hid its Delete (Windows, 1280x800, 2026-10-24).
+test("a project card's menu is drawn over the update banner", () => {
+  const html = readPage();
+  const z = (sel) => Number(new RegExp(sel.replace(".", "\\.") + " \\{[^}]*z-index: (\\d+)").exec(html)[1]);
+  assert.ok(z(".proj-menu") > z(".update-banner"));
 });

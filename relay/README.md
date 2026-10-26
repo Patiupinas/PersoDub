@@ -7,6 +7,9 @@ way as the usage-count worker `persodub-count`.
 - App → here: the failure (JSON, 64 KB at most) and the full logs (gzip tar, 5 MB at most)
 - Here → GitHub: a new issue, or one "+1" comment on the existing issue for the same failure
 - The GitHub token lives **only here**. The app does not carry it.
+- From 0.8.8 the app also sends the record of a job that finished (`POST /record`, then its
+  logs the same way). Its logs go into the bucket under `<yyyy-mm>/ok/<id>.tar.gz` for the
+  private dashboard, and GitHub never hears of it.
 
 ## Files
 
@@ -15,6 +18,7 @@ way as the usage-count worker `persodub-count`.
 | `report-worker.js` | Handles the incoming request (the entry point) |
 | `report-logic.js` | Decisions only: checks, labels, body, signing, rate limits |
 | `report-logic.test.mjs` | Tests for those decisions |
+| `report-worker.test.mjs` | Tests for the handler, with stand-ins for KV and GitHub |
 
 Tests, from the repository root: `node --test relay/*.test.mjs`
 
@@ -72,6 +76,8 @@ Worker → **Settings** → **Variables and Secrets**
 | Variable | `GITHUB_REPO` | `owner/repository` (for example `stronghamjji/PersoDub`) |
 | Variable | `MAX_PER_DAY` | `5`: reports one machine (and one address) may file per day |
 | Variable | `MAX_TOTAL_PER_DAY` | `200`: the day's total |
+| Variable | `MAX_RECORDS_PER_DAY` | `50`: finished jobs one machine (and one address) may send per day, counted apart from the reports |
+| Variable | `MAX_RECORDS_TOTAL_PER_DAY` | `500`: the day's total of finished jobs |
 
 Changing `LOG_SIGNING_KEY` breaks every log link handed out before it (including the
 links left in issues). Keep that in mind if it ever has to change.
@@ -105,6 +111,10 @@ curl -s -X POST https://persodub-report.persodub.workers.dev/report \
 # -> {"id":"...","issue":12,"url":"https://github.com/.../issues/12","dedup":false}
 
 # 2) The same fingerprint again -> dedup:true, a comment and no new issue
+
+# 3) Close the issue (as completed), then the same fingerprint once more -> the issue is
+#    open again, with one comment "Seen again on 0.5.5, mac 24.6.0, after the issue was closed."
+#    Closed as not planned, or labelled duplicate, it stays closed and gets only the comment.
 ```
 
 Close the test issue once you have checked it.

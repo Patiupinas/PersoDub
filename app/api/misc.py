@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import engines_status, languages, room
+from app import setup as dub_setup
 from app.engines.base import (
     SynthesisRequest,
     get_engine,
@@ -41,10 +42,6 @@ from app.translate import get_translator
 logger = logging.getLogger("persodub.api.misc")
 
 router = APIRouter()
-
-# Translator (selects Ollama/Gemini based on the TRANSLATE_ENGINE setting)
-translator = get_translator()
-
 
 # --- Speaking one line, and what can speak it -------------------------------
 
@@ -201,6 +198,7 @@ def engines_status_route():
     can never turn this into a 500); used by the UI to grey out unusable engines
     and by dub_start's preflight (app/api/dub.py).
     """
+    ram = room.total_ram_bytes()
     return {
         "gemma_available": engines_status.gemma_available(),
         "qwen_available": engines_status.qwen_available(),
@@ -221,7 +219,12 @@ def engines_status_route():
         # same rule a start refuses by (app/room.py) -- so the download dialog
         # can say so before 3 GB are fetched for nothing. A size the computer
         # will not give counts as enough, as it does there.
-        "ram_ok": room.ram_refusal(room.total_ram_bytes()) is None,
+        "ram_ok": room.ram_refusal(ram) is None,
+        # Its memory in whole GB, and the translators with which a dub on it
+        # would be slow -- the start's own "may be slow" (room.ram_warning) --
+        # so the Dubbing tab says so before Start, not only in the job's log.
+        "ram_gb": round(ram / room.GB) if ram else None,
+        "ram_slow": sorted(name for name in engines_status.TRANSLATORS if room.ram_warning(ram, name)),
     }
 
 
@@ -253,9 +256,12 @@ class TranslateRequest(BaseModel):
 
 @router.post("/api/translate")
 def translate_api(body: TranslateRequest):
-    """Translate multiple dialogue lines into the target language (Gemini)."""
+    """Translate multiple dialogue lines into the target language, with the
+    translator a dub would use now. It was picked once at startup, from
+    TRANSLATE_ENGINE alone, so a fresh install without ChatGPT sign-in failed
+    here (500) while its dubs translated with Hunyuan (Windows e2e, 2026-10-24)."""
     try:
-        out = translator.translate(
+        out = get_translator(dub_setup.default_for("translator")).translate(
             body.texts, body.target_lang, body.source_lang, body.durations
         )
     except Exception as e:
@@ -265,7 +271,7 @@ def translate_api(body: TranslateRequest):
         logger.warning("Translation failed (%s)", type(e).__name__)
         raise HTTPException(
             status_code=500,
-            detail=t("Translation failed ({kind}). Check the translation "
-                     "engine in Settings, or the app log for the details.", kind=type(e).__name__),
+            detail=t("Could not translate it. Try again, and if it still fails, "
+                     "choose another translator in Settings."),
         ) from e
     return {"translations": out}

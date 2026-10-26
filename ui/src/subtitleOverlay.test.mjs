@@ -59,14 +59,16 @@ const SAVED_STYLE = { enabled: true, preset: "sticker", pos: null, size: null, c
  * One page with the module on it. `answer` is what the app says to a save.
  * The browser's globals stay until restore().
  */
-function harness({ answer = async () => ({ ok: true }) } = {}) {
+function harness({ answer = async () => ({ ok: true }), state = { job: null, jobId: null },
+                   lines = [{ start: 0, end: 5, text: "Hello there" }] } = {}) {
+  const shown = [];
   const els = new Map();
   const $ = (id) => { if (!els.has(id)) els.set(id, makeEl(id)); return els.get(id); };
   const body = makeEl("body");
   body.dataset.screen = "done";
   const calls = { puts: [], drawTimelineTrack: 0 };
   const globals = {
-    document: { body, createElement: (tag) => makeEl(tag) },
+    document: { body, createElement: (tag) => makeEl(tag), addEventListener() {} },
     window: { addEventListener() {} },
     MutationObserver: class { observe() {} },
     getComputedStyle: () => ({}),
@@ -85,9 +87,9 @@ function harness({ answer = async () => ({ ok: true }) } = {}) {
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 100 }),
   });
   const subs = initSubtitleOverlay({
-    $, state: { job: null, jobId: null }, doneVideo: video,
-    leftTabs: { show() {}, setLocked() {} },
-    timeline: { getLines: () => [{ start: 0, end: 5, text: "Hello there" }], redraw() {},
+    $, state, doneVideo: video,
+    leftTabs: { show: (name) => shown.push(name) },
+    timeline: { getLines: () => lines, redraw() {},
                 drawTimelineTrack: () => { calls.drawTimelineTrack++; } },
     getDoneSource: () => "dubbed",
     showVideoSource: async () => {},
@@ -95,7 +97,7 @@ function harness({ answer = async () => ({ ok: true }) } = {}) {
   const restore = () => {
     for (const [k, d] of saved) { if (d) Object.defineProperty(globalThis, k, d); else delete globalThis[k]; }
   };
-  return { $, subs, calls, restore };
+  return { $, subs, calls, restore, video, shown };
 }
 
 // The save waits 350 ms for the last of a run of changes (ui/src/pendingSave.mjs,
@@ -126,8 +128,11 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 // the handle it held is gone, and later moves land on the new one, which
 // listens to nothing. On screen that was "the box widens one notch per click"
 // (user, 2026-09-07). The drag has to live on the box, which survives.
+// On a burn-in project: the one the subtitles are selected on (a dub's are not).
+const BURN_IN = { job: { id: "j1", status: "done", kind: "captions" }, jobId: "j1" };
+
 test("dragging a subtitle width handle keeps following the pointer after the box is redrawn", async () => {
-  const h = harness();
+  const h = harness({ state: BURN_IN });
   const timers = holdTimers();
   try {
     await h.subs.loadSubStyle("j1");
@@ -225,5 +230,99 @@ test("a refused style answer leaves the default look", async () => {
     assert.deepEqual(h.subs.getSubStyle().cues, {});
   } finally {
     h.restore();
+  }
+});
+
+// The looks also open from the finished video panel, left of Download (owner,
+// 2026-10-22). A look picked there is the subtitle style itself: it is saved
+// to the project, and the Download dialog's Dubbed video with subtitles asks
+// for it (ui/src/app.mjs builds that row's link from exportParams).
+test("a look picked over the video is saved and is the look the subtitled download asks for", async () => {
+  const h = harness();
+  const timers = holdTimers();
+  try {
+    await h.subs.loadSubStyle("j1");
+    assert.equal(h.subs.exportParams().preset, "sticker", "the project's own look to begin with");
+    const card = makeEl("card");
+    card.parent = h.$("videoStyleGrid");
+    card.dataset.preset = "white-box";
+    card.closest = (sel) => (sel === "[data-preset]" ? card : null);
+    send(card, "click");
+    assert.equal(h.subs.getSubStyle().preset, "white-box");
+    assert.equal(h.subs.exportParams().preset, "white-box");
+    await timers.run();
+    assert.equal(h.calls.puts.length, 1);
+    assert.equal(h.calls.puts[0].url, "/api/dub/jobs/j1/subtitle_style");
+    assert.equal(h.calls.puts[0].style.preset, "white-box");
+  } finally {
+    timers.restore();
+    h.restore();
+  }
+});
+
+// A dub's way to its looks (owner, 2026-10-23): a chip 10px over the words
+// while the video stands still, gone while it plays and on a line with no
+// words; a burn-in project has its looks in its own tab instead.
+test("the Subtitle style chip stands over the words while the video is still, and goes while it plays", async () => {
+  const lines = [{ start: 0, end: 2, text: "" }, { start: 2, end: 5, text: "Hello there" }];
+  const state = { job: { id: "j1", status: "done", kind: "dub" }, jobId: "j1" };
+  const h = harness({ state, lines });
+  try {
+    await h.subs.loadSubStyle("j1");
+    const video = h.video;
+    const chip = h.$("subStyleChip");
+    // At 0 s the line has no words: no subtitle, no chip.
+    h.subs.updateSubtitleNow();
+    assert.equal(chip.hidden, true);
+    h.$("subOverlayText").offsetHeight = 20;
+    video.currentTime = 3;
+    h.subs.updateSubtitleNow();
+    assert.equal(chip.hidden, false);
+    // The words' foot is 7 % of the 100 px picture up; the chip 10px over their 20px.
+    assert.equal(h.$("subOverlayText").style.bottom, "7px");
+    assert.equal(chip.style.bottom, "37px");
+    video.paused = false;
+    h.subs.updateSubtitleNow();
+    assert.equal(chip.hidden, true, "playing");
+    video.paused = true;
+    state.job.kind = "captions";
+    h.subs.updateSubtitleNow();
+    assert.equal(chip.hidden, true, "a burn-in project");
+  } finally {
+    h.restore();
+  }
+});
+
+// Off by default (owner, 2026-10-23): with no answer the subtitles stay off,
+// and wherever a project once dragged them, every look sits at the foot.
+test("a refused style answer leaves the subtitles off, and every style sits at the foot of the picture", async () => {
+  const h = harness();
+  try {
+    globalThis.fetch = async () => ({ ok: false, json: async () => ({}) });
+    await h.subs.loadSubStyle("gone");
+    assert.equal(h.subs.getSubStyle().enabled, false);
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ...SAVED_STYLE, pos: 30 }) });
+    await h.subs.loadSubStyle("j1");
+    assert.equal(h.subs.getSubStyle().enabled, true, "a saved choice wins");
+    assert.equal(h.subs.getSubStyle().pos, 93);
+    assert.match(h.subs.exportParams().query, /^&pos=93&/, "and the download is burned there too");
+  } finally {
+    h.restore();
+  }
+});
+
+// A dub's subtitles are not selected (owner, 2026-10-23): a press on them
+// brings up no tab, since Burn in subtitles is not a dub's style.
+test("a press on a dub's subtitle selects nothing and brings up no tab; a burn-in project's does", async () => {
+  for (const [state, want] of [[{ job: { id: "j1", status: "done", kind: "dub" }, jobId: "j1" }, []], [BURN_IN, ["captions"]]]) {
+    const h = harness({ state });
+    try {
+      await h.subs.loadSubStyle("j1");
+      h.subs.updateSubtitleNow();
+      send(h.$("subOverlayText"), "pointerdown");
+      assert.deepEqual(h.shown, want);
+    } finally {
+      h.restore();
+    }
   }
 });

@@ -85,7 +85,7 @@ const WAVE = { rate: 25, duration: 10, peaks: Array.from({ length: 250 }, (_, i)
 
 /** A page, the calls the strip reaches out through, and the globals it reads. */
 function harness({ room = 600, innerHeight = 900, innerWidth = 1600,
-                   stored = {}, media = null } = {}) {
+                   stored = {}, media = null, own = false } = {}) {
   const els = new Map();
   const $ = (id) => {
     if (!els.has(id)) els.set(id, makeEl(id));
@@ -165,6 +165,7 @@ function harness({ room = 600, innerHeight = 900, innerWidth = 1600,
     markClippedNames: () => { log.clipped += 1; },
     loadImage: async (url) => { log.fetched.push(url); return STRIP; },
     fetchJson: async (url) => { log.fetched.push(url); return WAVE; },
+    ownSubtitles: () => own,
   });
   return { $, api, log, video, subStyle, box: $("timeline") };
 }
@@ -384,6 +385,34 @@ test("the strip follows the playhead while it plays, and lets go when the viewer
   h.box.fire("scroll", { target: track });
   h.api.paintTimeline(100, 120, "clock");
   assert.equal(track.scrollLeft, 50);
+});
+
+// A line pressed in the script table puts the still video at its start; the
+// strip is brought to it the way following would, playing or not (owner, 2026-10-21).
+test("a moment the page moved the still video to is brought into view, and only when it is off the strip", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+  h.api.renderTimeline(LINES, 120);
+  const track = h.$("timelineTrack");
+  assert.equal(h.video.paused, true);
+
+  h.api.revealTime(100);
+  assert.equal(track.scrollLeft, 7500, "a third of the way in, as following puts it");
+  h.api.revealTime(101);
+  assert.equal(track.scrollLeft, 7500, "already on show: left where it is");
+
+  // Its scrolling is not the viewer's: once the video plays, following goes on.
+  h.box.fire("scroll", { target: track });
+  h.video.paused = false;
+  h.api.paintTimeline(110, 120, "clock");
+  assert.equal(track.scrollLeft, 8270);
+
+  // A press wins over a strip just scrolled by hand.
+  h.video.paused = true;
+  track.scrollLeft = 0;
+  h.box.fire("scroll", { target: track });
+  h.api.revealTime(100);
+  assert.equal(track.scrollLeft, 7500);
 });
 
 test("no lines, or no length yet, leaves the strip blank and forgets where it was scrolled", (t) => {
@@ -632,6 +661,23 @@ test("a subtitle block is trimmed by its right end, and the tip says the new tim
   assert.equal(tip.removed, true);
 });
 
+// A line that starts between tenths keeps that start when its end is
+// trimmed: the line's own time still shows its subtitle.
+test("a trim moves only the end it drags, the other end exactly as it was", (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+  const lines = LINES.map((l) => (l.line === 2 ? { ...l, start: 2.04, end: 4.03 } : l));
+  h.api.renderTimeline(lines, 30);
+  const right = grabHandle(h, "r", 1);
+  right.hdl.fire("pointermove", { clientX: 138.5 });
+  right.hdl.fire("pointerup", {});
+  assert.deepEqual(h.subStyle.cues["2"], { start: 2.04, end: 4.5 });
+  const left = grabHandle(h, "l", 1);
+  left.hdl.fire("pointermove", { clientX: 138.5 });
+  left.hdl.fire("pointerup", {});
+  assert.deepEqual(h.subStyle.cues["2"], { start: 2.5, end: 4.5 });
+});
+
 test("a trim cannot be pulled through its own other end, or off the video", (t) => {
   const h = harness();
   t.after(h.log.restore);
@@ -828,6 +874,23 @@ test("before a video is imported, one row says what to do; an imported one is on
   assert.ok(!html.includes('<span>Original</span>'));
   // One clip, the whole video: 770px, less the 2px that shows where clips meet.
   assert.ok(h.$("timelineTrack").innerHTML.includes('class="tl-vclip tl-cut" data-i="0"\n      style="left:0.0px;width:768.0px"'));
+});
+
+// A draft left with Home, then an empty new project: the player went on
+// saying the last draft's kept length, 00:01:10.7, over no video (2026-10-21).
+test("an empty new project's player says the clock handed in, not the last draft's kept time", (t) => {
+  const h = drafting();
+  t.after(h.log.restore);
+  h.video.currentTime = 6;
+  h.box.fire("click", evt({ "#tlDelRight": {} }));
+  assert.deepEqual(getDraft().ranges, [[0, 6]]);
+  h.api.paintTimeline(0, 10, "00:00:00.0 / 00:00:10.0");
+  assert.equal(h.$("videoTime").textContent, "00:00:00.0 / 00:00:06.0", "a draft counts kept time");
+  clearDraft();
+  h.api.showDraft();
+  // The clock the player last painted (the harness's getClock), on both clocks.
+  assert.equal(h.$("videoTime").textContent, "00:00:00.0 / 00:00:30.0");
+  assert.equal(h.$("timelineClock").textContent, "00:00:00.0 / 00:00:30.0");
 });
 
 test("split, select, delete, undo and redo -- and the draft is told every time", async (t) => {
@@ -1338,54 +1401,6 @@ test("a new draft's video starts at zoom 1; a cut on the same video keeps the zo
   assert.equal(zoom(), "×1");
 });
 
-// -- a separated draft (the Audio tab) ------------------------------------------
-
-test("a separated draft gets a Voice and a Background lane, each with a speaker that silences it", async (t) => {
-  const h = drafting();
-  t.after(h.log.restore);
-  h.api.showAudio({ locked: false, stems: { id: "S1", muted: { voice: false, background: true } } });
-  await settle();
-  const names = h.box.innerHTML;
-  assert.ok(names.includes("<span>Voice</span>") && names.includes("<span>Background</span>"));
-  assert.match(names, /class="tl-eye tl-mute on" data-stem="voice"[^>]*\n\s*title="Mute"/);
-  assert.match(names, /class="tl-eye tl-mute" data-stem="background"[^>]*\n\s*title="Unmute"/);
-  const track = h.$("timelineTrack").innerHTML;
-  // Each as long as everything kept: 770px less the 2px seam, with its picture.
-  assert.match(track, /<div class="tl-lane tl-lane-stem tl-stem-voice"><div class="tl-stem"\n      style="left:0;width:768.0px"><div class="tl-wave"><svg/);
-  assert.match(track, /<div class="tl-lane tl-lane-stem tl-stem-background off">/);
-  assert.ok(h.log.fetched.includes("/api/separate/S1/waveform/voice"));
-  assert.ok(h.log.fetched.includes("/api/separate/S1/waveform/background"));
-  // The cuts are still the draft's to make.
-  h.video.currentTime = 4;
-  h.api.paintTimeline(4, 10, "clock");
-  assert.equal(h.$("tlSplit").disabled, false);
-
-  // The same answer twice draws nothing; taking it away takes the lanes away.
-  h.$("tlUndo").marker = "kept";
-  h.api.showAudio({ locked: false, stems: { id: "S1", muted: { voice: false, background: true } } });
-  assert.equal(h.$("tlUndo").marker, "kept");
-  h.api.showAudio(null);
-  assert.ok(!h.$("timelineTrack").innerHTML.includes("tl-lane-stem"));
-  assert.ok(!h.box.innerHTML.includes("<span>Voice</span>"));
-});
-
-test("while a draft is being separated its cuts are locked", (t) => {
-  const h = drafting();
-  t.after(h.log.restore);
-  h.video.currentTime = 5;
-  h.api.showAudio({ locked: true, stems: null });
-  h.api.paintTimeline(5, 10, "clock");
-  for (const id of ["tlUndo", "tlRedo", "tlSplit", "tlDelLeft", "tlDelRight", "tlDelete"]) {
-    assert.equal(h.$(id).disabled, true, `${id} is locked`);
-  }
-  h.box.fire("click", evt({ "#tlDelRight": {} }));
-  h.log.fireDoc("keydown", key("Delete"));
-  assert.deepEqual(getDraft().ranges, [[0, 10]]);
-  h.api.showAudio({ locked: false, stems: null });
-  h.api.paintTimeline(5, 10, "clock");
-  assert.equal(h.$("tlSplit").disabled, false);
-});
-
 test("a long video's film strip keeps every frame its own size and draws only the part near the view", async (t) => {
   // 1,000 seconds at zoom 1 is 77,000px: boxes widened to fit a cap of 400
   // stretched every frame sideways (owner, 2026-10-14). Now a box is always
@@ -1409,4 +1424,28 @@ test("a long video's film strip keeps every frame its own size and draws only th
   for (const frame of h.log.frames.splice(0)) frame();   // the queued animation frame
   assert.ok(film.innerHTML.startsWith('<i style="left:37881.0px;width:69.0px;'), film.innerHTML.slice(0, 60));
   assert.equal((film.innerHTML.match(/<i /g) || []).length, Math.ceil((38500 + 1200) / 69) - Math.floor((38500 - 600) / 69));
+});
+
+// A video with the user's own subtitles (kind "captions") has no voices: the
+// strip is the video and the captions, with no voice lanes and no legend.
+test("a video with its own subtitles shows the video and captions lanes only, and no voice legend", (t) => {
+  const h = harness({ own: true });
+  t.after(h.log.restore);
+  h.api.renderTimeline(LINES, 30);
+  const html = h.box.innerHTML + h.$("timelineTrack").innerHTML;
+  for (const gone of ["tl-sw-voice", "Voice length", "Much shorter", "<span>Original</span>", "<span>Translated</span>",
+                      "tl-lane-org", "tl-lane-dub", "tl-voice", "tl-org"]) {
+    assert.ok(!html.includes(gone), gone);
+  }
+  assert.ok(html.includes("<span>Video</span>") && html.includes("<span>Captions</span>"));
+  assert.equal((html.match(/class="tl-cap"/g) || []).length, 3, "the three lines on the captions lane");
+  assert.ok(html.includes('id="timelineClock"') && html.includes('id="tlSubEye"'));
+  // A dubbing's strip is as it was.
+  const d = harness();
+  t.after(d.log.restore);
+  d.api.renderTimeline(LINES, 30);
+  const dub = d.box.innerHTML + d.$("timelineTrack").innerHTML;
+  for (const kept of ["Voice length", "<span>Original</span>", "<span>Translated</span>", "tl-lane-org", "tl-lane-dub"]) {
+    assert.ok(dub.includes(kept), kept);
+  }
 });

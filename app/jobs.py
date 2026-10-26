@@ -40,7 +40,7 @@ logger = logging.getLogger("persodub.jobs")
 # "already cut", which is what every job saved until now was.
 # The engine choices a job was started with (stt_engine "whisper"/"perso",
 # translator "gemma"/"gemini"/..., tts "qwen3", quality = how many takes per line,
-# separation "demucs"/"perso") are saved too, so a finished job can say what made it and "Try again" can
+# separation "demucs"/"roformer"/"perso") are saved too, so a finished job can say what made it and "Try again" can
 # repeat the same choices instead of falling back to today's defaults. A job.json
 # written before they existed simply has no such keys -- every reader treats them
 # as unknown and shows nothing.
@@ -69,6 +69,10 @@ SAVED_FIELDS = ("id", "status", "kind", "language", "language_code", "source_lan
                 # screen writes it as a smaller line under the sentence, whole.
                 "error_detail",
                 "stt_engine", "translator", "tts", "quality", "separation",
+                # The model the translator answered with ("gpt-5.6-luna"): the
+                # screen names it beside the translator, after the default
+                # has moved on (app/translate.py translator_model).
+                "translator_model",
                 "dub_mode", "perso_project_seq", "perso_space_seq",
                 # The Perso voice model a cloud dubbing was started with.
                 "perso_model",
@@ -78,7 +82,7 @@ SAVED_FIELDS = ("id", "status", "kind", "language", "language_code", "source_lan
                 "perso_credits", "duration",
                 # What separated the voice from the background: "RoFormer",
                 # "Demucs" or "Perso". "separation" above is the choice made
-                # (local or perso); this is what ran.
+                # (demucs, roformer or perso); this is what ran.
                 "separation_model",
                 # A redub: Resume must stay voices-only, never replay the
                 # original's (possibly paid) transcription.
@@ -101,7 +105,10 @@ SAVED_FIELDS = ("id", "status", "kind", "language", "language_code", "source_lan
                 # whole video into a new folder each time, and a dubbing that
                 # names the id still finds the two sounds
                 # (app/separate_launch.py stems_for).
-                "held_again")
+                "held_again",
+                # The subtitle file a "captions" job was made from, by name:
+                # the Subtitle style tab shows it beside the video.
+                "srt_name")
 
 # A key a record carries only at run time, left out on purpose. `started`
 # (app/separate_launch.py) is when a separation began, for the time the screen
@@ -151,6 +158,9 @@ class JobKind(StrEnum):
     DUB = "dub"
     ERASE = "erase"
     SEPARATE = "separate"
+    # A video and a subtitle file the user brought, for the Subtitle style
+    # tab alone (app/api/captions.py): finished the moment it exists.
+    CAPTIONS = "captions"
 
 
 def kind_of(job: dict) -> str:

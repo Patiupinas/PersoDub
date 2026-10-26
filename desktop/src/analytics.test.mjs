@@ -99,8 +99,8 @@ test("an install step that merely exited nonzero is not called an engine crash",
 test("a dub-time engine death keeps the name it was made for", () => {
   assert.equal(classifyError("worker exit 1"), "engine-crash");
   // A video longer than the Perso plan allows (F4008): its own word.
-  assert.equal(classifyError("This video is longer than your Perso plan allows. Upgrade your plan, or set "
-    + "Dubbing to This computer. Perso said: 영상 길이가 60000ms를 초과했습니다 (F4008)"), "perso-length");
+  assert.equal(classifyError("This video is longer than your Perso plan allows. Upgrade your plan, or switch "
+    + "Dubbing to Local model. Perso said: 영상 길이가 60000ms를 초과했습니다 (F4008)"), "perso-length");
   // A voice model the plan does not cover (VT40314): its own word too.
   assert.equal(classifyError("This dubbing model needs a higher Perso plan. Upgrade your plan, or choose "
     + "another dubbing model. Perso said: Pro plan required (VT40314)"), "perso-plan");
@@ -219,7 +219,7 @@ test("a server error is not treated as delivery", async () => {
 import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadState, saveState } from "./analytics.js";
+import { keepDevice, loadState, savedDevice, saveState } from "./analytics.js";
 
 function tempStateFile() {
   return join(mkdtempSync(join(tmpdir(), "persodub-analytics-")), "analytics.json");
@@ -265,6 +265,21 @@ test("reading state does not create a file -- silence leaves no trace", () => {
   assert.equal(existsSync(file), false);
 });
 
+// A failure report reads the counts' id this way (reporting.js): what is
+// saved, as it is, and for a computer with none, none.
+test("the saved id is read as it is, and a computer without one is given none", () => {
+  const file = tempStateFile();
+  assert.equal(savedDevice(file), "");
+  assert.equal(existsSync(file), false, "reading it mints nothing and writes nothing");
+  const { device } = loadState(file);
+  saveState(file, { device });
+  assert.equal(savedDevice(file), device);
+  writeFileSync(file, JSON.stringify({ device: "not-an-id" }));
+  assert.equal(savedDevice(file), "");
+  writeFileSync(file, "{ this is not json");
+  assert.equal(savedDevice(file), "");
+});
+
 // ---- countEvent: the one call the app makes, and the switches it must obey ----
 
 import { countEvent } from "./analytics.js";
@@ -289,7 +304,7 @@ test("reporting off sends nothing and leaves no file behind", async () => {
   await countEvent("app_launch", { ...BASE, mode: "off", stateFile: file, fetchImpl });
 
   assert.deepEqual(sent, []);
-  assert.equal(existsSync(file), false, "an install that reports nothing should not get an id file");
+  assert.equal(existsSync(file), false, "a count that is off writes nothing; the id is the launch's to make");
 });
 
 test("debug mode shows the payload and still sends nothing", async () => {
@@ -359,6 +374,28 @@ test("the install id survives a failed send, so one machine stays one machine", 
   await countEvent("app_launch", { ...BASE, mode: "on", stateFile: file, fetchImpl: offline });
 
   assert.equal(loadState(file).device, first);
+});
+
+// The id is the launch's to make (main.js), counts on or off: every report and
+// job record names the computer by it (owner, 2026-10-22).
+test("the computer's id is made on the first launch and is the same on the next, counts on or off", async () => {
+  const file = tempStateFile();
+  const first = keepDevice(file);
+  assert.match(first, /^[0-9a-f]{32}$/);
+  assert.equal(savedDevice(file), first, "on disk from the first launch");
+  const { sent, fetchImpl } = recorder();
+  await countEvent("app_launch", { ...BASE, mode: "off", stateFile: file, fetchImpl });
+  assert.deepEqual(sent, [], "with the counts off nothing is sent");
+  assert.equal(keepDevice(file), first, "the next launch keeps it");
+  await countEvent("app_launch", { ...BASE, mode: "on", stateFile: file, fetchImpl });
+  assert.equal(sent[0].device, first, "and the counts, once on, send the same id");
+});
+
+test("making the id keeps the day a launch was last counted", () => {
+  const file = tempStateFile();
+  writeFileSync(file, JSON.stringify({ lastDay: "2026-10-21" }));
+  const device = keepDevice(file);
+  assert.deepEqual(loadState(file), { device, lastDay: "2026-10-21" });
 });
 
 test("countEvent never throws, whatever the network does", async () => {

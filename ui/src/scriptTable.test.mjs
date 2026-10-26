@@ -87,7 +87,7 @@ function harness({ responses = {}, perso = false, duration = 30, job = null } = 
     return els.get(id);
   };
   const log = { calls: [], timeline: [], playhead: 0, played: [], shown: [],
-                reloads: 0, timers: [] };
+                reloads: 0, timers: [], seeks: [] };
 
   const real = { fetch: globalThis.fetch, document: globalThis.document,
                  setTimeout: globalThis.setTimeout };
@@ -133,6 +133,7 @@ function harness({ responses = {}, perso = false, duration = 30, job = null } = 
     getJob: () => job,
     askTranslator: (notice, pick) => { log.asked = { notice, pick }; },
     needModels: (detail, retry) => { log.needed = { detail, retry }; },
+    onSeekLine: (start) => { log.seeks.push(start); },
   });
   return { $, api, log, video };
 }
@@ -178,8 +179,9 @@ test("a row carries the line number, who said it, both languages and whether it 
   assert.match(html, /class="sc-src">안녕하세요</);
   assert.match(html, /class="sc-dst" contenteditable="plaintext-only"[\s\S]*?data-line="1">Hello 1</);
   // The three verdicts: fits, runs over by this much, and is this much short
-  // -- the slot first, then the voice in bold.
-  assert.match(html, /<span class="sc-len sc-v-fit"><span class="sc-dot"><\/span><span class="sc-num">1\.0 \/ <b>0\.9<\/b>s<\/span><\/span>/);
+  // -- the slot first, then the voice in bold. A line that fits wears a tick
+  // where the others have their dot.
+  assert.match(html, /<span class="sc-len sc-v-fit"><span class="sc-tick"><svg[^>]*><path d="M20 6 9 17l-5-5"\/><\/svg><\/span><span class="sc-num">1\.0 \/ <b>0\.9<\/b>s<\/span><\/span>/);
   assert.match(html, /<span class="sc-len sc-v-over"><span class="sc-dot"><\/span><span class="sc-num">1\.0 \/ <b>2\.4<\/b>s · <\/span><span class="sc-diff">\+1\.4s<\/span><\/span>/);
   assert.match(html, /<span class="sc-len sc-v-short"><span class="sc-dot"><\/span><span class="sc-num">1\.0 \/ <b>0\.2<\/b>s · <\/span><span class="sc-diff">−0\.8s<\/span><\/span>/);
   // A local dub's chip only displays -- changing a speaker is Perso's own.
@@ -190,15 +192,54 @@ test("a row carries the line number, who said it, both languages and whether it 
   assert.equal(h.log.playhead, 1);
 });
 
-test("the script's own clipped list replaces the job's old one, so a remade line stops saying cut", async (t) => {
+// A written line with no voice in a dub that made voices: the voice stage
+// skipped it, so the video is silent there. Said under the line, and once
+// above the table with the button that makes it -- words only.
+test("a line whose voice could not be made says No sound, and one line above the table counts them", async (t) => {
+  const h = harness({ responses: { [SCRIPT]: ok({ lines: [
+    line(1),
+    line(2, { audio_sec: null }),
+    line(3, { audio_sec: null, text: "", untranslated: true }),   // no words: Not translated, not this
+    line(4, { audio_sec: null }),
+  ] }) } });
+  t.after(h.log.restore);
+  const box = h.$("scriptBox");
+  await h.api.renderScript("j1");
+  const notes = [...box.innerHTML.matchAll(/data-line="(\d)" data-note="No sound"/g)].map((m) => m[1]);
+  assert.deepEqual(notes, ["2", "4"]);
+  const bar = box.children.find((c) => c.className === "sc-clipped sc-silent");
+  assert.match(bar.innerHTML, /2 lines have no sound because their voices could not be made\. Press each line's voice button to make it again\./);
+  assert.equal(bar.listeners.click, undefined, "words only, nothing to press");
+
+  // One such line is said in the singular.
+  const one = harness({ responses: { [SCRIPT]: ok({ lines: [line(1), line(2, { audio_sec: null })] }) } });
+  t.after(one.log.restore);
+  await one.api.renderScript("j1");
+  assert.match(one.$("scriptBox").children[0].innerHTML,
+    /1 line has no sound because its voice could not be made\. Press that line's voice button to make it again\./);
+
+  // A project with no voice files at all (made before they were kept), or one
+  // Perso dubbed, has nothing to say about it.
+  for (const [perso, lines] of [[false, [line(1, { audio_sec: null }), line(2, { audio_sec: null })]],
+                                [true, [line(1), line(2, { audio_sec: null })]]]) {
+    const other = harness({ perso, responses: { [SCRIPT]: ok({ lines }) } });
+    t.after(other.log.restore);
+    await other.api.renderScript("j1");
+    assert.doesNotMatch(other.$("scriptBox").innerHTML, /No sound/);
+    assert.equal(other.$("scriptBox").children.some((c) => c.className === "sc-clipped sc-silent"), false);
+  }
+});
+
+test("the script's own clipped list replaces the job's old one, so a remade line stops running over", async (t) => {
   const job = { id: "j1", result: { clipped: [{ line: 2, cut_s: 0.6 }], clipped_count: 1 } };
   const h = harness({ job, responses: { [SCRIPT]: ok({ lines: [line(1), line(2)], clipped: [] }) } });
   t.after(h.log.restore);
   await h.api.renderScript("j1");
-  assert.doesNotMatch(h.$("scriptBox").innerHTML, /cut 0\.6s/);
+  assert.doesNotMatch(h.$("scriptBox").innerHTML, /\+0\.6s/);
+  assert.match(h.$("scriptBox").innerHTML, /data-line="2"[\s\S]*?<span class="sc-len sc-v-fit">/);
 });
 
-test("a line the assembly cut short is marked cut whatever its own numbers say, and one notice names them all", async (t) => {
+test("a line the assembly cut short runs over by what was cut whatever its own numbers say, and one notice names them all", async (t) => {
   const job = { id: "j1", result: { clipped: [{ line: 2, cut_s: 0.6 }], clipped_count: 1 } };
   const h = harness({ job, responses: { [SCRIPT]: ok({ lines: [
     line(1),
@@ -210,8 +251,10 @@ test("a line the assembly cut short is marked cut whatever its own numbers say, 
   await h.api.renderScript("j1");
   const html = box.innerHTML;
 
-  assert.match(html, /data-line="2"[\s\S]*?<span class="sc-len sc-v-cut">[^]*?<span class="sc-diff" title="Cut off by 0\.6s">cut 0\.6s<\/span>/);
+  // Said as any line over its time is: the red dot and +0.6s, no word for it.
+  assert.match(html, /data-line="2"[\s\S]*?<span class="sc-len sc-v-over"><span class="sc-dot"><\/span>[^]*?<span class="sc-diff">\+0\.6s<\/span>/);
   assert.match(html, /data-line="1"[\s\S]*?<span class="sc-len sc-v-fit">/); // line 1 untouched
+  assert.doesNotMatch(html, /cut \d|Cut off by/);
 
   // One line above the table, singular for one line, with a way to jump there.
   const bar = box.children[0];
@@ -269,7 +312,9 @@ const ONE_ROW =
   '</button>\n' +
   '    <div class="sc-dst" contenteditable="plaintext-only" spellcheck="false"\n' +
   '      data-line="7">Hello</div>\n' +
-  '    <div class="sc-tools"><span class="sc-len sc-v-fit"><span class="sc-dot"></span>' +
+  // A line that fits wears a tick, not a dot (owner, 2026-10-22).
+  '    <div class="sc-tools"><span class="sc-len sc-v-fit"><span class="sc-tick">' +
+  '<svg class="lu" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></span>' +
   '<span class="sc-num">1.5 / <b>1.3</b>s</span></span>' +
   '<span></span><button class="sc-wave" data-voice="7"\n' +
   '        type="button" title="Make this line\'s voice again">' +
@@ -315,11 +360,11 @@ test("a line the translator left untranslated says so in its own empty cell, and
   // Still editable, still empty -- the mark is not in the words.
   assert.match(row2, /class="sc-dst" contenteditable="plaintext-only" spellcheck="false"\s+data-line="2" data-empty="Not translated"><\/div>/);
   assert.match(row2, /<span class="sc-len"><\/span>/);
-  assert.match(row2, /class="sc-listen sc-off" data-play="2" type="button" disabled\s+title="Write the translation first"/);
-  assert.match(row2, /class="sc-wave sc-off" data-voice="2"\s+type="button" disabled title="Write the translation first"/);
+  assert.match(row2, /class="sc-listen sc-off" data-play="2" type="button" disabled\s+title="You can press it once the translation is written"/);
+  assert.match(row2, /class="sc-wave sc-off" data-voice="2"\s+type="button" disabled title="You can press it once the translation is written"/);
   // Line 1 is untouched by any of it.
   assert.equal(html.match(/data-empty|sc-off/g).length, 3);
-  assert.match(html, /<span class="sc-len sc-v-fit"><span class="sc-dot"><\/span><span class="sc-num">1\.0 \/ <b>0\.9<\/b>s<\/span>/);
+  assert.match(html, /<span class="sc-len sc-v-fit"><span class="sc-tick"><svg[^>]*><path d="M20 6 9 17l-5-5"\/><\/svg><\/span><span class="sc-num">1\.0 \/ <b>0\.9<\/b>s<\/span>/);
 });
 
 test("with no length known yet the strip is drawn to the last line's end", async (t) => {
@@ -372,8 +417,12 @@ test("an answer that arrives after another job was opened changes nothing on scr
 const lengthOf = (html, n) => html.match(new RegExp(`<div class="sc-row" data-line="${n}"`
   + '[\\s\\S]*?<div class="sc-tools">(<span class="sc-len[\\s\\S]*?</span>)<span></span><button class="sc-wave"'))[1];
 const DOT = '<span class="sc-dot"></span>';
+// Written out, as ONE_ROW's icons are: a pin that read the code's own
+// constant could not notice it changing.
+const TICK = '<span class="sc-tick"><svg class="lu" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">'
+  + '<path d="M20 6 9 17l-5-5"/></svg></span>';
 
-test("the length gives the slot, then the voice in bold, and what is missed: over, well short, cut -- a line that fits says no more", async (t) => {
+test("the length gives the slot, then the voice in bold, and what is missed: over, well short, cut off -- a line that fits says no more", async (t) => {
   const len = (n, slot, sec) => line(n, { slot, estimated: sec, audio_sec: sec });
   const job = { id: "j1", result: { clipped: [{ line: 7, cut_s: 0.3 }], clipped_count: 1 } };
   const h = harness({ job, responses: { [SCRIPT]: ok({ lines: [
@@ -394,14 +443,35 @@ test("the length gives the slot, then the voice in bold, and what is missed: ove
     `<span class="sc-len sc-v-over">${DOT}<span class="sc-num">1.9 / <b>2.5</b>s · </span><span class="sc-diff">+0.6s</span></span>`);
   assert.equal(lengthOf(html, 2),
     `<span class="sc-len sc-v-short">${DOT}<span class="sc-num">3.0 / <b>1.6</b>s · </span><span class="sc-diff">−1.4s</span></span>`);
-  assert.equal(lengthOf(html, 3), `<span class="sc-len sc-v-fit">${DOT}<span class="sc-num">4.7 / <b>4.4</b>s</span></span>`);
-  assert.equal(lengthOf(html, 4), `<span class="sc-len sc-v-fit">${DOT}<span class="sc-num">6.5 / <b>6.0</b>s</span></span>`);
+  assert.equal(lengthOf(html, 3), `<span class="sc-len sc-v-fit">${TICK}<span class="sc-num">4.7 / <b>4.4</b>s</span></span>`);
+  assert.equal(lengthOf(html, 4), `<span class="sc-len sc-v-fit">${TICK}<span class="sc-num">6.5 / <b>6.0</b>s</span></span>`);
   assert.equal(lengthOf(html, 5),
     `<span class="sc-len sc-v-short">${DOT}<span class="sc-num">10.0 / <b>8.5</b>s · </span><span class="sc-diff">−1.5s</span></span>`);
   assert.equal(lengthOf(html, 6),
     `<span class="sc-len sc-v-short">${DOT}<span class="sc-num">4.0 / <b>3.1</b>s · </span><span class="sc-diff">−0.9s</span></span>`);
-  assert.equal(lengthOf(html, 7), `<span class="sc-len sc-v-cut">${DOT}<span class="sc-num">2.0 / <b>2.0</b>s · </span>`
-    + '<span class="sc-diff" title="Cut off by 0.3s">cut 0.3s</span></span>');
+  // Cut off by 0.3s: over by that, as any line over its time is said.
+  assert.equal(lengthOf(html, 7),
+    `<span class="sc-len sc-v-over">${DOT}<span class="sc-num">2.0 / <b>2.0</b>s · </span><span class="sc-diff">+0.3s</span></span>`);
+});
+
+// The fit verdict's mark (the length-cell mockup's first option, owner 2026-10-22):
+// a lone green dot read as nothing in particular, so a line that fits wears
+// a tick in the dot's place, and still says nothing past its two numbers.
+test("a line that fits wears the green tick where the dot was, and the others keep their dot", async (t) => {
+  const h = harness({ responses: { [SCRIPT]: ok({ lines: [
+    line(1),                                          // 0.1 short of its slot
+    line(2, { estimated: 1.04, audio_sec: 1.04 }),    // a hair over, forgiven
+    line(3, { estimated: 1.6, audio_sec: 1.6 }),      // 0.6 over
+  ] }) } });
+  t.after(h.log.restore);
+  await h.api.renderScript("j1");
+  const html = h.$("scriptBox").innerHTML;
+  assert.equal(lengthOf(html, 1), `<span class="sc-len sc-v-fit">${TICK}<span class="sc-num">1.0 / <b>0.9</b>s</span></span>`);
+  assert.equal(lengthOf(html, 2), `<span class="sc-len sc-v-fit">${TICK}<span class="sc-num">1.0 / <b>1.0</b>s</span></span>`);
+  assert.equal(lengthOf(html, 3),
+    `<span class="sc-len sc-v-over">${DOT}<span class="sc-num">1.0 / <b>1.6</b>s · </span><span class="sc-diff">+0.6s</span></span>`);
+  assert.equal(html.match(/class="sc-tick"/g).length, 2);
+  assert.equal(html.match(/class="sc-dot"/g).length, 1);
 });
 
 test("in Korean the unit is said once, after the voice's length, and the heading names the two numbers", async (t) => {
@@ -424,6 +494,52 @@ test("in Korean the unit is said once, after the voice's length, and the heading
     `<span class="sc-len sc-v-over">${DOT}<span class="sc-num">1.9 / <b>2.5</b>초 · </span><span class="sc-diff">+0.6초</span></span>`);
 });
 
+// A cut under a tenth of a second reads 0.0s: the assembly took nothing
+// anybody hears, so it is no cut (owner, 2026-10-22).
+test("a cut under a tenth of a second is no cut: the line keeps its tick and nothing is said above the table", async (t) => {
+  const job = { id: "j1", result: { clipped: [{ line: 1, cut_s: 0.04 }], clipped_count: 1 } };
+  const h = harness({ job, responses: { [SCRIPT]: ok({ lines: [line(1), line(2)] }) } });
+  t.after(h.log.restore);
+  const box = h.$("scriptBox");
+  await h.api.renderScript("j1");
+  assert.equal(lengthOf(box.innerHTML, 1), `<span class="sc-len sc-v-fit">${TICK}<span class="sc-num">1.0 / <b>0.9</b>s</span></span>`);
+  assert.doesNotMatch(box.innerHTML, /0\.0s/);
+  assert.deepEqual(box.children, [], "no notice");
+});
+
+test("in Korean a cut of 0.3s reads +0.3초 by the red dot, never 잘림, and the notice counts and finds that line alone", async (t) => {
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true,
+    json: async () => JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8")) });
+  await loadTable("ko");
+  globalThis.fetch = real;
+  setLanguage("ko");
+  t.after(() => setLanguage("en"));
+  // Line 1 lost 0.04s, which is nothing; line 2 lost 0.3s.
+  const job = { id: "j1", result: { clipped: [{ line: 1, cut_s: 0.04 }, { line: 2, cut_s: 0.3 }], clipped_count: 2 } };
+  const h = harness({ job, responses: { [SCRIPT]: ok({ lines: [line(1), line(2)] }) } });
+  t.after(h.log.restore);
+  const box = h.$("scriptBox");
+  await h.api.renderScript("j1");
+  const html = box.innerHTML;
+
+  assert.equal(lengthOf(html, 1), `<span class="sc-len sc-v-fit">${TICK}<span class="sc-num">1.0 / <b>0.9</b>초</span></span>`);
+  assert.equal(lengthOf(html, 2),
+    `<span class="sc-len sc-v-over">${DOT}<span class="sc-num">1.0 / <b>0.9</b>초 · </span><span class="sc-diff">+0.3초</span></span>`);
+  assert.doesNotMatch(html, /잘림/);
+  const bar = box.children[0];
+  assert.equal(bar.className, "sc-clipped");
+  assert.match(bar.innerHTML, /1줄이 끝나기 전에 잘려요\. 짧게 고친 뒤 목소리를 다시 만들어 주세요\./);
+  assert.equal(box.children.length, 1);
+  // A press goes to line 2, the one that lost something.
+  const row = bindClassList(makeEl("row2"));
+  let scrolled = null;
+  row.scrollIntoView = (opts) => { scrolled = opts; };
+  box.q1 = { '.sc-row[data-line="2"]': row };
+  await bar.fire("click");
+  assert.deepEqual(scrolled, { block: "center" });
+});
+
 // -- the fit rule, which the timeline shares ----------------------------------
 
 test("lineOverBy forgives a hair over the slot and trusts the server before a voice exists", () => {
@@ -435,9 +551,10 @@ test("lineOverBy forgives a hair over the slot and trusts the server before a vo
   assert.equal(lineOverBy({ audio_sec: null, estimated: 9, slot: 1, fits: false }), 8);
 });
 
-test("lineVerdict: cut before anything else, then over, then short by more than a second or a fifth", () => {
+test("lineVerdict: over by what was cut off before anything else, then over, then short by more than a second or a fifth", () => {
   const v = (slot, sec, clipped) => lineVerdict({ line: 1, slot, estimated: sec, audio_sec: sec, fits: true }, clipped);
-  assert.deepEqual(v(2, 3, new Map([[1, 0.4]])), { kind: "cut", by: 0.4 }, "cut, though it runs over as well");
+  assert.deepEqual(v(2, 3, new Map([[1, 0.4]])), { kind: "over", by: 0.4 }, "the cut, not its own 1.0 over");
+  assert.deepEqual(v(2, 1.9, new Map([[1, 0.4]])), { kind: "over", by: 0.4 }, "cut off, though it fits by its own numbers");
   assert.equal(v(1.9, 2.5).kind, "over");
   assert.equal(v(1.9, 2.5).by.toFixed(1), "0.6");
   assert.equal(v(3, 1.6).kind, "short");
@@ -499,6 +616,19 @@ test("committing an edited cell saves that line's new words", async (t) => {
   assert.equal(h.$("scriptSaving").textContent, "Saved");
   h.log.runTimers();
   assert.equal(h.$("scriptSaving").textContent, "", "and the word goes away by itself");
+});
+
+// A later word stays: the "Saved" timer must not wipe what came after it,
+// such as Translate again's "Translating…" while it still works (sweep D7).
+test("the Saved word's timer leaves a newer word alone", async (t) => {
+  const { h, cell } = await withCell(t, {
+    responses: { "/api/dub/jobs/j1/script/1": ok({}) },
+  });
+  cell.textContent = "Good morning";
+  await cell.fire("blur");
+  h.$("scriptSaving").textContent = "Translating 3 lines…";
+  h.log.runTimers();
+  assert.equal(h.$("scriptSaving").textContent, "Translating 3 lines…");
 });
 
 test("a save the server refuses leaves the reason under the table", async (t) => {
@@ -597,14 +727,14 @@ test("the voice button wears all four of its looks", async (t) => {
 
   // 2. The words changed and the voice has not caught up.
   assert.match(waveOf(html, 2), /^<button class="sc-wave stale" data-voice="2"/);
-  assert.match(waveOf(html, 2), /title="The words changed - make the voice again">/);
+  assert.match(waveOf(html, 2), /title="The words changed - press to make this line's voice again">/);
   assert.ok(waveOf(html, 2).includes(WAVE_ICON));
 
   // 3. Made in this sitting: green.
   await btn.fire("click");
   html = h.$("scriptBox").innerHTML;
   assert.match(waveOf(html, 1), /^<button class="sc-wave fresh" data-voice="1"/);
-  assert.match(waveOf(html, 1), /title="Voice made - press to make it again">/);
+  assert.match(waveOf(html, 1), /title="New voice - press to make it once more">/);
   assert.ok(waveOf(html, 1).includes(WAVE_ICON));
 
   // 4. Made, then edited again: stale wins over the green this line still
@@ -682,6 +812,72 @@ test("the play button always plays the line in the dub, not the original", async
   assert.deepEqual(h.log.played, [["doneVideo", 4, 5]]);
 });
 
+// -- pressing a line (owner, 2026-10-21) --------------------------------------
+
+/** A line's row as the browser built it, and a press on it: the press's target
+    answers closest() from `hits`, as the node under the pointer would. */
+function lineRow(n) {
+  const row = bindClassList(makeEl(`row${n}`));
+  Object.assign(row.dataset, { line: String(n), start: String(n), end: String(n + 1) });
+  return row;
+}
+const pressOn = (row, hits = {}) => ({ target: { closest: (sel) => ({ ".sc-row[data-start]": row, ...hits })[sel] || null } });
+const CONTROLS = "button, input, label, a, [contenteditable]";
+
+test("pressing a line's time, words or an empty part marks the line and puts the video at its start", async (t) => {
+  const h = harness({ responses: { [SCRIPT]: ok({ lines: [line(1), line(2)] }) } });
+  t.after(h.log.restore);
+  await h.api.renderScript("j1");
+  const box = h.$("scriptBox");
+  const one = lineRow(1), two = lineRow(2);
+
+  await box.fire("click", pressOn(two));
+  assert.ok(two.classes.has("sc-sel"));
+  assert.deepEqual(h.log.seeks, [2]);
+  // Another line pressed takes the mark from the one before.
+  box.qs[".sc-row.sc-sel"] = [two];
+  await box.fire("click", pressOn(one));
+  assert.ok(one.classes.has("sc-sel"));
+  assert.ok(!two.classes.has("sc-sel"));
+  assert.deepEqual(h.log.seeks, [2, 1]);
+  assert.deepEqual(h.log.played, [], "nothing plays");
+});
+
+test("a press on play, the tick box or the translation is theirs, and a drag that selects words is no press", async (t) => {
+  const h = harness({ responses: { [SCRIPT]: ok({ lines: [line(1)] }) } });
+  t.after(h.log.restore);
+  await h.api.renderScript("j1");
+  const box = h.$("scriptBox");
+  const row = lineRow(1);
+  for (const control of ["play button", "tick box", "translation"]) {
+    await box.fire("click", pressOn(row, { [CONTROLS]: { control } }));
+  }
+  // The header row and the notices above the table are no line.
+  await box.fire("click", { target: { closest: () => null } });
+  globalThis.document.getSelection = () => ({ isCollapsed: false });
+  await box.fire("click", pressOn(row));
+  assert.ok(!row.classes.has("sc-sel"));
+  assert.deepEqual(h.log.seeks, []);
+});
+
+test("the pressed line stays marked when the table is drawn again, and another project's starts with none", async (t) => {
+  const h = harness({ responses: { [SCRIPT]: ok({ lines: [line(1), line(2)] }),
+                                   "/api/dub/jobs/j2/script": ok({ lines: [line(1), line(2)] }) } });
+  t.after(h.log.restore);
+  await h.api.renderScript("j1");
+  await h.$("scriptBox").fire("click", pressOn(lineRow(2)));
+
+  await h.api.renderScript("j1");   // an edit saved, a voice remade: the table again
+  const html = h.$("scriptBox").innerHTML;
+  assert.match(html, /<div class="sc-row sc-sel" data-line="2"/);
+  assert.equal((html.match(/sc-sel/g) || []).length, 1);
+
+  await h.api.renderScript("j2");
+  assert.doesNotMatch(h.$("scriptBox").innerHTML, /sc-sel/);
+  await h.api.renderScript("j1");
+  assert.doesNotMatch(h.$("scriptBox").innerHTML, /sc-sel/, "and coming back is a fresh start");
+});
+
 // -- what the page still asks of the table ------------------------------------
 
 test("the table says which job it is showing, and forgets it when a new one starts", async (t) => {
@@ -701,6 +897,17 @@ test("the table says which job it is showing, and forgets it when a new one star
   // The pane's name stops counting the old job's lines: a new project opened
   // from the top bar showed "Script 7 lines" over its empty table.
   assert.equal(h.$("scriptCount").textContent, "");
+});
+
+// + Add language prices a Perso dubbing by where the open one is spoken.
+test("the table hands over the lines it shows for that job, and none for another or once reset", async (t) => {
+  const h = harness({ responses: { [SCRIPT]: ok({ lines: [line(1), line(2)] }) } });
+  t.after(h.log.restore);
+  await h.api.renderScript("j1");
+  assert.deepEqual(h.api.linesOf("j1").map((l) => [l.start, l.end]), [[1, 2], [2, 3]]);
+  assert.equal(h.api.linesOf("j2"), null);
+  h.api.reset();
+  assert.equal(h.api.linesOf("j1"), null);
 });
 
 test("countStale counts the lines still waiting for a new voice", async (t) => {
@@ -756,7 +963,7 @@ test("Translate again sends the chosen lines, changes words only and says how ma
 
   await h.api.retranslate("j1", [2, 3]);
   assert.ok(h.log.calls.includes('POST /api/dub/jobs/j1/retranslate {"lines":[2,3]}'));
-  assert.equal(h.$("scriptSaving").textContent, "1 line translated again");
+  assert.equal(h.$("scriptSaving").textContent, "1 line translated again. Press Remake voices to hear it.");
   assert.equal(h.log.reloads, 0, "no voice was made, so the video is the one it was");
   assert.equal(h.log.calls.filter((c) => c === `GET ${SCRIPT}`).length, 2, "the table is drawn again");
 
@@ -765,9 +972,11 @@ test("Translate again sends the chosen lines, changes words only and says how ma
   assert.ok(h.log.calls.includes('POST /api/dub/jobs/j1/retranslate {"lines":null}'));
 });
 
-test("the Translate again button sends the ticked lines, or every line when none is ticked", async (t) => {
-  const h = harness({ responses: {
-    [SCRIPT]: ok({ lines: [line(1), line(2), line(3)] }),
+test("the Translate again button sends the ticked lines, or the lines that do not fit when none is ticked", async (t) => {
+  const h = harness({ job: { id: "j1", result: { clipped: [{ line: 1, cut_s: 0.4 }] } }, responses: {
+    // Line 1 was cut off by the assembly, line 2 runs half a second past its
+    // slot, line 3 fits.
+    [SCRIPT]: ok({ lines: [line(1), line(2, { audio_sec: 1.5 }), line(3)] }),
     "/api/dub/jobs/j1/retranslate": ok({ changed: [] }),
   } });
   t.after(h.log.restore);
@@ -776,9 +985,12 @@ test("the Translate again button sends the ticked lines, or every line when none
   tick.row.classList.toggle = () => {};
   h.$("scriptBox").qs[".sc-pick"] = [tick];
   await h.api.renderScript("j1");
+  // Both kinds of red line, the cut-off one and the one over its time.
+  assert.match(h.$("retranslateBtn").title,
+    /only the lines whose length does not fit \(marked red\) are translated again\.$/);
 
   await h.$("retranslateBtn").fire("click");
-  assert.ok(h.log.calls.includes('POST /api/dub/jobs/j1/retranslate {"lines":null}'));
+  assert.ok(h.log.calls.includes('POST /api/dub/jobs/j1/retranslate {"lines":[1,2]}'));
   assert.equal(h.$("scriptSaving").textContent, "Same words. Nothing changed.");
 
   tick.checked = true;
@@ -786,6 +998,58 @@ test("the Translate again button sends the ticked lines, or every line when none
   assert.equal(h.$("scriptPickCount").textContent, "1 selected");
   await h.$("retranslateBtn").fire("click");
   assert.ok(h.log.calls.includes('POST /api/dub/jobs/j1/retranslate {"lines":[3]}'));
+});
+
+test("with every line fitting and none ticked, Translate again rests until a line is ticked", async (t) => {
+  let answer;
+  const h = harness({ responses: {
+    [SCRIPT]: ok({ lines: [line(1), line(2)] }),
+    "/api/dub/jobs/j1/retranslate": () => new Promise((res) => { answer = res; }),
+  } });
+  t.after(h.log.restore);
+  const tick = makeButton("pick2", { pick: "2" });
+  tick.row = bindClassList(makeEl("row2"));
+  tick.row.classList.toggle = () => {};
+  h.$("scriptBox").qs[".sc-pick"] = [tick];
+  await h.api.renderScript("j1");
+  assert.equal(h.$("retranslateBtn").disabled, true);
+  assert.match(h.$("retranslateBtn").title, /No line's length is off \(marked red\)\. Select the lines you want translated again\.$/);
+
+  tick.checked = true;
+  await tick.listeners.change.at(-1)();
+  assert.equal(h.$("retranslateBtn").disabled, false);
+  // Ticking another line while it works does not wake it.
+  const going = h.api.retranslate("j1", [2]);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.$("retranslateBtn").disabled, true);
+  await tick.listeners.change.at(-1)();
+  assert.equal(h.$("retranslateBtn").disabled, true);
+  answer(ok({ changed: [] }));
+  await going;
+  // Done, and the tick was cleared with the redraw: nothing to do, so it rests.
+  assert.equal(h.$("retranslateBtn").disabled, true);
+});
+
+// B2, B3: what Translate again does, and to which lines, on the button itself.
+test("Translate again says what it does and which lines it will translate", async (t) => {
+  const h = harness({ responses: { [SCRIPT]: ok({ lines: [line(1), line(2), line(3)] }) } });
+  t.after(h.log.restore);
+  const ticks = [2, 3].map((n) => {
+    const tick = makeButton(`pick${n}`, { pick: String(n) });
+    tick.row = bindClassList(makeEl(`row${n}`));
+    tick.row.classList.toggle = () => {};
+    return tick;
+  });
+  h.$("scriptBox").qs[".sc-pick"] = ticks;
+  await h.api.renderScript("j1");
+  const does = "Translates again with the same translator, so each line fits the time it has. The voices stay as they are.";
+  assert.equal(h.$("retranslateBtn").title, `${does} No line's length is off (marked red). Select the lines you want translated again.`);
+  ticks[0].checked = true;
+  await ticks[0].listeners.change.at(-1)();
+  assert.equal(h.$("retranslateBtn").title, `${does} Only the selected line is translated again.`);
+  ticks[1].checked = true;
+  await ticks[1].listeners.change.at(-1)();
+  assert.equal(h.$("retranslateBtn").title, `${does} Only the 2 selected lines are translated again.`);
 });
 
 test("Translate again asks once before it writes over lines edited by hand", async (t) => {
@@ -802,7 +1066,7 @@ test("Translate again asks once before it writes over lines edited by hand", asy
   assert.ok(h.log.calls.includes('POST /api/dub/jobs/j1/retranslate {"lines":[2]}'));
 
   await h.api.retranslate("j1", null);
-  assert.equal(h.$("scriptSaving").textContent, "1 edited line is replaced. Press again.");
+  assert.equal(h.$("scriptSaving").textContent, "1 line you edited will be replaced by the new translation too. Press again to go ahead.");
   assert.ok(!h.log.calls.includes('POST /api/dub/jobs/j1/retranslate {"lines":null}'));
   await h.api.retranslate("j1", null);
   assert.ok(h.log.calls.includes('POST /api/dub/jobs/j1/retranslate {"lines":null}'));
@@ -815,7 +1079,8 @@ test("Translate again asks once before it writes over lines edited by hand", asy
 
 test("a Translate again the server refuses says why", async (t) => {
   const h = harness({ responses: {
-    [SCRIPT]: ok({ lines: [line(1)] }),
+    // Too long, so the button has a line to translate when it comes back.
+    [SCRIPT]: ok({ lines: [line(1, { audio_sec: 1.5 })] }),
     "/api/dub/jobs/j1/retranslate": bad("Could not translate those lines again."),
   } });
   t.after(h.log.restore);
@@ -843,7 +1108,7 @@ test("Translate again names the translator the project was dubbed with", async (
 
 test("ChatGPT at its limit opens the dubbing's popup, and a pick translates the same lines with it", async (t) => {
   const h = harness({ job: { id: "j1", translator: "chatgpt" }, responses: {
-    [SCRIPT]: ok({ lines: [line(1), line(2)] }),
+    [SCRIPT]: ok({ lines: [line(1), line(2, { audio_sec: 1.5 })] }),
     "/api/dub/jobs/j1/retranslate": answer(429, "ChatGPT usage limit reached. Resets Oct 24, 1:07 PM."),
   } });
   t.after(h.log.restore);
@@ -924,13 +1189,15 @@ test("Remake voices counts the changed lines, and rests without a number at none
   await h.api.renderScript("j1");
   const btn = h.$("remakeVoicesBtn");
   assert.equal(btn.disabled, true);
+  // Resting, it says what would let it be pressed (B9).
+  assert.equal(btn.title, "You can press it after you change a line's words or translate again.");
   assert.equal(h.$("remakeVoicesCount").textContent, "");
   assert.ok(btn.classList.contains("btn-outline"));
   assert.equal(h.$("scriptChanged").hidden, true);
   assert.doesNotMatch(h.$("scriptBox").innerHTML, /Words changed/);
   // Not a Perso project: All at once rests, and says why.
   assert.equal(h.$("allAtOnceBtn").disabled, true);
-  assert.equal(h.$("allAtOnceBtn").title, "Perso dubbing only.");
+  assert.equal(h.$("allAtOnceBtn").title, "Only for projects dubbed with the Perso API.");
 });
 
 test("changed lines say Words changed, the strip counts them and one press remakes them all", async (t) => {
@@ -948,10 +1215,12 @@ test("changed lines say Words changed, the strip counts them and one press remak
   assert.match(html, /<span class="sc-h-voice">Voice<\/span>/);
   const btn = h.$("remakeVoicesBtn");
   assert.equal(btn.disabled, false);
+  assert.equal(btn.title, "Makes new voices for the lines whose words changed and puts them in the video. "
+    + "The other lines stay as they are.");
   assert.ok(btn.classList.contains("btn-primary"));
   assert.equal(h.$("remakeVoicesCount").textContent, " (2)");
   assert.equal(h.$("scriptChanged").hidden, false);
-  assert.equal(h.$("scriptChanged").innerHTML, "<b>2 lines changed.</b> Remake their voices to hear them.");
+  assert.equal(h.$("scriptChanged").innerHTML, "<b>2 lines changed.</b> Press Remake voices to hear them in the video.");
 
   await btn.fire("click");
   assert.ok(h.log.calls.includes("POST /api/dub/jobs/j1/voices/stale"), "one press, no second");
@@ -967,7 +1236,7 @@ test("one changed line reads in the singular", async (t) => {
   t.after(h.log.restore);
   await h.api.renderScript("j1");
   assert.equal(h.$("remakeVoicesCount").textContent, " (1)");
-  assert.equal(h.$("scriptChanged").innerHTML, "<b>1 line changed.</b> Remake its voice to hear it.");
+  assert.equal(h.$("scriptChanged").innerHTML, "<b>1 line changed.</b> Press Remake voices to hear it in the video.");
 });
 
 test("a Remake voices the server refuses says why and gives the button back", async (t) => {
@@ -1015,7 +1284,7 @@ test("a Perso project's lines have no voice button, and its strip says to remake
   assert.equal(h.$("remakeVoicesCount").textContent, " (2)");
   assert.equal(h.$("scriptChanged").innerHTML, "<b>2 lines changed.</b> Remake voices when you are done.");
   assert.equal(h.$("allAtOnceBtn").disabled, false);
-  assert.equal(h.$("allAtOnceBtn").title, "Translation and voices.");
+  assert.equal(h.$("allAtOnceBtn").title, "Perso makes the translation and voice of every line again.");
   assert.deepEqual(h.$("scriptBox").children, [], "and no bar over the table");
   assert.equal(h.api.countStale(), 0);
 });
@@ -1031,7 +1300,7 @@ test("Remake voices on a Perso project asks twice, names no price, and sends eve
   await h.api.renderScript("j1");
   const btn = h.$("remakeVoicesBtn");
   await btn.fire("click");
-  assert.equal(h.$("scriptSaving").textContent, "Perso remakes 2 lines. Press again.");
+  assert.equal(h.$("scriptSaving").textContent, "Perso makes new voices for 2 lines. It may use credits. Press again to go ahead.");
   assert.ok(!h.log.calls.some((c) => c.startsWith("POST")), "the first press spends nothing");
   await btn.fire("click");
   // changed_only: a line the agent voiced meanwhile is not sent again.
@@ -1141,7 +1410,7 @@ test("a Perso dub voiced on this computer is edited like this computer's own", a
 
   assert.match(box.innerHTML, /class="sc-wave" data-voice="1"/, "its lines keep their voice button");
   assert.equal(h.$("allAtOnceBtn").disabled, true);
-  assert.equal(h.$("allAtOnceBtn").title, "Perso dubbing only.");
+  assert.equal(h.$("allAtOnceBtn").title, "Only for projects dubbed with the Perso API.");
   await btn.fire("click");
   assert.ok(h.log.calls.includes("POST /api/dub/jobs/j1/script/1/voice"));
 });
@@ -1208,7 +1477,7 @@ test("a project Perso has nothing to redo in dims All at once once the script is
   assert.equal(btn.disabled, false);
   await settle(h);
   assert.equal(btn.disabled, true);
-  assert.equal(btn.title, "Translation and voices.");
+  assert.equal(btn.title, "Perso makes the translation and voice of every line again.");
   // Drawn again within minutes: Perso is not asked twice.
   await h.api.renderScript("j1");
   await settle(h);
@@ -1228,7 +1497,7 @@ test("a project Perso can redo keeps All at once, and the press names the price"
   const btn = h.$("allAtOnceBtn");
   await settle(h);
   assert.equal(btn.disabled, false);
-  assert.equal(btn.title, "Translation and voices.");
+  assert.equal(btn.title, "Perso makes the translation and voice of every line again.");
   await btn.fire("click");
   assert.equal(h.$("scriptSaving").textContent, "Perso redoes every line. Uses 42 credits. Press again.");
   assert.ok(!h.log.calls.some((c) => c.startsWith("POST")));
@@ -1395,7 +1664,7 @@ test("a Translate again that answers after another project was opened draws noth
   let answer;
   const h = harness({ responses: {
     [SCRIPT]: ok({ lines: [line(1), line(2)] }),
-    "/api/dub/jobs/j2/script": ok({ lines: [line(1, { text: "Other project" })] }),
+    "/api/dub/jobs/j2/script": ok({ lines: [line(1, { text: "Other project", audio_sec: 1.5 })] }),
     "/api/dub/jobs/j1/retranslate": () => new Promise((res) => { answer = res; }),
   } });
   t.after(h.log.restore);
@@ -1463,4 +1732,42 @@ test("a revert the server could not do says so in the status line", async (t) =>
   await h.api.renderScript("j1");
   await box.qs["[data-undo]"][0].fire("click");
   assert.equal(h.$("scriptSaving").textContent, "Could not revert line 1. Try again.");
+});
+
+// B15: what translated the script, grey beside its count, from the job on screen.
+test("the pane's head names what translated the script, with its model", async (t) => {
+  const job = { id: "j1", translator: "chatgpt", translator_model: "gpt-5.6-luna" };
+  const h = harness({ responses: { [SCRIPT]: ok({ lines: [line(1), line(2)] }) }, job });
+  t.after(h.log.restore);
+  await h.api.renderScript("j1");
+  assert.equal(h.$("scriptCount").textContent, "2 lines");
+  assert.equal(h.$("scriptModel").textContent, "Translation ChatGPT (gpt-5.6-luna)");
+  // Another job's record says nothing about this script.
+  job.id = "j2";
+  await h.api.renderScript("j1");
+  assert.equal(h.$("scriptModel").textContent, "");
+  job.id = "j1";
+  await h.api.renderScript("j1");
+  h.api.reset();
+  assert.equal(h.$("scriptModel").textContent, "");
+});
+
+test("the translator's name takes the particle Korean reads it with", async (t) => {
+  const h = harness({ responses: {
+    [SCRIPT]: ok({ lines: [line(1), line(2)] }),
+    "/api/dub/jobs/j1/retranslate": () => new Promise(() => {}),
+  }, job: { id: "j1", translator: "hunyuan" } });
+  const real = globalThis.fetch;
+  t.after(() => { h.log.restore(); setLanguage("en"); });
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  globalThis.fetch = async () => ({ ok: true, json: async () => ko });
+  await loadTable("ko");
+  globalThis.fetch = real;
+  setLanguage("ko");
+  await h.api.renderScript("j1");
+  assert.equal(h.$("scriptModel").textContent, "번역 Hunyuan 1.8B");
+  h.api.retranslate("j1", [1]);
+  assert.equal(h.$("scriptSaving").textContent, "Hunyuan으로 1줄 번역 중…");
+  h.api.retranslate("j1", null, "chatgpt", true);
+  assert.equal(h.$("scriptSaving").textContent, "ChatGPT로 모든 줄 번역 중…");
 });

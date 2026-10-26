@@ -207,10 +207,11 @@ def shown_words(text: str) -> str:
     as it is, and so does a line added to the catalog without one here."""
     return {
         "Audio separation, speech-to-text, voices": t("Audio separation, speech-to-text, voices"),
-        "Translation": t("Translation"),
+        "Local translation (Hunyuan, Gemma 3)": t("Local translation (Hunyuan, Gemma 3)"),
         "Subtitle eraser": t("Subtitle eraser"),
         "More careful": t("More careful"),
         "Small and quick": t("Small and quick"),
+        "Default · Comes with Python + PyTorch": t("Default · Comes with Python + PyTorch"),
     }.get(text, text)
 
 
@@ -223,7 +224,9 @@ def find(mid):
 
 def status_rows():
     """What GET /api/models serves: catalog entries (minus always-installed)
-    with live download state layered over the on-disk state."""
+    with live download state layered over the on-disk state. One that comes
+    with a pack (Demucs, in Python + PyTorch) says which: the screen lists it
+    with its stage but offers no download or removal of its own."""
     kit = kit_dir()
     rows = []
     for m in load_catalog():
@@ -233,6 +236,8 @@ def status_rows():
                # A short note after "Ready" in Settings, only where the row's
                # group title does not say what it is for; "" when it does.
                "hint": shown_words(m.get("hint", ""))}
+        if m.get("comes_with"):
+            row["comes_with"] = m["comes_with"]
         with _lock:
             rt = dict(_downloads.get(m["id"]) or {})
         if rt.get("state") in ("queued", "downloading"):
@@ -253,8 +258,9 @@ def status_rows():
 
 
 # In English on purpose: the page hands a pack's removal to the desktop app
-# when the refusal starts with these words (ui/src/modelsDialog.mjs).
-PACKS_ARE_THE_SHELLS = "Packs are installed by the desktop app"
+# when the refusal is this sentence (ui/src/modelsDialog.mjs), and says it in
+# its own language where it shows it.
+PACKS_ARE_THE_SHELLS = "PersoDub installs this itself."
 
 
 def request_download(entry) -> str:
@@ -265,7 +271,8 @@ def request_download(entry) -> str:
     if entry["source"].get("kind") == "ollama" and not _runtime.url("ollama"):
         # Only the runtime can pull into its store, and it is not running:
         # say so up front instead of queueing a pull that fails on an empty URL.
-        raise ValueError(t("Install Ollama first, then download this model."))
+        raise ValueError(t("Local translation models (Hunyuan, Gemma 3) need a program called Ollama "
+                           "to run. Download it in Settings > Models."))
     with _lock:
         state = (_downloads.get(entry["id"]) or {}).get("state")
         if state in ("queued", "downloading"):
@@ -303,7 +310,8 @@ def remove_model(entry):
             # Only the runtime can take a model out of its shared blob store,
             # and it is not running. Say so: a silent "removed" that removed
             # nothing is worse than a refusal.
-            raise ValueError(t("Install Ollama first, then remove this model."))
+            raise ValueError(t("Local translation models (Hunyuan, Gemma 3) need a program called Ollama "
+                               "to run. Download it in Settings > Models."))
         # A model pulled under one name and renamed (Hunyuan: pulled from
         # hf.co/..., then given its tag with our template) is held by both
         # names; deleting only the tag freed nothing, 1.1 GB stayed on disk
@@ -367,6 +375,11 @@ def _stopped_reason(exc) -> str:
     text = ("%s %s" % (type(exc).__name__, exc)).lower()
     if any(w in text for w in _NO_ROOM):
         return t("Not enough space on this computer.")
+    # Ahead of the dropped connection it also reads as: pressing Resume on the
+    # same network only fails again.
+    if netlog.certificate_refused(text):
+        return t("A company network or security program blocked the connection. "
+                 "Connect to another Wi-Fi or a hotspot, then press Resume.")
     if any(w in text for w in _NO_NETWORK):
         return t("Connection lost.")
     return t("The download stopped.")

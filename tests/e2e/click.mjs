@@ -9,12 +9,16 @@
 //   node tests/e2e/click.mjs --video clip.mp4 --out <folder>
 //
 // It dubs that video into Korean on this computer, so a dub already in the
-// queue makes step 4 wait (30 minutes at most). Writes NN-<step>.png,
-// report.md and report.json into <folder> and exits 1 when a step fails.
+// queue makes step 4 wait (30 minutes at most), then lays subtitles of its own
+// on the same video with no dub. Writes NN-<step>.png, report.md and
+// report.json into <folder> and exits 1 when a step fails. ffprobe (PATH, or
+// PERSODUB_FFPROBE) measures the files the subtitle step downloads.
 import { parseArgs } from "node:util";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { connect, isClosed, isOpen, onHome, shown, sleep } from "./lib/cdp.mjs";
 
 const { values: opt } = parseArgs({ options: {
   video: { type: "string" }, out: { type: "string" }, port: { type: "string", default: "9333" },
@@ -34,145 +38,96 @@ mkdirSync(out, { recursive: true });
 const PROJECT = `e2e-click-${stamp}`;
 const video = join(out, `${PROJECT}.mp4`);
 copyFileSync(opt.video, video);
+// A Burn in subtitles project: the same video under a name of its
+// own, so its card and its Downloads folder are not the dub's, and a subtitle
+// file of three lines inside the video's first ten seconds.
+const CAP_PROJECT = `${PROJECT}-cap`;
+const capVideo = join(out, `${CAP_PROJECT}.mp4`);
+copyFileSync(opt.video, capVideo);
+const CUES = [[0.5, 3, "The first line"], [3.5, 6, "The second line"], [6.5, 9, "The third line"]];
+const srtTime = (sec) => new Date(sec * 1000).toISOString().slice(11, 23).replace(".", ",");
+const capSrt = join(out, `${CAP_PROJECT}.srt`);
+writeFileSync(capSrt, CUES.map(([a, b, text], i) => `${i + 1}\n${srtTime(a)} --> ${srtTime(b)}\n${text}\n`).join("\n"));
 const CHOICES_KEY = "persodub.lastChoices";
+// The Download dialog's remembered ticks, which the subtitle step changes.
+const TICKS_KEY = "persodub.exportTicks";
+const FFPROBE = process.env.PERSODUB_FFPROBE || "ffprobe";
+function seconds(path) {
+  const r = spawnSync(FFPROBE, ["-v", "error", "-show_entries", "format=duration",
+                                "-of", "default=noprint_wrappers=1:nokey=1", path], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`ffprobe could not read ${basename(path)}: ${(r.stderr || r.error?.message || "").trim().slice(0, 200)}`);
+  return Number(r.stdout.trim());
+}
 
 // ---- the control port ------------------------------------------------------
-const START_IT = `start the app with --remote-debugging-port=${opt.port}`;
-const targets = await fetch(`http://127.0.0.1:${opt.port}/json`, { signal: AbortSignal.timeout(5000) })
-  .then((r) => r.json(), () => { throw new Error(`nothing answers on port ${opt.port}; ${START_IT}`); });
-const target = targets.find((t) => t.type === "page" && t.url.startsWith("http://127.0.0.1:"));
-if (!target) throw new Error(`no app page on port ${opt.port}; ${START_IT}`);
-const origin = new URL(target.url).origin;
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = () => no(new Error(`cannot open ${target.webSocketDebuggerUrl}`)); });
-let seq = 0;
-const pending = new Map();
-const handlers = new Map();
-ws.onmessage = ({ data }) => {
-  const m = JSON.parse(data);
-  if (!m.id) { for (const fn of handlers.get(m.method) || []) fn(m.params); return; }
-  const p = pending.get(m.id);
-  if (!p) return;
-  pending.delete(m.id);
-  if (m.error) p.no(new Error(`${p.method}: ${m.error.message}`)); else p.ok(m.result);
-};
-ws.onclose = () => { for (const p of pending.values()) p.no(new Error("the app closed its control port")); };
+// The connection and the presses are tests/e2e/lib/cdp.mjs's, shared with the other runs.
+const app = await connect({ port: opt.port, out });
+const { origin, page, send, js, inPage, waitFor, api, click, choose, feed, shot, snippet, tr } = app;
 
-// Every call has a limit: a page that stops answering ends the run instead of hanging it.
-function send(method, params = {}, ms = 30000) {
-  return new Promise((ok, no) => {
-    const id = ++seq;
-    const timer = setTimeout(() => { pending.delete(id); no(new Error(`${method}: no answer in ${ms / 1000} s`)); }, ms);
-    pending.set(id, { method, ok: (v) => { clearTimeout(timer); ok(v); }, no: (e) => { clearTimeout(timer); no(e); } });
-    ws.send(JSON.stringify({ id, method, params }));
-  });
-}
-function nextEvent(method, ms) {
-  return new Promise((ok, no) => {
-    const set = handlers.get(method) || new Set();
-    handlers.set(method, set);
-    const fn = (params) => { set.delete(fn); clearTimeout(timer); ok(params); };
-    const timer = setTimeout(() => { set.delete(fn); no(new Error(`no ${method} in ${ms / 1000} s`)); }, ms);
-    set.add(fn);
-  });
-}
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function js(expression) {
-  const r = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
-  if (r.exceptionDetails) {
-    throw new Error(`in the page: ${(r.exceptionDetails.exception?.description || r.exceptionDetails.text).split("\n")[0]}`);
-  }
-  return r.result.value;
-}
-// fn goes to the page as source, so it may use only its arguments and the page's globals.
-const inPage = (fn, ...args) => js(`(${fn})(...${JSON.stringify(args)})`);
-async function waitFor(what, ms, fn, ...args) {
-  const end = Date.now() + ms;
+// The look a project has saved, once its debounced save lands: how long that took.
+async function savedLook(jid, preset) {
+  const t0 = Date.now();
   for (;;) {
-    const v = await inPage(fn, ...args);
-    if (v) return v;
-    if (Date.now() > end) throw new Error(`waited ${ms / 1000} s for ${what}`);
+    const style = await api(`/api/dub/jobs/${jid}/subtitle_style`);
+    if (style.preset === preset) return Date.now() - t0;
+    if (Date.now() - t0 > 10000) throw new Error(`job ${jid}'s saved look is ${style.preset}, not ${preset}, 10 s after the press`);
     await sleep(250);
   }
 }
-async function api(path) {
-  const r = await fetch(origin + path, { signal: AbortSignal.timeout(10000) });
-  if (!r.ok) throw new Error(`GET ${path}: ${r.status}`);
-  return r.json();
+// The Download dialog opened by its button, and its rows as drawn.
+async function openExport() {
+  await click("#exportBtn");
+  return waitFor("the Download dialog and its rows", 10000, () => {
+    if (!document.querySelector("#exportOverlay").classList.contains("open")) return null;
+    const list = [...document.querySelectorAll("#exportList a[data-row]")];
+    return list.length ? list.map((a) => ({ id: a.dataset.row, ticked: a.getAttribute("aria-checked") === "true",
+                                            label: a.textContent.trim() })) : null;
+  });
 }
-
-const shown = (s) => { const el = document.querySelector(s); return !!el && el.getClientRects().length > 0; };
-const pressable = (s) => { const el = document.querySelector(s); return !!el && el.getClientRects().length > 0 && !el.disabled; };
-const isOpen = (s) => document.querySelector(s).classList.contains("open");
-const isClosed = (s) => !document.querySelector(s).classList.contains("open");
-const onHome = () => document.body.dataset.screen === "home" && !document.querySelector("#screen-home").hidden;
-// What a person would hit at (x, y): a dialog or a toast over the button takes the click instead.
-const HIT = function (x, y) {
-  const hit = document.elementFromPoint(x, y);
-  if (hit && (hit === this || this.contains(hit))) return "";
-  return hit ? hit.tagName.toLowerCase() + (hit.id ? `#${hit.id}` : "") + [...hit.classList].map((c) => `.${c}`).join("") : "nothing";
-}.toString();
-
-// A press and a release at the middle of the element's box. No mouse move
-// first: on a window that another one covers, the page takes a move only
-// with its next frame, which does not come (5 s a move, measured 2026-10-21),
-// while a press and a release are taken at once.
-async function click(sel, ms = 10000) {
-  await waitFor(`${sel} to be pressable`, ms, pressable, sel);
-  const { result } = await send("Runtime.evaluate", { expression: `document.querySelector(${JSON.stringify(sel)})`, objectGroup: "e2e" });
-  await send("DOM.scrollIntoViewIfNeeded", { objectId: result.objectId });
-  const b = (await send("DOM.getBoxModel", { objectId: result.objectId })).model.border;
-  const x = (b[0] + b[2] + b[4] + b[6]) / 4, y = (b[1] + b[3] + b[5] + b[7]) / 4;
-  const over = (await send("Runtime.callFunctionOn", { objectId: result.objectId, functionDeclaration: HIT,
-                                                       arguments: [{ value: x }, { value: y }], returnByValue: true })).result.value;
-  if (over) throw new Error(`${sel} is covered by ${over}`);
-  for (const type of ["mousePressed", "mouseReleased"]) {
-    await send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+// Its Download pressed: which rows came back saved and the line under them,
+// or null when it had not come back after 90 s.
+async function downloadTicked() {
+  await click("#exportGoBtn");
+  return waitFor("the export to finish", 90000, () => {
+    if (document.querySelector("#exportGoBtn").disabled) return null;
+    return { saved: [...document.querySelectorAll("#exportList a.saved")].map((a) => a.dataset.row),
+             where: document.querySelector("#exportWhere").textContent.trim() };
+  }).catch(() => null);
+}
+async function closeExport() {
+  await click("#exportCloseBtn");
+  await waitFor("the Download dialog to close", 5000, isClosed, "#exportOverlay");
+}
+// A job's saved files, out of the person's Downloads and into the run's
+// folder, so a nightly run leaves nothing behind there -- and only ever out of
+// this run's own folder: [name, path, bytes] for each.
+function moveOut(job, project, count, into) {
+  if (job.project !== project) throw new Error(`the job's project is "${job.project}", not ${project}; Downloads left alone`);
+  const dir = join(homedir(), "Downloads", job.day, job.project);
+  const files = existsSync(dir) ? readdirSync(dir).filter((f) => !f.startsWith(".")) : [];
+  if (files.length !== count) throw new Error(`${dir} holds ${files.length} file(s) for ${count} saved`);
+  mkdirSync(join(out, into), { recursive: true });
+  const moved = [];
+  for (const f of files) {
+    const size = statSync(join(dir, f)).size;
+    if (!size) throw new Error(`${f} was saved empty`);
+    copyFileSync(join(dir, f), join(out, into, f));
+    unlinkSync(join(dir, f));
+    moved.push([f, join(out, into, f), size]);
   }
+  for (const d of [dir, dirname(dir)]) {
+    try { rmdirSync(d); } catch { /* not empty: something else is kept there */ }
+  }
+  return moved;
 }
-// A <select> opens a native menu on macOS that CDP cannot press, so the
-// option is picked the way that menu leaves it: the value, then the input
-// and change events the page listens for. Nothing fires when it is on it already.
-async function choose(sel, value) {
-  const ok = await inPage((s, v) => {
-    const el = document.querySelector(s);
-    if (!el || ![...el.options].some((o) => o.value === v)) return false;
-    if (el.value !== v) {
-      el.value = v;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    return true;
-  }, sel, value);
-  if (!ok) throw new Error(`${sel} has no option ${value}`);
-}
-async function shot(name) {
-  const { data } = await send("Page.captureScreenshot", { format: "png" });
-  writeFileSync(join(out, `${name}.png`), Buffer.from(data, "base64"));
-  return `${name}.png`;
-}
-// The first of a step's areas that is on screen: a failed dub shows its card,
-// not the table. Only areas named here, never the Settings dialog as a whole,
-// which can hold account details.
-const snippet = (looks) => inPage((sels) => {
-  const els = sels.map((s) => document.querySelector(s)).filter(Boolean);
-  const el = els.find((e) => e.getClientRects().length > 0) || els[0];
-  const html = el ? el.outerHTML.replace(/<!--[\s\S]*?-->/g, "").replace(/\s+/g, " ") : `(none of ${sels})`;
-  return `screen=${document.body.dataset.screen} ${html.slice(0, 1500)}`;
-}, looks);
-
 // ---- the app as it stands --------------------------------------------------
-await send("Page.enable");
-const page = await inPage(() => ({ lang: document.documentElement.lang || "en", width: innerWidth, height: innerHeight,
-                                   visibility: document.visibilityState }));
-// The page's words, looked up the way its own t() does: the English is the key.
-const words = page.lang === "en" ? {}
-  : await (await fetch(`${origin}/i18n/ui.${page.lang}.json`, { signal: AbortSignal.timeout(10000) })).json();
-const tr = (key) => (Object.hasOwn(words, key) ? words[key] : key);
 // Step 3's picks are remembered for the person's next project; the run puts
-// back what was there before it.
+// back what was there before it. Every pick that can spend Perso credits
+// (dubbing, audio separation, speech-to-text) is set to this computer, so a run
+// spends none; the translator is the app's own unless --translator names one.
 const savedChoices = await js(`localStorage.getItem(${JSON.stringify(CHOICES_KEY)})`);
-const run = { jobId: "", job: null };
+const savedTicks = await js(`localStorage.getItem(${JSON.stringify(TICKS_KEY)})`);
+const run = { jobId: "", job: null, capJobId: "" };
 
 // ---- the steps -------------------------------------------------------------
 async function homeStep() {
@@ -180,7 +135,7 @@ async function homeStep() {
   if (dialog) throw new Error(`#${dialog} is open; the run starts with no dialog in the way`);
   if (!(await inPage(onHome))) await click("#homeBtn");
   await waitFor("the Home screen", 10000, onHome);
-  for (const sel of ["#homePerso", "#homeGhName", "#homeDubCard", "#homeAudioCard", "#homeEraseCard", "#homeSaveCard"]) {
+  for (const sel of ["#homePerso", "#homeGhName", "#homeDubCard", "#homeEraseCard", "#homeCaptionsCard", "#homeSaveCard"]) {
     await waitFor(`${sel} on show`, 5000, shown, sel);
   }
   if (!(await js(`document.querySelector("#homePerso img").naturalWidth`))) throw new Error("the Perso pill's wordmark did not load");
@@ -208,34 +163,24 @@ async function settingsStep(snap) {
 async function newProjectStep(snap, base) {
   await click("#homeDubCard");
   await waitFor("the Dubbing tab's Import block", 10000, shown, "#dubbingZone .import-head");
-  // The block's click opens the file picker. Intercepted, the picker is not
-  // drawn; the page names its file input instead, and the video goes into it.
-  await send("Page.setInterceptFileChooserDialog", { enabled: true });
-  try {
-    const chooser = nextEvent("Page.fileChooserOpened", 5000);
-    chooser.catch(() => {});
-    await click("#dubbingZone .import-head");
-    const { backendNodeId } = await chooser;
-    await send("DOM.setFileInputFiles", { files: [video], backendNodeId });
-  } finally {
-    await send("Page.setInterceptFileChooserDialog", { enabled: false });
-  }
+  await feed("#dubbingZone .import-head", video);
   const ready = await waitFor("the draft card with Start lit", 120000, () => {
     const s = document.querySelector("#dubbingImportStatus");
     if (s.classList.contains("error") && s.textContent.trim()) return `refused: ${s.textContent.trim()}`;
     return !document.querySelector("#draftSetup").hidden && !document.querySelector("#draftStartBtn").disabled ? "ready" : "";
   });
   if (ready !== "ready") throw new Error(`the import was ${ready}`);
-  // The mode first: changing it refills the target list.
+  // The mode first: changing it refills the target list. Then separation and
+  // speech-to-text, which keep whatever the person last chose: Perso there
+  // spends credits (5 on one run's separation, 2026-10-21).
   await choose("#dubModeSelect", "local");
+  await choose("#sepSelect", "local");
+  await choose("#sttSelect", "local");
   await choose("#targetLangSelect", "ko");
   // Without --translator the dub keeps the one the app starts a new project
-  // on, which hangs on whoever used the app last; with it, Advanced options
-  // is opened with its own button and that translator picked.
-  if (opt.translator) {
-    if (!(await inPage(shown, "#translateSelect"))) await click("#advancedBtn");
-    await choose("#translateSelect", opt.translator);
-  }
+  // on, which hangs on whoever used the app last; with it, that translator is
+  // picked in its row, always in sight under Dubbing step settings.
+  if (opt.translator) await choose("#translateSelect", opt.translator);
   await shot(`${base}-draft`);
   const before = await js(`document.body.dataset.jobId || ""`);
   await click("#draftStartBtn");
@@ -254,6 +199,10 @@ async function newProjectStep(snap, base) {
   const j = run.job;
   if (j.language_code !== "ko" || j.dub_mode !== "local" || (opt.translator && j.translator !== opt.translator)) {
     throw new Error(`the dub went to ${j.language_code} via ${j.dub_mode} with ${j.translator}`);
+  }
+  if (j.separation === "perso" || j.stt_engine === "perso") {
+    throw new Error(`PERSO CREDITS ARE BEING SPENT: job ${run.jobId} separates with ${j.separation} and transcribes `
+      + `with ${j.stt_engine}, though both were set to this computer. Stop it in the app now`);
   }
   await snap();
   return { note: `${PROJECT}.mp4 → ko on this computer; job ${run.jobId} ${j.status}; `
@@ -296,7 +245,7 @@ async function dubStep(snap, base) {
     }
     return { rows: rows.length, kinds, header: head ? head.textContent.trim() : "",
              narrow: !!head && head.classList.contains("sc-h-len-narrow"),
-             noDot: rows.filter((r) => !r.querySelector(".sc-dot")).map((r) => r.dataset.line),
+             noDot: rows.filter((r) => !r.querySelector(".sc-dot, .sc-tick")).map((r) => r.dataset.line),
              legend: (document.querySelector("#timeline .tl-legend")?.textContent || "").replace(/\s+/g, " ").trim(),
              empty: (document.querySelector("#scriptBox .script-empty")?.textContent || "").trim() };
   });
@@ -304,7 +253,7 @@ async function dubStep(snap, base) {
   if (!c.rows) throw new Error(`the script table has no rows${c.empty ? `: ${c.empty}` : ""}`);
   const want = c.narrow ? tr("Length") : tr("Original / Translated (s)");
   if (c.header !== want) throw new Error(`the length column is headed "${c.header}", not "${want}"`);
-  if (c.noDot.length) throw new Error(`line(s) ${c.noDot.join(", ")} have no .sc-dot`);
+  if (c.noDot.length) throw new Error(`line(s) ${c.noDot.join(", ")} have no length mark (.sc-dot or .sc-tick)`);
   if (!c.legend.includes(tr("Much shorter"))) throw new Error(`the timeline legend reads "${c.legend}", without "${tr("Much shorter")}"`);
   const secs = (ms) => Math.round(ms / 1000);
   const took = began ? `${secs(began - t0)} s in the queue, dubbed in ${secs(Date.now() - began)} s`
@@ -313,53 +262,53 @@ async function dubStep(snap, base) {
     + `header "${c.header}"; legend has "${tr("Much shorter")}"` };
 }
 
-async function exportStep(snap) {
-  await click("#exportBtn");
-  const rows = await waitFor("the Export dialog and its rows", 10000, () => {
-    if (!document.querySelector("#exportOverlay").classList.contains("open")) return null;
-    const list = [...document.querySelectorAll("#exportList a[data-row]")];
-    return list.length ? list.map((a) => ({ id: a.dataset.row, ticked: a.getAttribute("aria-checked") === "true" })) : null;
+async function lookStep(snap, base) {
+  // A dub's subtitles start off (2026-10-23): the timeline's eye turns them
+  // on, and the chip just above them, while the video stands still, opens the
+  // twelve looks over the picture.
+  if (!(await inPage(() => document.querySelector("#tlSubEye").classList.contains("on")))) await click("#tlSubEye");
+  await click('#scriptBox .sc-row[data-line="1"] .sc-time');
+  await waitFor("the Subtitle style chip over the subtitle", 10000, () => !document.querySelector("#subOverlay").hidden
+    && !document.querySelector("#subStyleChip").hidden && document.querySelector("#doneVideo").paused);
+  await click("#subStyleChip");
+  const pop = await waitFor("the looks over the video", 5000, () => {
+    if (document.querySelector("#videoStylePop").hidden) return null;
+    const cards = [...document.querySelectorAll("#videoStyleGrid [data-preset]")];
+    return cards.length ? { looks: cards.length, label: document.querySelector("#videoStylePop .cap-label").textContent.trim(),
+                            sticker: document.querySelector('#videoStyleGrid [data-preset="sticker"] .cap-nm')?.textContent.trim() } : null;
   });
+  await shot(`${base}-looks`);
+  if (pop.looks !== 12) throw new Error(`Subtitle style opened ${pop.looks} looks, not 12`);
+  if (pop.sticker !== tr("Sticker")) throw new Error(`the sticker tile is named "${pop.sticker}", not "${tr("Sticker")}"`);
+  await click('#videoStyleGrid [data-preset="sticker"]');
+  await waitFor("the looks to close", 5000, () => document.querySelector("#videoStylePop").hidden);
+  const ms = await savedLook(run.jobId, "sticker");
+  const rows = await openExport();
+  await snap();
+  const want = [["subtitled", tr("Dubbed video with subtitles")], ["script", tr("Script (original + translation, .xlsx)")]];
+  for (const [id, label] of want) {
+    const row = rows.find((r) => r.id === id);
+    if (!row || !row.label.startsWith(label)) throw new Error(`no row "${label}" (${id}) among ${rows.map((r) => `${r.id} "${r.label}"`).join(", ")}`);
+  }
+  await closeExport();
+  return { note: `${pop.looks} looks under "${pop.label}"; ${tr("Sticker")} pressed, the panel closed, saved as sticker `
+    + `${ms} ms after; Download has ${rows.length} rows with "${want[0][1]}" and "${want[1][1]}"` };
+}
+
+async function exportStep(snap) {
+  const rows = await openExport();
   const ticked = rows.filter((r) => r.ticked).map((r) => r.id);
   if (!ticked.length) throw new Error("the Export dialog opened with nothing ticked");
-  await click("#exportGoBtn");
   // The desktop shell saves a dubbing's files into Downloads without asking.
   // Anything else -- a save window the shell had to fall back on, which CDP
   // cannot press -- leaves the dialog working, and the run says so.
-  let end;
-  try {
-    end = await waitFor("the export to finish", 90000, () => {
-      if (document.querySelector("#exportGoBtn").disabled) return null;
-      return { saved: [...document.querySelectorAll("#exportList a.saved")].map((a) => a.dataset.row),
-               where: document.querySelector("#exportWhere").textContent.trim() };
-    });
-  } catch {
-    await snap();
-    return { result: "needs the desktop shell", note: `rows ${rows.map((r) => r.id).join(", ")}; Export had not come back after 90 s` };
-  }
+  const end = await downloadTicked();
   await snap();
+  if (!end) return { result: "needs the desktop shell", note: `rows ${rows.map((r) => r.id).join(", ")}; Export had not come back after 90 s` };
   if (ticked.some((id) => !end.saved.includes(id))) throw new Error(`the export stopped: ${end.where}`);
-  // Out of the person's Downloads and into the run's folder, so a nightly run
-  // leaves nothing behind there -- and only ever out of this run's own folder.
   const job = await api(`/api/dub/jobs/${run.jobId}`);
-  if (job.project !== PROJECT) throw new Error(`the job's project is "${job.project}", not ${PROJECT}; Downloads left alone`);
-  const dir = join(homedir(), "Downloads", job.day, job.project);
-  const files = existsSync(dir) ? readdirSync(dir).filter((f) => !f.startsWith(".")) : [];
-  if (files.length !== ticked.length) throw new Error(`${dir} holds ${files.length} file(s) for ${ticked.length} saved`);
-  mkdirSync(join(out, "export"), { recursive: true });
-  const moved = [];
-  for (const f of files) {
-    const size = statSync(join(dir, f)).size;
-    if (!size) throw new Error(`${f} was saved empty`);
-    copyFileSync(join(dir, f), join(out, "export", f));
-    unlinkSync(join(dir, f));
-    moved.push(`${f} ${(size / 1e6).toFixed(2)} MB`);
-  }
-  for (const d of [dir, dirname(dir)]) {
-    try { rmdirSync(d); } catch { /* not empty: something else is kept there */ }
-  }
-  await click("#exportCloseBtn");
-  await waitFor("the Export dialog to close", 5000, isClosed, "#exportOverlay");
+  const moved = moveOut(job, PROJECT, ticked.length, "export").map(([f, , size]) => `${f} ${(size / 1e6).toFixed(2)} MB`);
+  await closeExport();
   return { note: `rows ${rows.map((r) => r.id).join(", ")}; saved ${moved.join(", ")} (moved into export/); "${end.where}"` };
 }
 
@@ -377,13 +326,110 @@ async function backHomeStep(snap) {
   return { note: `card ${PROJECT}: ${card}` };
 }
 
+async function captionsStep(snap, base) {
+  if (!(await inPage(onHome))) await click("#homeBtn");
+  await waitFor("the Home screen", 10000, onHome);
+  // Home's Burn in subtitles card: an empty new project on that tab, which takes a video and a subtitle file.
+  await click("#homeCaptionsCard");
+  await waitFor("the tab's Import block and subtitle file block", 10000, () =>
+    ["#capAlone", "#capZone", "#capSrtZone"].every((s) => document.querySelector(s)?.getClientRects().length > 0));
+  await feed("#capZone .import-head", capVideo);
+  const card = await waitFor("the video's card in the tab", 120000, () => {
+    const s = document.querySelector("#capImportStatus");
+    if (s.classList.contains("error") && s.textContent.trim()) return `refused: ${s.textContent.trim()}`;
+    return document.querySelector("#capVideoCard").getClientRects().length ? "ready" : "";
+  });
+  if (card !== "ready") throw new Error(`the video's import was ${card}`);
+  await feed("#capSrtZone", capSrt);
+  const files = await waitFor("the files row over the looks", 60000, () => {
+    const s = document.querySelector("#capImportStatus");
+    if (s.classList.contains("error") && s.textContent.trim()) return { refused: s.textContent.trim() };
+    if (!document.querySelector("#capFiles").getClientRects().length) return null;
+    const text = (id) => document.querySelector(id).textContent.trim();
+    return { job: document.body.dataset.jobId, screen: document.body.dataset.screen, srt: text("#capFileSrtName"),
+             lines: text("#capFileSrtLines"), video: text("#capFileVideo").replace(/\s+/g, " ") };
+  });
+  if (files.refused) throw new Error(`the subtitle file was refused: ${files.refused}`);
+  run.capJobId = files.job;
+  await shot(`${base}-files`);
+  const lines = tr("{n} lines", { n: CUES.length });
+  if (files.srt !== basename(capSrt) || files.lines !== lines) {
+    throw new Error(`the files row names "${files.srt}", "${files.lines}", not "${basename(capSrt)}", "${lines}"`);
+  }
+  const job = await api(`/api/dub/jobs/${files.job}`);
+  if (job.kind !== "captions" || job.status !== "done") throw new Error(`job ${files.job} is ${job.kind} ${job.status}, not a done captions job`);
+  await click('#subStyleMenu [data-preset="sticker"]');
+  const ms = await savedLook(files.job, "sticker");
+  const rows = await openExport();
+  const want = [["subtitled", tr("Video with subtitles")], ["srt", tr("Subtitles (.srt)")]];
+  if (rows.length !== 2 || want.some(([id, label], i) => rows[i].id !== id || !rows[i].label.startsWith(label))) {
+    throw new Error(`Download has ${rows.map((r) => `${r.id} "${r.label}"`).join(", ")}, not "${want[0][1]}" and "${want[1][1]}"`);
+  }
+  // Both ticked, the way a person ticks them.
+  for (const r of rows.filter((r) => !r.ticked)) {
+    await click(`#exportList a[data-row="${r.id}"]`);
+    await waitFor(`${r.id} ticked`, 5000, (id) => document.querySelector(`#exportList a[data-row="${id}"]`)
+      .getAttribute("aria-checked") === "true", r.id);
+  }
+  const end = await downloadTicked();
+  await snap();
+  if (!end) throw new Error("Download had not come back after 90 s");
+  if (want.some(([id]) => !end.saved.includes(id))) throw new Error(`the download stopped: ${end.where}`);
+  const moved = moveOut(job, CAP_PROJECT, 2, "export-captions");
+  const mp4 = moved.find(([f]) => f.endsWith(".mp4")), srt = moved.find(([f]) => f.endsWith(".srt"));
+  if (!mp4 || !srt) throw new Error(`saved ${moved.map(([f]) => f).join(", ")}: not one .mp4 and one .srt`);
+  const [got, input] = [seconds(mp4[1]), seconds(capVideo)];
+  if (Math.abs(got - input) > 1) throw new Error(`${mp4[0]} is ${got.toFixed(2)} s, the video ${input.toFixed(2)} s`);
+  const cues = (readFileSync(srt[1], "utf8").match(/-->/g) || []).length;
+  if (cues !== CUES.length) throw new Error(`${srt[0]} has ${cues} cues, not ${CUES.length}`);
+  await closeExport();
+  return { note: `job ${files.job} (${job.kind}); files row "${files.video}" + "${files.srt}" "${files.lines}"; `
+    + `${tr("Sticker")} saved ${ms} ms after; Download rows "${want[0][1]}", "${want[1][1]}"; saved ${mp4[0]} `
+    + `${got.toFixed(2)} s (video ${input.toFixed(2)} s), ${srt[0]} ${cues} cues (moved into export-captions/)` };
+}
+
+async function captionsDubStep(snap, base) {
+  // Its Dubbing tab is one card, whose button opens a new project on the same video.
+  await click('#leftTabs [data-tab="dubbing"]');
+  const said = await waitFor("the Dubbing tab's card", 10000, () => {
+    const b = document.querySelector("#dubbingCaptionsBtn");
+    return b && b.getClientRects().length ? b.textContent.trim() : "";
+  });
+  await shot(`${base}-card`);
+  if (said !== tr("Prepare this video for dubbing")) throw new Error(`the card's button reads "${said}", not "${tr("Prepare this video for dubbing")}"`);
+  await click("#dubbingCaptionsBtn");
+  const prep = await waitFor("the prep screen with Back", 60000, () => {
+    const error = document.querySelector("#dubbingCaptionsError").textContent.trim();
+    if (error) return { refused: error };
+    const on = (id) => document.querySelector(id).getClientRects().length > 0;
+    return on("#draftSetup") && on("#draftBackBtn") && !document.body.dataset.jobId
+      ? { back: document.querySelector("#draftBackBtn").textContent.trim(), start: document.querySelector("#draftStartBtn").textContent.trim() }
+      : null;
+  });
+  if (prep.refused) throw new Error(`the button was refused: ${prep.refused}`);
+  // The screenshot shows the way back, which sits at the top of the prep card.
+  await js(`document.querySelector("#draftBackBtn").scrollIntoView({ block: "center" })`);
+  await snap();
+  if (prep.back !== tr("Back")) throw new Error(`the prep screen's way back reads "${prep.back}", not "${tr("Back")}"`);
+  await click("#draftBackBtn");
+  await waitFor("the subtitles project again", 15000, (jid) => document.body.dataset.jobId === jid
+    && document.body.dataset.screen === "done", run.capJobId);
+  // The run ends where it began.
+  await click("#homeBtn");
+  await waitFor("the Home screen", 10000, onHome);
+  return { note: `card button "${said}"; prep screen with "${prep.back}" and "${prep.start}"; ${prep.back} reopened job ${run.capJobId}; Home` };
+}
+
 const STEPS = [
   { id: "home", title: "Home", look: [".home-side"], run: homeStep },
   { id: "settings", title: "Settings > Models", look: ["#settingsPanel-models"], run: settingsStep },
   { id: "new-project", title: "New dubbing into Korean", look: ["#draftSetup", "#dubbingImport"], run: newProjectStep },
   { id: "dub", title: "Dub finished: script and timeline", look: ["#doneFail", "#scriptBox"], run: dubStep },
+  { id: "look", title: "Subtitles on, the Subtitle style chip, Sticker", look: ["#videoStylePop", "#exportOverlay"], run: lookStep },
   { id: "export", title: "Export", look: ["#exportOverlay"], run: exportStep },
   { id: "back-home", title: "Home again, new card", look: ["#projectsGrid"], run: backHomeStep },
+  { id: "captions", title: "Burn in subtitles from Home: video + .srt, Sticker, Download", look: ["#capAlone", "#capFiles", "#exportOverlay"], run: captionsStep },
+  { id: "captions-dub", title: "Its Dubbing tab: prepare for dubbing, Back", look: ["#dubbingCaptions", "#draftSetup"], run: captionsDubStep },
 ];
 
 // ---- the run ---------------------------------------------------------------
@@ -413,10 +459,12 @@ try {
     console.log(`   ${r.result}, ${r.seconds} s: ${r.note}`);
   }
 } finally {
-  await inPage((key, value) => { if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); },
-               CHOICES_KEY, savedChoices).catch((e) => console.error(`could not put back ${CHOICES_KEY}: ${e.message}`));
+  for (const [key, saved] of [[CHOICES_KEY, savedChoices], [TICKS_KEY, savedTicks]]) {
+    await inPage((k, value) => { if (value === null) localStorage.removeItem(k); else localStorage.setItem(k, value); },
+                 key, saved).catch((e) => console.error(`could not put back ${key}: ${e.message}`));
+  }
   await send("Runtime.releaseObjectGroup", { objectGroup: "e2e" }).catch(() => {});
-  ws.close();
+  app.close();
 }
 
 // ---- the report ------------------------------------------------------------

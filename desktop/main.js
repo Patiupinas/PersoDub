@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { killStalePids } from "./src/orchestrator.js";
 import { markCleanExit, takeCleanExit } from "./src/cleanExit.js";
 import { createReporter } from "./src/reporting.js";
+import { analyticsFile, keepDevice } from "./src/analytics.js";
 import { usageCounter, registerUsageIpc } from "./src/usageIpc.js";
 import { createUpdater } from "./src/updateFlow.js";
 import { createBoot, findPayloadDir } from "./src/bootFlow.js";
@@ -80,9 +81,10 @@ const boot = createBoot({
   sendReport: reporter.sendReport, flushReports: reporter.flushReports, startUpdater: updater.startUpdater,
 });
 
-// The page's remember-job and reveal are answered from the first moment; the
-// download naming they feed is attached once the app is ready, below.
-const downloads = registerDownloadIpc({ app, ipcMain, shell, ctx, shellLog });
+// The page's remember-job, reveal and download folder are answered from the
+// first moment; the download naming they feed is attached once the app is
+// ready, below.
+const downloads = registerDownloadIpc({ app, ipcMain, shell, dialog, ctx, shellLog });
 
 app.whenReady().then(() => {
   // A second launch already quit above; nothing here may run for it -- there
@@ -94,6 +96,10 @@ app.whenReady().then(() => {
   shellLog(`PERSODUB_VERSION ${app.getVersion()}`);
   // ...and the edition, so a support log says which repository this build updates from.
   shellLog(`PERSODUB_EDITION ${edition} ${EDITIONS[edition]}`);
+
+  // This computer's random id, made on the first launch and kept: every report
+  // and job record names the computer by it (src/analytics.js keepDevice).
+  keepDevice(analyticsFile(app));
 
   // The computer's language, read once it can be (app.getLocale needs the app
   // ready); the kit's own setting is laid over it when the boot finds the kit.

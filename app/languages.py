@@ -1,8 +1,8 @@
 """The languages a dub can be made in, per path.
 
 Local dubbing knows the ten Qwen3-TTS speaks (config.LANGUAGE_NAMES). Perso's
-cloud dubbing knows what Perso says it knows: 111 entries on 2026-10-02,
-some of them regional variants told apart by a tag (en-GB, es-ES, pt-PT).
+cloud dubbing knows what Perso says it knows: 116 entries (106 languages) on
+2026-10-19, some of them regional variants told apart by a tag (en-GB, es-ES, pt-PT).
 The screen sends one id per language -- the tag when there is one, else the
 code -- and this module turns it back into what each path needs. A Perso
 entry also names the voice models that language can be dubbed with
@@ -21,7 +21,7 @@ from typing import Optional
 
 from app import config
 from app.i18n import t
-from app.perso_client import DEFAULT_TTS_MODEL, TTS_MODEL_RE, TTS_MODELS, model_label
+from app.perso_client import DEFAULT_TTS_MODEL, FALLBACK_TTS_MODEL, TTS_MODEL_RE, TTS_MODELS, model_label
 
 BUNDLED = os.path.join(os.path.dirname(__file__), "perso_languages.json")
 CACHE_NAME = "perso_languages.json"
@@ -47,7 +47,7 @@ def _with_ids(entries) -> list:
     # A list kept or shipped before models were (the AUDIO_ENGINE_V3 one)
     # names none: those languages are ORIOLE's.
     return [{"id": (e.get("tag") or e["code"]), "code": e["code"], "name": e["name"], "tag": e.get("tag"),
-             "models": _offered(e.get("models")) or [DEFAULT_TTS_MODEL]}
+             "models": _offered(e.get("models")) or [FALLBACK_TTS_MODEL]}
             for e in entries if e.get("code") and e.get("name")]
 
 
@@ -134,11 +134,11 @@ def lookup(dub_mode: str, lang_id: str) -> Optional[dict]:
 def model_for(entry: dict, wanted: Optional[str] = None) -> str:
     """The Perso voice model a dubbing into this language is made with: the
     one asked for when the language has it (ValueError naming both when it
-    does not), else ORIOLE, else the first the language has."""
-    models = entry.get("models") or [DEFAULT_TTS_MODEL]
+    does not), else LINNET_4, else ORIOLE, else the first the language has."""
+    models = entry.get("models") or [FALLBACK_TTS_MODEL]
     wanted = (wanted or "").strip().upper()
     if not wanted:
-        return DEFAULT_TTS_MODEL if DEFAULT_TTS_MODEL in models else models[0]
+        return next((m for m in (DEFAULT_TTS_MODEL, FALLBACK_TTS_MODEL) if m in models), models[0])
     if wanted not in models:
         # No colon before the list: the failed-job line cuts a sentence at
         # its first ": ", and the models it can be dubbed with were lost.

@@ -48,6 +48,15 @@ export const ERROR_CODES = [
   "certificate",
   "unknown",
 ];
+// A finished job's record (POST /record, 0.8.8): the three kinds of job, and
+// how long one took, by the names the app sends it under (its usage counts'
+// own, desktop/src/analytics.js timingSeconds) -> the short ones the private
+// dashboard reads off the stored archive (logSummary). Checked against the
+// app in the test.
+export const RECORD_KINDS = ["dub", "erase", "separate"];
+export const TIMING_KEYS = {
+  elapsed_seconds: "elapsed", sep_seconds: "sep", stt_seconds: "stt", translate_seconds: "translate", voice_seconds: "voice",
+};
 export const PLATFORM_KEYS = ["mac", "win-gpu", "win-cpu"];
 export const EDITIONS = ["opensource", "production"];
 
@@ -103,6 +112,9 @@ export function maskAgain(text) {
     .replace(/\bAIza[A-Za-z0-9_-]{10,}/g, "[REDACTED]")
     .replace(/\bghp_[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
     .replace(/\bhf_[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
+    // A report's device field inside a log tail, where the app's debug print
+    // of a report leaves it: that field is for the private dashboard only.
+    .replace(/("device":")[0-9a-f]{12}"/g, '$1[REDACTED]"')
     .replace(HOME_RE, "~")
     // Only outside a path, the same guard the app uses: the app deliberately
     // keeps the kit's own paths readable (which model, which venv), and a
@@ -202,6 +214,11 @@ export function validateReport(raw, { maxBytes = MAX_REPORT_BYTES } = {}) {
     kind: oneOf(raw.kind, KINDS, "unknown"),
     version: raw.version,
     installId: raw.installId,
+    // The first twelve characters of the app's usage id (0.8.7), sent while
+    // its counts were on and, from 0.8.8, with every report and record.
+    // logSummary carries it to the private dashboard; the issue, its title,
+    // labels and tally never read it.
+    device: typeof raw.device === "string" && /^[0-9a-f]{12}$/.test(raw.device) ? raw.device : "",
     fingerprint: raw.fingerprint,
     step: SAFE_ID_RE.test(raw.step || "") ? raw.step : "",
     stage: SAFE_ID_RE.test(raw.stage || "") ? raw.stage : "",
@@ -236,6 +253,31 @@ export function validateReport(raw, { maxBytes = MAX_REPORT_BYTES } = {}) {
   };
   if (JSON.stringify(report).length > maxBytes) return { ok: false, reason: "too large" };
   return { ok: true, report };
+}
+
+/**
+ * A finished job's record (desktop/src/report.js, code "ok"), rebuilt the way
+ * a report is and then held to what a record says: one of the three kinds of
+ * job, the stage "done", the code "ok", and how long it took, whole seconds
+ * under the names in TIMING_KEYS and nothing else. It never becomes an issue
+ * (report-worker.js handleRecord).
+ */
+export function validateRecord(raw, opts = {}) {
+  const checked = validateReport(raw, opts);
+  if (!checked.ok) return checked;
+  const given = typeof raw === "string" ? JSON.parse(raw) : raw;
+  const timing = given.timing && typeof given.timing === "object" ? given.timing : {};
+  return {
+    ok: true,
+    record: {
+      ...checked.report,
+      kind: oneOf(given.kind, RECORD_KINDS, "unknown"),
+      stage: "done",
+      code: "ok",
+      timing: Object.fromEntries(Object.keys(TIMING_KEYS).filter((f) => Number.isInteger(timing[f]) && timing[f] >= 0)
+        .map((f) => [f, timing[f]])),
+    },
+  };
 }
 
 /** "An" before erase, install, agent and unknown; "A" before dub. Three of
@@ -289,8 +331,16 @@ function details(title, body) {
 /** What the private dashboard shows beside an archive, so a list of them can
  *  be read without opening any. Written when the report arrives (which is the
  *  only time these facts are in hand) and copied onto the stored object. Short
- *  strings only: this rides along as R2 metadata, which is capped. */
-export function logSummary(report, issue) {
+ *  strings only: this rides along as R2 metadata, which is capped.
+ *  `priorState` is the state GitHub gave the issue a repeat was counted on
+ *  ("open" or "closed"; empty for a new issue), and `reopened` whether this
+ *  report reopened it (report-worker.js: only one closed as fixed).
+ *  `outcome` is "failed" for a failure and "ok" for a finished job's record
+ *  (validateRecord, code "ok"), which also carries how long the job took:
+ *  whole seconds under the short names in TIMING_KEYS, empty for a step that
+ *  did not run (the dashboard's contract, 2026-10-22). */
+export function logSummary(report, issue, { priorState = "", reopened = false } = {}) {
+  const ok = report.code === "ok";
   return {
     issue: String(issue ?? ""),
     kind: report.kind || "unknown",
@@ -303,6 +353,12 @@ export function logSummary(report, issue) {
     ram: report.env.ramGb == null ? "" : String(report.env.ramGb),
     disk: report.env.freeDiskGb == null ? "" : String(report.env.freeDiskGb),
     version: report.version || "",
+    device: report.device || "",
+    priorState: String(priorState || ""),
+    reopened: reopened ? "true" : "",
+    outcome: ok ? "ok" : "failed",
+    ...(ok ? Object.fromEntries(Object.entries(TIMING_KEYS)
+      .map(([field, key]) => [key, report.timing[field] == null ? "" : String(report.timing[field])])) : {}),
   };
 }
 
@@ -526,6 +582,18 @@ export function commentText(report, { logsRef = "" } = {}) {
   return logsRef ? `${line}\n\n${logsLine(logsRef)}` : line;
 }
 
+/** The one comment a sighting on a closed issue adds, reopened or not
+ *  (report-worker.js decides):
+ *  "Seen again on 0.7.0, windows 10.0.26100, after the issue was closed."
+ *  The version and the system and nothing else: the device number belongs to
+ *  the private dashboard (2026-10-21). The system is kept to the characters a
+ *  system's name has, because it comes from the request and a new comment
+ *  that says "@someone" notifies them. */
+export function seenAgainText(report) {
+  const os = String(report.env.os || "").replace(/[^\w .()-]/g, "").trim();
+  return `Seen again on ${[report.version, os].filter(Boolean).join(", ")}, after the issue was closed.`;
+}
+
 /** The issue is public, so it never carries a link to the archive: a signed
  *  URL written here would let anybody who reads the issue download somebody
  *  else's logs for as long as the signature lasts. It names the archive
@@ -574,7 +642,8 @@ export function newId(random = crypto.getRandomValues.bind(crypto)) {
 
 /** Where one report's logs live in the bucket: "2026-09/<fingerprint>/<id>.tar.gz".
  *  By month first so a lifecycle rule (or a person) can see and drop a whole
- *  month, and by fingerprint under it so one bug's evidence sits together. */
+ *  month, and by fingerprint under it so one bug's evidence sits together. A
+ *  finished job's record has "ok" in the fingerprint's place (report-worker.js). */
 export function logObjectKey({ fingerprint, id, now = Date.now() }) {
   return `${dayKey(now).slice(0, 7)}/${fingerprint}/${id}.tar.gz`;
 }

@@ -45,7 +45,7 @@
 
 ### Dub
 
-One video in, one dubbed video out, in each speaker's own voice. 10 languages on your computer, 100+ with the Perso API.
+One video in, one dubbed video out, in each speaker's own voice. 10 languages on your computer, 100+ with the Perso API, depending on the dubbing model.
 
 </td>
 <td width="50%" valign="top">
@@ -61,11 +61,9 @@ Box the subtitles, press **Erase**, and dub the clean video.
 <tr>
 <td width="50%" valign="top">
 
-<img src="docs/images/separate-screen.png" alt="The separate audio screen: the voice and the background as two tracks, ready to export" />
+### Burn in subtitles
 
-### Separate audio
-
-Split a video into the voice and the background. Export either one, or dub from there.
+Put a subtitle file on a video in the look you choose.
 
 </td>
 <td width="50%" valign="top">
@@ -119,7 +117,7 @@ Listen for pacing: PersoDub fits the translation to the time instead of speeding
 
 **Updating from 0.8.4 or earlier?** Download and install the latest version once. From 0.8.5 on, PersoDub updates itself.
 
-Start dubbing uses this computer by default and needs no key. Speech-to-text uses Whisper unless you choose Perso API, and on a new install translation uses ChatGPT through your own sign-in. To keep everything on your computer, open **Advanced options** and set **Translation** to **Hunyuan** or **Gemma 3**. To dub with the Perso API instead, save a free [Perso API key](docs/configuration.md) and set **Dubbing** to **Perso API**.
+Start dubbing uses this computer by default and needs no key. Speech-to-text uses Whisper unless you choose Perso API, and on a new install translation uses ChatGPT through your own sign-in. To keep everything on your computer, set **Translation**, under **Dubbing step settings**, to **Hunyuan** or **Gemma 3**. To dub with the Perso API instead, save a free [Perso API key](docs/configuration.md) and set **Choose a model** to **Perso API**.
 
 First setup is under 1 GB. A Perso API dub downloads nothing more. The first dub on this computer downloads Python + PyTorch and the models: about 10 GB on a Mac, 17 GB on a Windows PC with an NVIDIA GPU, 9 GB without one. A local translator adds 1.6 to 10 GB and the subtitle eraser 4.4 to 9.3 GB, so keep 30 GB free, 40 GB on Windows with an NVIDIA GPU. [Full table](docs/requirements.md)
 
@@ -154,7 +152,7 @@ Repository: https://github.com/stronghamjji/PersoDub
    a free Perso API key, for better transcription or the Perso API. If yes, open
    https://perso.ai/dubbing?utm_source=desktop_app_github&utm_medium=desktop-app&utm_campaign=desktop_app&utm_content=install_prompt
    then open PersoDub's Settings so I can paste the key in myself. Never ask to see it.
-   For a Perso API dub, set Advanced options > Dubbing to Perso API.
+   For a Perso API dub, set Choose a model to Perso API.
 5. Dub one video under a minute with me. Before a first dub on this computer, tell me
    the download size (9-17 GB).
    If I pick ChatGPT for translation, I sign in myself. A free account is enough.
@@ -168,14 +166,14 @@ Finish the setup, not just a plan. Tell me any step you could not do.
 - **Fix any line after the dub.** Change the words, the speaker or the voice of one line and only that line is remade. Cut on the timeline, or tell the Dub Agent what to fix.
 - **Fits the words to the time.** Other tools speed the audio up. On this computer, PersoDub fits the translation instead, and speeds a line up (10% at most) only when it would run into the next one.
 - **Voice cloning, not narration.** Each speaker still sounds like themselves.
-- **Everything else is kept.** Music and effects stay. The translated `.srt` comes with the video, or burn it in from the Captions tab.
+- **Everything else is kept.** Music and effects stay. The translated `.srt` comes with the video, or burn it in, in the look you pick with **Subtitle style**.
 
 ## Details
 
 | | |
 |---|---|
 | **Requirements** | Apple Silicon Mac or 64-bit Windows · 16 GB memory recommended · 30 GB free disk, 40 GB on Windows with an NVIDIA GPU. [Full table](docs/requirements.md) |
-| **Languages** | 10 on your computer, 100+ with the Perso API. [Full list](docs/languages.md) |
+| **Languages** | 10 on your computer, 100+ with the Perso API, depending on the dubbing model. [Full list](docs/languages.md) |
 | **Translation** | A local model, or ChatGPT for free. No subscription. [Configuration](docs/configuration.md) |
 | **Better quality** | A free Perso key: better transcription, less to download. [Configuration](docs/configuration.md) |
 | **Privacy** | By default the video is dubbed on this computer. With Whisper and a local translator, it stays here; the Perso API, if you choose it, uploads it. [What is sent](docs/privacy.md) |

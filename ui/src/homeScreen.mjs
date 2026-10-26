@@ -6,7 +6,7 @@
 // (see projects.mjs), so the sidebar, the queue card and this grid all repaint
 // off one fetch.
 //
-// Owns #projectsGrid, #projectsCount, #projectSearchBtn/#projectSearchBox/
+// Owns #projectsGrid, #projectsCount, #projectFoldBtn, #projectSearchBtn/#projectSearchBox/
 // #projectSearchInput and the "..." card menu (#projectCardMenu with
 // #projectMenuRename/#projectMenuDelete). Delete reuses the page's own
 // confirm dialog through onDeleteJob, exactly as the sidebar's Delete button
@@ -26,6 +26,9 @@ import { lucide } from "./icons.mjs";
 import { isErase, isSeparate, doingWord, projectMeta, shownName } from "./projects.mjs";
 import { groupProjects, projectKey, projectLanguages, languageLabel } from "./languageRow.mjs";
 import { t } from "./i18n.mjs";
+
+// Where Collapse is remembered: "1" while the grid is folded away.
+export const FOLD_KEY = "persodub.home.projectsFolded";
 
 // The chip's colour follows the same states the sidebar's dot does
 // (JOB_DOT in projects.mjs) -- done gets no chip at all, a finished card
@@ -50,12 +53,14 @@ const CHIP = {
  *        did not work (a rename the server refused)
  * @param {(downloadId: string) => void} [deps.onOpenDraft]  open a kept draft again
  * @param {(draft: object) => void} [deps.onDeleteDraft]  ask, then let it go
+ * @param {{getItem: Function, setItem: Function}} [deps.storage]  where the
+ *        grid's being folded is remembered
  * @returns {{renderProjects: (jobs: object[]) => void,
  *            renderDrafts: (drafts: object[]) => void,
  *            setRunningPct: (jobId: string, pct: number|null) => void}}
  */
 export function initHomeScreen({ $, langName, onOpenJob, onDeleteJob, onError = () => {},
-                                 onOpenDraft = () => {}, onDeleteDraft = () => {} }) {
+                                 onOpenDraft = () => {}, onDeleteDraft = () => {}, storage = null }) {
   let jobs = [];
   let drafts = [];
   let menuDraftId = null;
@@ -94,6 +99,9 @@ export function initHomeScreen({ $, langName, onOpenJob, onDeleteJob, onError = 
   const thumbImg = (job) => `<img class="proj-img" src="/api/dub/jobs/${encodeURIComponent(job.id)}/thumb" loading="lazy" alt=""
              onerror="this.remove()">`;
 
+  // The eraser on an erase's card, and on a draft's left on the Erase tab.
+  const eraseKind = () => `<span class="proj-kind" title="${t("Erase subtitles")}"><svg viewBox="0 0 24 24" width="12" height="12"><rect x="2.5" y="5" width="15" height="11" rx="2"/><path d="M13.5 21l6.8-6.8a1.6 1.6 0 0 0 0-2.3l-1.7-1.7a1.6 1.6 0 0 0-2.3 0L9.5 17z"/></svg></span>`;
+
   function cardHtml(members) {
     const job = members[0];
     const chip = cardChip(job);
@@ -105,7 +113,7 @@ export function initHomeScreen({ $, langName, onOpenJob, onDeleteJob, onError = 
     return `<div class="proj-card" data-job="${escapeHtml(job.id)}" tabindex="0" role="button" aria-label="${t("Open {name}", { name: escapeHtml(name) })}">
       <div class="proj-thumb">
         ${thumbImg(job)}
-        ${isErase(job) ? `<span class="proj-kind" title="${t("Erase subtitles")}"><svg viewBox="0 0 24 24" width="12" height="12"><rect x="2.5" y="5" width="15" height="11" rx="2"/><path d="M13.5 21l6.8-6.8a1.6 1.6 0 0 0 0-2.3l-1.7-1.7a1.6 1.6 0 0 0-2.3 0L9.5 17z"/></svg></span>` : ""}
+        ${isErase(job) ? eraseKind() : ""}
         ${isSeparate(job) ? `<span class="proj-kind" title="${t("Separate audio")}"><svg viewBox="0 0 24 24" width="12" height="12"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg></span>` : ""}
         ${chip ? `<span id="projChip-${escapeHtml(job.id)}" class="proj-chip proj-chip-${chip[1]}">${escapeHtml(chip[0])}</span>` : ""}
         ${dur ? `<span class="proj-dur">${escapeHtml(dur)}</span>` : ""}
@@ -121,6 +129,12 @@ export function initHomeScreen({ $, langName, onOpenJob, onDeleteJob, onError = 
   // How many seconds of a draft its cuts keep.
   const keptOf = (d) => d.ranges.reduce((s, [a, b]) => s + (b - a), 0);
 
+  // What a draft was being made into (2026-10-21): one left on the Erase
+  // tab says so; one left on Dubbing is not dubbed yet. The English is
+  // the Dubbing card's way of saying it: "Erase subtitles · Not finished" ran
+  // past the card's 124px (2026-10-22). The Korean names the tool.
+  const draftMeta = (d) => (d.tab === "erase" ? t("Not erased yet") : t("Not dubbed yet"));
+
   // A kept draft: a frame of its video (the held file itself, stopped near
   // its start -- a draft has no thumbnail made for it), how much of it the
   // cuts kept, and "Draft" where a project says what state it is in.
@@ -131,11 +145,12 @@ export function initHomeScreen({ $, langName, onOpenJob, onDeleteJob, onError = 
       <div class="proj-thumb">
         <video class="proj-img" src="/api/downloads/${encodeURIComponent(d.downloadId)}/video#t=0.5" preload="metadata"
                muted playsinline tabindex="-1" onerror="this.remove()"></video>
+        ${d.tab === "erase" ? eraseKind() : ""}
         <span class="proj-chip proj-chip-muted">${t("Draft")}</span>
         <span class="proj-dur">${escapeHtml(fmtLength(kept))}</span>
       </div>
       <div class="proj-row">
-        <div class="proj-info"><div class="proj-name">${escapeHtml(name)}</div><div class="proj-meta">${t("Not dubbed yet")}</div></div>
+        <div class="proj-info"><div class="proj-name">${escapeHtml(name)}</div><div class="proj-meta">${escapeHtml(draftMeta(d))}</div></div>
         <button class="proj-more" type="button" data-more-draft="${escapeHtml(d.downloadId)}"
                 aria-haspopup="menu" aria-label="${t("More for {name}", { name: escapeHtml(name) })}">${lucide("ellipsis", 14)}</button>
       </div>
@@ -256,7 +271,8 @@ export function initHomeScreen({ $, langName, onOpenJob, onDeleteJob, onError = 
     const all = projects.length + drafts.length;
     if ($("projectsCount")) $("projectsCount").textContent = !all ? ""
       : q ? t("{shown} of {all}", { shown: shown.length + shownDrafts.length, all }) : String(all);
-    const layout = JSON.stringify([q, renamingId, shownDrafts.map((d) => d.downloadId), shown.map((m) => m[0].id)]);
+    // A draft's tab is in it: the card's eraser and words change with it.
+    const layout = JSON.stringify([q, renamingId, shownDrafts.map((d) => [d.downloadId, d.tab]), shown.map((m) => m[0].id)]);
     // Patched, not drawn again: a redraw loaded every draft's <video> again (it flickered) and lost clicks.
     if (layout === drawn && (shown.length || shownDrafts.length)) {
       for (const card of grid.querySelectorAll(".proj-card")) {
@@ -351,6 +367,26 @@ export function initHomeScreen({ $, langName, onOpenJob, onDeleteJob, onError = 
     if (e.key === "Escape" && (menuJobId || menuDraftId)) closeMenu();
   });
 
+  // -- fold --------------------------------------------------------------
+  // A long list is a lot to face (owner, 2026-10-23): Collapse folds the
+  // cards away to the heading row, Expand brings them back, and the choice
+  // is there again at the next start.
+  let folded = false;
+  try { folded = !!storage && storage.getItem(FOLD_KEY) === "1"; } catch { /* private window */ }
+  function paintFold() {
+    $("projectsGrid").hidden = folded;
+    const btn = $("projectFoldBtn");
+    btn.setAttribute("aria-expanded", String(!folded));
+    btn.innerHTML = `${lucide(folded ? "chevron-down" : "chevron-up", 12)}<span>${t(folded ? "Expand" : "Collapse")}</span>`;
+  }
+  function setFolded(on) {
+    folded = on;
+    try { if (storage) storage.setItem(FOLD_KEY, folded ? "1" : "0"); } catch { /* private window */ }
+    paintFold();
+  }
+  $("projectFoldBtn").addEventListener("click", () => setFolded(!folded));
+  paintFold();
+
   // -- search ------------------------------------------------------------
   function closeSearch() {
     $("projectSearchBox").hidden = true;
@@ -363,6 +399,8 @@ export function initHomeScreen({ $, langName, onOpenJob, onDeleteJob, onError = 
       const box = $("projectSearchBox");
       if (!box.hidden) { closeSearch(); return; }
       box.hidden = false;
+      // What is found has to be on show.
+      if (folded) setFolded(false);
       if ($("projectSearchInput").focus) $("projectSearchInput").focus();
     });
   }

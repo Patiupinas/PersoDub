@@ -459,7 +459,7 @@ and `static/css/agent.css` are its stylesheets. `ui/src/` is flat:
 |---|---|
 | Composition root | `app.mjs`: imports every screen, wires them together in page order (the order is behaviour), owns the page state |
 | API layer | `dubApi.mjs`: form building, polling, progress parsing, the stage table, engine labels |
-| Screens | `homeScreen`, `homeSidebar`, `projects`, `runningScreen`, `eraseScreen`, `eraseArea`, `audioTab`, `draftSetup`, `draftImport`, `importBlock`, `newProject`, `newProjectWindow`, `workFrame`, `leftTabs`, `languageRow` |
+| Screens | `homeScreen`, `homeSidebar`, `projects`, `runningScreen`, `eraseScreen`, `eraseArea`, `draftSetup`, `draftImport`, `importBlock`, `newProject`, `newProjectWindow`, `workFrame`, `leftTabs`, `languageRow` |
 | Finished-dub editor | `scriptTable`, `scriptWatch`, `timeline`, `cutTools`, `trimBar`, `donePlayer`, `playerFoot`, `playRange`, `subtitleOverlay`, `subtitleLayout`, `captionsTab`, `ratio`, `speakers` |
 | Dialogs | `settingsDialog`, `modelsDialog` + `modelsUi`, `keyWindow`, `chatgptSignIn`, `chatgptSetup`, `confirmDialogs`, `exportDialog`, `updateWindow`, `whatsNew`, `translatorChoice` |
 | Small state | `draft`, `keptDrafts`, `rememberedChoices`, `reportedOnce`, `pendingSave` |
@@ -762,7 +762,7 @@ masks read them:
 `shell:install-progress`, `shell:install-pack`, `shell:cancel-pack`,
 `shell:remove-pack`, `shell:pack-status`, `shell:update-state`,
 `shell:last-update-state`, `shell:restart-to-update`, `shell:count-dub`, `shell:count-erase`,
-`shell:report-sent` and `shell:last-report`. The contract test reads all
+`shell:separate-done`, `shell:report-sent` and `shell:last-report`. The contract test reads all
 three halves (preload, main-process handlers, page) and fails on a channel
 that is not wired the whole way through. Besides the functions it carries two
 values the window passes on its command line: `repo`, the repository the build

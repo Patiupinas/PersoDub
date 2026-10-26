@@ -59,7 +59,9 @@ const ERASE_ICON = '<svg class="job-kind" viewBox="0 0 24 24" aria-hidden="true"
 // What an erase row says under its name. A job that stopped says only what it
 // was -- the dot beside it is what says how it ended, exactly as for a dub.
 // Getters here and below, so the words are read in the page's language.
-const ERASE_META = { get done() { return t("Erased"); }, get error() { return t("Erase subtitles"); },
+// The words name the tool as well (owner, 2026-10-21); the chip on the
+// card keeps its shorter word (doingWord).
+const ERASE_META = { get done() { return t("Subtitles erased"); }, get error() { return t("Erase subtitles"); },
                      get cancelled() { return t("Erase subtitles"); } };
 export const isErase = (job) => job.kind === "erase";
 // Separate audio is the third kind of work: the word under its name says so.
@@ -75,8 +77,10 @@ export const doingWord = (job) => (isErase(job) ? t("Erasing") : isSeparate(job)
 // Its own export (not just a closure inside initProjectsUi) so the Home screen's
 // project grid (ui/src/homeScreen.mjs) can say the same thing under a card.
 export function projectMeta(job, langName) {
-  if (isErase(job)) return ERASE_META[job.status] || t("Erasing");
-  if (isSeparate(job)) return SEPARATE_META[job.status] || t("Separating");
+  if (isErase(job)) return ERASE_META[job.status] || t("Erasing subtitles");
+  if (isSeparate(job)) return SEPARATE_META[job.status] || t("Separating the audio");
+  // A video with the user's own subtitles (a Burn in subtitles project).
+  if (job.kind === "captions") return t("Burn in subtitles");
   const langs = `${langName(job.source_lang) || t("Auto")} → ${langName(job.language_code) || t("Script")}`;
   const length = job.trim ? fmtLength(job.trim.end - job.trim.start) : "";
   return [langs, length].filter(Boolean).join(" · ");
@@ -231,7 +235,7 @@ export function initProjectsUi({ $, getActiveJobId, isHomeScreen, langName,
     try {
       jobs = (await (await fetch("/api/dub/jobs")).json()).jobs || [];
     } catch {
-      if (!folded()) container.innerHTML = `<div class="history-empty">${t("PersoDub is not running. Restart the app.")}</div>`;
+      if (!folded()) container.innerHTML = `<div class="history-empty">${t("The connection to PersoDub dropped for a moment. If it stays this way, quit and reopen PersoDub.")}</div>`;
       return;
     }
     if (onJobs) onJobs(jobs);

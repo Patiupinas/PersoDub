@@ -90,6 +90,26 @@ export async function fetchLanguages({ baseUrl = "" } = {}) {
   }
 }
 
+/**
+ * The credits left in the Perso workspace a dubbing spends from, as
+ * Settings > API keys lists them (GET /api/perso/spaces): the workspace
+ * picked there, or the key's only one -- the engine's own rule
+ * (app/perso_client.py _resolve_space_seq). null when that is not known: no
+ * key, several workspaces and none picked, Perso not answering.
+ */
+export async function fetchCreditsLeft({ baseUrl = "" } = {}) {
+  try {
+    const [spaces, settings] = await Promise.all([fetch(`${baseUrl}/api/perso/spaces`), fetch(`${baseUrl}/api/settings`)]);
+    if (!spaces.ok || !settings.ok) return null;
+    const list = (await spaces.json()).spaces || [];
+    const picked = String((await settings.json()).perso_space_seq || "");
+    const space = picked ? list.find((s) => String(s.seq) === picked) : list.length === 1 ? list[0] : null;
+    return space && typeof space.credits === "number" ? space.credits : null;
+  } catch {
+    return null;
+  }
+}
+
 export function buildDubFormData(opts) {
   if (!opts || (!opts.video && !opts.sourceUrl && !opts.downloadId)) {
     throw new Error(t("A video file or a link is required."));
@@ -135,7 +155,7 @@ export function buildDubFormData(opts) {
   // a blank no longer means "local" on the server -- it means "the saved
   // default" (app/setup.py), which the user may have set to Perso. The
   // dialog's own choice must never be overridden by that (2026-09-04).
-  fd.append("sep_engine", opts.sepEngine === "perso" ? "perso" : "local");
+  fd.append("sep_engine", ["perso", "roformer"].includes(opts.sepEngine) ? opts.sepEngine : "local");
   fd.append("dub_mode", opts.dubMode === "perso" ? "perso" : "local");
   // The Perso voice model of a Perso dubbing; a blank lets the server pick.
   if (opts.dubMode === "perso" && opts.persoModel) fd.append("perso_model", opts.persoModel);
@@ -165,12 +185,13 @@ export function buildDubFormData(opts) {
   if (opts.ranges) fd.append("ranges", JSON.stringify(opts.ranges));
   // Add language: the first dubbing of the project this one joins.
   if (opts.projectId) fd.append("project_id", opts.projectId);
-  // A finished Separate audio job of this same cut: the server checks that it
-  // is, and then takes its voice and background instead of separating again.
-  if (opts.stemsFrom) fd.append("stems_from", opts.stemsFrom);
 
   return fd;
 }
+
+// The translators that run in the translation runtime (Ollama) on this
+// computer, by the names the warning gives them.
+const RUNTIME_TRANSLATORS = { hunyuan: "Hunyuan", gemma: "Gemma 3" };
 
 /**
  * Progressive-enhancement decision logic for GET /api/engines: given the
@@ -184,8 +205,11 @@ export function buildDubFormData(opts) {
  * The warning is the voice engine's, when it failed to start and the dub is
  * to run on this computer: said before Start dubbing, not only after it
  * (issue #187: the reason came at the very end, after every choice was made).
+ * The translation runtime's the same way when Hunyuan or Gemma 3 is to
+ * translate, and a computer whose memory makes the dub slow (app/room.py
+ * ram_warning, GET /api/engines ram_slow): one line each.
  *
- * @param {Object} av - GET /api/engines JSON: {gemma_available, qwen_available, hunyuan_available, gemini_available, perso_available, local_engines}
+ * @param {Object} av - GET /api/engines JSON: {gemma_available, qwen_available, hunyuan_available, gemini_available, perso_available, local_engines, ram_gb, ram_slow}
  * @param {Object} current - {translate, stt, dubMode} the Upload form's current select values
  * @returns {{disable: {gemma: boolean, gemini: boolean, perso: boolean}, translate: string, warning: (string|null)}}
  */
@@ -198,12 +222,21 @@ export function applyEngineAvailability(av, current) {
     gemini: !av.gemini_available,
     perso: !av.perso_available,
   };
-  // Its message is the engine's sentence of why (app/engines_status.py),
-  // kept in English there and said in the page's language here.
+  const local = current.dubMode !== "perso";
+  // Its message is the engine's sentence of why and what to do
+  // (app/engines_status.py), kept in English there and said in the page's
+  // language here, on its own: a line above it said the same thing again.
   const voice = (av.local_engines || {}).voice || {};
-  const warning = current.dubMode !== "perso" && voice.state === "failed"
-    ? `${t("The voice engine is off. This computer cannot dub until it starts.")}\n${t(voice.message || "")}`.trim()
+  const voiceOff = local && voice.state === "failed" ? t(voice.message) : null;
+  const runtime = (av.local_engines || {}).translation || {};
+  const name = RUNTIME_TRANSLATORS[current.translate];
+  const translatorOff = local && name && runtime.state === "failed"
+    ? t("The translation engine could not start, so {name} cannot translate. Choose another translator, or quit and reopen PersoDub.", { name })
     : null;
+  const slow = local && av.ram_gb && (av.ram_slow || []).includes(current.translate)
+    ? t("This computer has {n} GB of memory, so dubbing may take a while. Dubbing with the Perso API uses almost no memory.", { n: av.ram_gb })
+    : null;
+  const warning = [voiceOff, translatorOff, slow].filter(Boolean).join("\n") || null;
   return { disable, translate: current.translate, warning };
 }
 
@@ -259,7 +292,7 @@ export async function probeSource(url, { baseUrl = "" } = {}) {
   });
   if (!res.ok) {
     const detail = (await res.json().catch(() => ({}))).detail || {};
-    const err = new Error(detail.message || t("Could not fetch the video."));
+    const err = new Error(detail.message || t("Could not fetch the video from this link. Paste it again in a moment, or drag the video file in."));
     err.reason = detail.reason || "unknown";
     throw err;
   }
@@ -293,7 +326,7 @@ export async function startDownload(url, { baseUrl = "" } = {}) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url }),
   });
-  if (!res.ok) throw await downloadError(res, t("Could not fetch the video."));
+  if (!res.ok) throw await downloadError(res, t("Could not fetch the video from this link. Paste it again in a moment, or drag the video file in."));
   return (await res.json()).id;
 }
 
@@ -470,29 +503,7 @@ export async function eraseToDub(jid, { baseUrl = "" } = {}) {
   return res.json();
 }
 
-// ---- Separate audio (app/api/separate.py) -----------------------------------
-
-/**
- * POST /api/separate -- queue a separation of the kept parts of a held video;
- * answers with the job id to follow. `engine` is "local" or "perso". A
- * refusal is thrown with `status` and the server's `detail` beside it: the
- * missing-pack 409 carries the download notice's own payload.
- */
-export async function startSeparate({ downloadId, engine = "local", project = "", trim = null, ranges = null },
-                                    { baseUrl = "" } = {}) {
-  const fd = new FormData();
-  fd.append("download_id", downloadId);
-  fd.append("engine", engine);
-  if (project) fd.append("project", project);
-  if (trim) {
-    fd.append("trim_start", String(trim.start));
-    fd.append("trim_end", String(trim.end));
-  }
-  if (ranges) fd.append("ranges", JSON.stringify(ranges));
-  const res = await fetch(`${baseUrl}/api/separate`, { method: "POST", body: fd });
-  if (!res.ok) throw await separateError(res, t("Could not start separating."));
-  return (await res.json()).job_id;
-}
+// ---- A separation's video, and a burn-in project (app/api/separate.py, captions.py) ----
 
 async function separateError(res, fallback) {
   const body = await res.json().catch(() => ({}));
@@ -502,19 +513,19 @@ async function separateError(res, fallback) {
   return err;
 }
 
-/** POST /api/separate/{jid}/retry -- the same cut, the same way, again. */
-export async function retrySeparate(jid, { baseUrl = "" } = {}) {
-  const res = await fetch(`${baseUrl}/api/separate/${jid}/retry`, { method: "POST" });
-  if (!res.ok) throw await separateError(res, t("Could not start it again."));
+/**
+ * POST /api/captions/import -- a held video and the user's own .srt, made a
+ * finished project of kind "captions" for the Burn in subtitles tab; answers
+ * with its job id. A refusal is thrown with the server's sentence (a file
+ * with no lines, a video that is not held).
+ */
+export async function importCaptions({ downloadId, file }, { baseUrl = "" } = {}) {
+  const fd = new FormData();
+  fd.append("download_id", downloadId);
+  fd.append("srt", file);
+  const res = await fetch(`${baseUrl}/api/captions/import`, { method: "POST", body: fd });
+  if (!res.ok) throw await separateError(res, t("Could not import the subtitle file."));
   return (await res.json()).job_id;
-}
-
-/** GET /api/separate/{jid} -- the record, plus `elapsed` (seconds it has been
-    separating) and `done` (both sounds are there). */
-export async function fetchSeparate(jid, { baseUrl = "" } = {}) {
-  const res = await fetch(`${baseUrl}/api/separate/${jid}`);
-  if (!res.ok) throw await separateError(res, t("Lost track of the separation."));
-  return res.json();
 }
 
 /** POST /api/separate/{jid}/open -- the job's video, held again for a draft:
@@ -523,18 +534,6 @@ export async function openSeparated(jid, { baseUrl = "" } = {}) {
   const res = await fetch(`${baseUrl}/api/separate/${jid}/open`, { method: "POST" });
   if (!res.ok) throw await separateError(res, t("Could not open this video."));
   return res.json();
-}
-
-/** Where one of a job's two sounds plays or downloads from: `which` is
-    "voice" or "background", `fmt` "mp3" or "wav". A dubbing's and a
-    separation's alike. */
-export function stemUrl(jid, which, fmt = "mp3", { baseUrl = "" } = {}) {
-  return `${baseUrl}/api/dub/result/${jid}/stem/${which}?format=${fmt}`;
-}
-
-/** Where the picture of one of a separation's two sounds is read from. */
-export function stemWaveUrl(jid, which, { baseUrl = "" } = {}) {
-  return `${baseUrl}/api/separate/${jid}/waveform/${which}`;
 }
 
 /**
@@ -770,11 +769,30 @@ const ENGINE_LABELS = {
   gemma: { label: "Gemma 3", api: false },
   qwen: { label: "Qwen", api: false },
   hunyuan: { label: "Hunyuan 1.8B", api: false },
-  gemini: { label: "Gemini", api: true },
+  gemini: { label: "Gemini API", api: true },
   chatgpt: { label: "ChatGPT", api: false },
   vertex: { label: "Vertex", api: true },
   qwen3: { label: "Qwen3-TTS", api: false },
 };
+
+/**
+ * What translated a job's script, as the screens name it: "ChatGPT
+ * (gpt-5.6-luna)", "Gemini API (Flash)", "Hunyuan 1.8B", "Gemma 3", "Perso".
+ * The model in brackets is the one the job kept (translator_model, app/api/dub.py)
+ * for a translator whose name does not say it; a job from before it was kept
+ * names the translator alone, since today's model may not be the one that
+ * made it. "" when the job names none.
+ */
+export function translatorLabel(job) {
+  const j = job || {};
+  if (j.dub_mode === "perso") return ENGINE_LABELS.perso.label;
+  const id = String(j.translator || "").toLowerCase();
+  const known = ENGINE_LABELS[id];
+  if (!known) return "";
+  const model = String(j.translator_model || "");
+  const words = !model ? "" : id === "chatgpt" ? model : id === "gemini" ? (/flash/i.test(model) ? "Flash" : model) : "";
+  return words ? `${known.label} (${words})` : known.label;
+}
 
 /**
  * A voice engine's name with the model behind it, from GET /api/engines'
@@ -829,6 +847,8 @@ export function engineChips(job, { withQuality = true, withTts = true, voiceMode
   }
   const tts = chips.find((c) => c.role === "TTS");
   if (tts) tts.label = voiceLabel(String(j.tts).toLowerCase(), voiceModels, true);
+  const translation = chips.find((c) => c.role === "Translation");
+  if (translation) translation.label = translatorLabel(j);
   // A Perso dubbing names the voice model it was made with: "Perso Oriole".
   const dubbing = chips.find((c) => c.role === "Dubbing");
   if (dubbing && modelLabel(j.perso_model)) dubbing.label += ` ${modelLabel(j.perso_model)}`;

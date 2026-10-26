@@ -5,7 +5,7 @@ import { checkKit, readKitVersion } from "./engineCheck.js";
 import { startEngines } from "./orchestrator.js";
 import { rememberedEdition, kitEdition, editionLine } from "./edition.js";
 import { buildSteps, bytesStillNeeded, bootSteps, packInstallingMarker, PACKS } from "./installSpec.js";
-import { runInstall, openSteps } from "./installer.js";
+import { runInstall, openSteps, downloadInterrupted } from "./installer.js";
 import { classifyError } from "./analytics.js";
 import { download } from "./download.js";
 import { extractTarGz } from "./extract.js";
@@ -18,6 +18,39 @@ import { screenFile } from "./screenText.js";
 import { detailLines, secondsSince } from "./logLine.js";
 import { memoryLine } from "./memoryLine.js";
 import { writeTimeline } from "./timeline.js";
+
+// The hosts a first install downloads from (installSpec.js): pip's index and
+// the files it serves, PyTorch's index, the models and the release files. A
+// company network that refuses their certificates can be asked to open them.
+const INSTALL_HOSTS = ["pypi.org", "files.pythonhosted.org", "download.pytorch.org", "huggingface.co", "github.com"];
+
+/**
+ * What an install that stopped says under its title: the cause, as the report
+ * sorts it (analytics.js classifyError), and what to press -- never a cause
+ * nobody found. [sentence, note]; the note, smaller, only for a certificate.
+ * The tool's own words go under Details on the screen, and into shell.log.
+ */
+export function installStopText(message) {
+  const code = classifyError(message, { install: true });
+  if (code === "certificate") {
+    return [t("A company network or security program blocked the download. Connect to another Wi-Fi or a hotspot, then press Try again."),
+      `${t("You can also ask your company's IT team to open these addresses.")}\n${INSTALL_HOSTS.join(" · ")}`];
+  }
+  if (code === "disk-full") return [t("There is not enough storage space. Free some up, then press Try again to pick up where it stopped."), ""];
+  if (code === "permission") return [t("Another program is using PersoDub's files. Restart your computer, then press Try again."), ""];
+  if (code === "network" || downloadInterrupted(message)) {
+    return [t("The internet connection dropped. Check it, then press Try again to pick up where it stopped."), ""];
+  }
+  return [t("Press Try again to go on from where it stopped. If it stops again, restart your computer, then open PersoDub."), ""];
+}
+
+/** What a start that failed says under its title: the backend gave no answer
+ * in time (health.js), or it stopped on the way up. */
+export function startStopText(message) {
+  return /^Health check timed out/.test(message)
+    ? t("Getting ready took too long. Restart your computer, then open PersoDub. If it keeps happening, security software may be blocking it.")
+    : t("It stopped while starting. Press Try again. If it stops again, restart your computer, then open PersoDub.");
+}
 
 // Packaged builds carry the payload under Resources/; a dev checkout may have
 // one at desktop/resources/payload after running collect-payload. Exported
@@ -219,9 +252,26 @@ export function createBoot({ app, ctx, appDir, edition, shellLog, countUsage, se
         for (const line of detailLines(message)) shellLog(line, "ERROR");
         countUsage("install_failure", cfg.kitDir, code, failedStep);
         sendReport({ kind: "install", kitDir: cfg.kitDir, code, step: failedStep, message });
-        const title = failedTitle ? t("The install stopped at {step}", { step: failedTitle }) : t("The install could not finish");
-        // The folder shell.log is in: the kit holds no log of its install.
-        await showScreen(win, "error.html", { title, message, logDir: join(app.getPath("userData"), "logs") });
+        // The title says it stopped, the line under it where, and the sentence
+        // why and what to press; the tool's own words fold under Details. A
+        // download's fetch says only "fetch failed", its reason (a refused
+        // certificate) is the cause it carries.
+        const said = [message, err?.cause?.message].filter(Boolean).join(": ");
+        const [sentence, note] = installStopText(said);
+        await showScreen(win, "error.html", {
+          title: t("The install stopped"),
+          ...(failedTitle ? { where: t("Where it stopped · {step}", { step: failedTitle }) } : {}),
+          message: sentence,
+          ...(note ? { note } : {}),
+          details: said,
+          // The folder shell.log is in: the kit holds no log of its install.
+          logDir: join(app.getPath("userData"), "logs"),
+        });
+        // The queue again, now the screen is up: an install can run for an
+        // hour, and a network that was not there as the launch started may be
+        // by now. Not awaited -- a person who closes the screen at once loses
+        // nothing, since every report is on disk before it goes (reporting.js).
+        void flushReports(cfg.kitDir).catch(() => {});
         return false;
       }
       shellLog(`INSTALL ALL DONE (${secondsSince(from)}s)`);
@@ -274,9 +324,10 @@ export function createBoot({ app, ctx, appDir, edition, shellLog, countUsage, se
       }
       ctx.bootedKitDir = cfg.kitDir;
       countUsage("app_launch", cfg.kitDir, undefined, undefined, { persoKey: hasPersoKey(cfg.kitDir) });
-      // Reports from earlier launches that had no network. Deliberately not
-      // awaited, and after the page is up: the queue is never the reason a
-      // launch is slow.
+      // Reports from earlier launches that had no network -- what the flush as
+      // the launch started could not send, and the failures that name a job,
+      // which wait for the engines (reporting.js). Deliberately not awaited,
+      // and after the page is up: the queue is never the reason a launch is slow.
       void flushReports(cfg.kitDir).catch(() => {});
     } catch (err) {
       // The kit installed fine and the app still cannot run. Such a machine fires
@@ -284,7 +335,10 @@ export function createBoot({ app, ctx, appDir, edition, shellLog, countUsage, se
       // PERSODUB_READY was never reached -- so without this it is invisible.
       countUsage("install_failure", cfg.kitDir, "engine-start");
       sendReport({ kind: "install", kitDir: cfg.kitDir, code: "engine-start", message: errorText(err) });
-      await showScreen(win, "error.html", { message: errorText(err), logDir: String((err && err.logDir) || "") });
+      // The screen's own title (PersoDub could not start), the sentence for
+      // what happened, and the health check's words under Details.
+      await showScreen(win, "error.html", { message: startStopText(errorText(err)), details: errorText(err),
+                                            logDir: String((err && err.logDir) || "") });
     }
   }
 
@@ -320,6 +374,12 @@ export function createBoot({ app, ctx, appDir, edition, shellLog, countUsage, se
       // ...and every page load after this reads it again (windowFactory.js),
       // so a language saved in Settings reaches the shell's dialogs at once.
       ctx.kitDir = cfg.kitDir;
+      // Reports earlier launches left in the kit's queue, before the install
+      // starts: the flush after the page is up (startApp) is never reached by
+      // a computer whose install keeps failing, so its reports -- the ones
+      // most worth reading -- used to wait there until they expired. Not
+      // awaited: the queue is never the reason a launch is slow.
+      void flushReports(cfg.kitDir).catch(() => {});
       if (!(await prepareKit(win, cfg, payload, kitVersion))) return;
       shellLog(`PERSODUB_KIT kitDir=${cfg.kitDir} version=${kitVersion ?? "unknown"}`);
     }

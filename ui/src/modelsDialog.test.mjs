@@ -8,7 +8,9 @@
 // Run with: node --test ui/src/modelsDialog.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { initModelsUi } from "./modelsDialog.mjs";
+import { loadTable, setLanguage } from "./i18n.mjs";
 
 function makeEl(id) {
   const classes = new Set();
@@ -68,6 +70,8 @@ function harness({ rows = [], shell = null, ramOk = true } = {}) {
     shell,
     keepPolling: () => state.keepPolling === true,
     ramOk: () => ramOk,
+    // The Delete dialog: records the question, answers Delete unless a test says No.
+    askToDelete: async (q) => { (state.askedToDelete ||= []).push(q); return state.deleteAnswer ?? true; },
   });
   return { $, api, state };
 }
@@ -142,7 +146,7 @@ test("showModelsDialog paints the 409's title and line and opens the overlay", a
 
   assert.equal(h.$("mnTitle").textContent, "Download 4.0 GB?");
   assert.equal(h.$("mnLine").textContent,
-    "One-time download for making voices. Needs 8 GB of memory (16 GB recommended).");
+    "A one-time download, separate from the app install.\nNeeds 8 GB of memory (16 GB recommended).");
   assert.equal(h.$("mnError").textContent, "");
   assert.equal(h.$("mnProgress").hidden, true);
   assert.equal(h.$("mnDownload").hidden, false);
@@ -150,21 +154,52 @@ test("showModelsDialog paints the 409's title and line and opens the overlay", a
   assert.equal(h.$("modelsNeededOverlay").classList.contains("open"), true);
 });
 
-test("the dub's download says the memory it needs, and Download and Start is on", (t) => {
+test("the dub's download says the room left and the memory it needs, and Download and Start is on", (t) => {
   const h = harness();
   t.after(h.state.restore);
-  h.api.showModelsDialog(DETAIL_TWO);
+  h.api.showModelsDialog({ ...DETAIL_TWO, free_bytes: 112.4e9 });
   assert.equal(h.$("mnLine").textContent,
-    "One-time download for making voices. Needs 8 GB of memory (16 GB recommended).");
+    "A one-time download, separate from the app install.\n112.4 GB free · Needs 8 GB of memory (16 GB recommended).");
   assert.equal(h.$("mnError").textContent, "");
   assert.equal(h.$("mnDownload").disabled, false);
+});
+
+// Run on after the sentence, the room left broke as "남은 / 공간" in the
+// middle of the dialog (owner, 2026-10-22, 5): the sentence is one line, and
+// the room left with the memory note is the next, as the approved picture
+// draws them. The stylesheet keeps the break (indexHtml.test.mjs).
+async function inKorean(t) {
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true,
+    json: async () => JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8")) });
+  await loadTable("ko");
+  globalThis.fetch = real;
+  setLanguage("ko");
+  t.after(() => setLanguage("en"));
+}
+test("in Korean the dialog says the sentence, then the room left and the memory on a line of their own", async (t) => {
+  await inKorean(t);
+  const h = harness();
+  t.after(h.state.restore);
+  // A first dubbing on this computer: the voice parts, 9.6 GB.
+  h.api.showModelsDialog({ missing: [{ id: "engine", kind: "pack", bytes: 2.0e9 }, { id: "whisper", kind: "model", bytes: 3.091e9 },
+                                     { id: "qwen3-tts", kind: "model", bytes: 4.544e9 }], free_bytes: 21.8e9 });
+  assert.equal(h.$("mnTitle").textContent, "9.6 GB를 다운로드할까요?");
+  assert.deepEqual(h.$("mnLine").textContent.split("\n"),
+    ["앱 설치와 따로, 처음 한 번만 다운로드해요.", "남은 공간 21.8 GB · 메모리 8 GB 이상 필요 (16 GB 권장)"]);
+  // No voice part (the owner's 2.5 GB): no memory note, and the room left alone on its line.
+  h.api.showModelsDialog({ missing: [{ id: "vocal-separator", kind: "model", bytes: 0.913e9 },
+                                     { id: "ollama-runtime", kind: "pack", bytes: 0.46e9 }, { id: "hunyuan", kind: "model", bytes: 1.1e9 }],
+                           free_bytes: 21.8e9 });
+  assert.equal(h.$("mnTitle").textContent, "2.5 GB를 다운로드할까요?");
+  assert.deepEqual(h.$("mnLine").textContent.split("\n"), ["앱 설치와 따로, 처음 한 번만 다운로드해요.", "남은 공간 21.8 GB"]);
 });
 
 test("a computer short of memory gets the red line instead, and no download", (t) => {
   const h = harness({ ramOk: false });
   t.after(h.state.restore);
-  h.api.showModelsDialog(DETAIL_TWO);
-  assert.equal(h.$("mnLine").textContent, "One-time download for making voices.");
+  h.api.showModelsDialog({ ...DETAIL_TWO, free_bytes: 112.4e9 });
+  assert.equal(h.$("mnLine").textContent, "A one-time download, separate from the app install.\n112.4 GB free");
   assert.equal(h.$("mnError").textContent,
     "This computer does not have enough memory to dub on this computer. Try the Perso API.");
   assert.equal(h.$("mnDownload").disabled, true);
@@ -175,7 +210,7 @@ test("a download that is not a dub's (Separate audio) says nothing about memory"
   const h = harness({ ramOk: false });
   t.after(h.state.restore);
   h.api.showModelsDialog({ ...PACK_409, purpose: "separating audio" });
-  assert.equal(h.$("mnLine").textContent, "One-time download for separating audio.");
+  assert.equal(h.$("mnLine").textContent, "A one-time download, separate from the app install.");
   assert.equal(h.$("mnError").textContent, "");
   assert.equal(h.$("mnDownload").disabled, false);
 });
@@ -622,18 +657,14 @@ test("the Settings catalog's pack rows ask the desktop app to install or remove,
   assert.equal(btn(runtimeRow).textContent, "Remove");
   // Remove asks the engine first (it knows whether a dub is running); its
   // "packs are the desktop app's" refusal is the all-clear.
-  h.state.responses = { "/api/models/ollama-runtime": { ok: false, json: async () => ({ detail: "Packs are installed by the desktop app" }) } };
-  btn(runtimeRow).onclick();   // asks first
-  await settle();
-  btn(runtimeRow).onclick();   // then removes
+  h.state.responses = { "/api/models/ollama-runtime": { ok: false, json: async () => ({ detail: "PersoDub installs this itself." }) } };
+  btn(runtimeRow).onclick();   // the Delete dialog asks, and Delete is pressed
   await settle(); await settle(); await settle();
   assert.deepEqual(shell.asked, ["install engine", "remove ollama-runtime"]);
   assert.ok(h.state.calls.includes("DELETE /api/models/ollama-runtime"));
 
   // A dub in progress: the engine's sentence is shown and the desktop app is not asked.
   h.state.responses = { "/api/models/ollama-runtime": { ok: false, json: async () => ({ detail: "Dubbing is running right now. Wait for it to finish, then remove the model." }) } };
-  btn(runtimeRow).onclick();
-  await settle();
   btn(runtimeRow).onclick();
   await settle(); await settle(); await settle();
   assert.deepEqual(shell.asked, ["install engine", "remove ollama-runtime"], "not asked again");
@@ -645,6 +676,44 @@ test("the Settings catalog's pack rows ask the desktop app to install or remove,
   const row = listRows(bare)[0];
   assert.equal(btn(row).disabled, true);
   assert.equal(row.children[2].textContent, "Installed by PersoDub");
+});
+
+test("removing Python + PyTorch or Ollama asks in the Delete dialog what stops working, and No keeps it", async (t) => {
+  const shell = fakeShell();
+  const h = harness({ rows: [{ ...ENGINE, state: "ready" },
+                             { ...ENGINE, id: "ollama-runtime", name: "Ollama", bytes: 0.46e9, state: "ready" },
+                             { ...ENGINE, id: "subtitle-eraser", name: "Subtitle eraser", bytes: 1.0e9, state: "ready" }], shell });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  const btn = (name) => listRows(h).find((r) => r.children[0].textContent === name).children[3];
+
+  h.state.deleteAnswer = false;   // Keep it
+  btn("Python + PyTorch").onclick();
+  await settle(); await settle(); await settle();
+  assert.deepEqual(h.state.askedToDelete, [{
+    title: "Delete Python + PyTorch?",
+    line: "Without it, local models cannot separate audio, transcribe or make voices.",
+  }]);
+  assert.equal(btn("Python + PyTorch").textContent, "Remove", "no second-press question on the button");
+  assert.ok(!h.state.calls.some((c) => c.startsWith("DELETE")), "kept: the engine is not even asked");
+  assert.deepEqual(shell.asked, []);
+
+  h.state.deleteAnswer = true;    // Delete
+  btn("Python + PyTorch").onclick();
+  await settle(); await settle(); await settle();
+  assert.ok(h.state.calls.includes("DELETE /api/models/engine"), "one press and a yes goes on to remove it");
+
+  btn("Ollama").onclick();
+  await settle();
+  assert.deepEqual(h.state.askedToDelete.at(-1),
+                   { title: "Delete Ollama?", line: "Without it, local models cannot translate." });
+
+  // Anything else keeps its two presses and asks nothing in a dialog.
+  const asked = h.state.askedToDelete.length;
+  btn("Subtitle eraser").onclick();
+  await settle();
+  assert.equal(btn("Subtitle eraser").textContent, "Remove 1.0 GB?");
+  assert.equal(h.state.askedToDelete.length, asked);
 });
 
 test("an Ollama pull that failed before it began is told in the dialog, not polled at 0% forever", async (t) => {
@@ -664,9 +733,9 @@ test("a download the engine refuses shows its sentence instead of starting nothi
   const h = harness({ rows: [{ id: "hunyuan", role: "translate", name: "Hunyuan", bytes: 1.1e9, state: "not_downloaded" }] });
   t.after(h.state.restore);
   await h.api.refreshModels();
-  h.state.responses = { "/api/models/hunyuan/download": { ok: false, json: async () => ({ detail: "Install Ollama first, then download this model." }) } };
+  h.state.responses = { "/api/models/hunyuan/download": { ok: false, json: async () => ({ detail: "Local translation models (Hunyuan, Gemma 3) need a program called Ollama to run. Download it in Settings > Models." }) } };
   await h.api.downloadModel("hunyuan");
-  assert.equal(h.$("modelsError").textContent, "Hunyuan: Install Ollama first, then download this model.");
+  assert.equal(h.$("modelsError").textContent, "Hunyuan: Local translation models (Hunyuan, Gemma 3) need a program called Ollama to run. Download it in Settings > Models.");
 });
 
 test("a ready row says what it is for after its status, and a row on its way says only its status", async (t) => {
@@ -685,6 +754,28 @@ test("a ready row says what it is for after its status, and a row on its way say
   assert.deepEqual(hunyuan.children[2].children, [], "no note beside a download's line");
 });
 
+test("Demucs is listed under Audio separation as part of Python + PyTorch, with no button of its own", async (t) => {
+  const demucs = { id: "demucs", role: "sep", name: "Demucs", bytes: 0.081e9, comes_with: "engine",
+                   hint: "Default · Comes with Python + PyTorch" };
+  const h = harness({ rows: [{ ...demucs, state: "ready" },
+                             { id: "vocal-separator", role: "sep", name: "Mel-Band RoFormer", bytes: 0.9e9, state: "not_downloaded" },
+                             { ...ENGINE, state: "ready" }] });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  const [row, roformer] = listRows(h);
+  assert.deepEqual(row.children.map((c) => c.textContent), ["Demucs", "0.1 GB", "Ready", ""]);
+  assert.equal(row.children[2].children[0].textContent, "Default · Comes with Python + PyTorch");
+  assert.notEqual(row.children[3].className, "btn btn-outline model-btn", "nothing to press");
+  assert.equal(roformer.children[3].textContent, "Download");
+  assert.equal(h.$("modelsSummary").textContent, "3 models · 2.1 GB on this computer");
+  // Before Python + PyTorch is here: no state of its own, only where it comes from.
+  h.state.rows = [{ ...demucs, state: "not_downloaded" }];
+  await h.api.refreshModels();
+  const [missing] = listRows(h);
+  assert.equal(missing.children[2].children[0].textContent, "Default · Comes with Python + PyTorch");
+  assert.equal(missing.children[3].className, "", "still nothing to press");
+});
+
 test("the rows sit under a heading for each purpose, each with what its ready rows take", async (t) => {
   const h = harness({ rows: [
     { ...ENGINE, state: "ready" },
@@ -701,9 +792,62 @@ test("the rows sit under a heading for each purpose, each with what its ready ro
     ["model-group-head", "Translation", "1.1 GB"],
     ["settings-row model-row", "Gemma 3", "8.1 GB"],
     ["settings-row model-row", "Hunyuan", "1.1 GB"],
-    ["model-group-head", "Base programs", "2.0 GB"],
+    ["model-group-head", "Required programs", "2.0 GB"],
     ["settings-row model-row", "Python + PyTorch", "2.0 GB"],
   ]);
+});
+
+test("the programs' heading says under its name what they are there for, and no other heading does", async (t) => {
+  const h = harness({ rows: [
+    { id: "whisper", role: "stt", name: "Whisper", bytes: 3.1e9, state: "ready" },
+    { ...ENGINE, state: "ready" },
+  ] });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  const [stt, programs] = h.$("modelsList").children.filter((c) => c.className === "model-group-head");
+  assert.deepEqual(stt.children.map((c) => c.textContent), ["Speech-to-text", "3.1 GB"]);
+  // Name, size, then the note: the note's own line is the stylesheet's.
+  assert.deepEqual(programs.children.map((c) => [c.className, c.textContent]), [
+    ["", "Required programs"], ["model-size", "2.0 GB"], ["model-group-note", "Needed to run the models"],
+  ]);
+});
+
+test("a program not here yet says what it is for beside its size, and gives the place up to its download", async (t) => {
+  const OLLAMA = { id: "ollama-runtime", role: "pack", name: "Ollama", bytes: 0.46e9, state: "not_downloaded",
+                   hint: "Local translation (Hunyuan, Gemma 3)" };
+  const shell = fakeShell({ install: () => new Promise(() => {}) });
+  const h = harness({ rows: [
+    { ...ENGINE, state: "ready", hint: "Audio separation, speech-to-text, voices" },
+    OLLAMA,
+    { id: "gemma", role: "translate", name: "Gemma 3", bytes: 8.1e9, state: "not_downloaded", hint: "More careful" },
+  ], shell });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  const status = (id) => listRows(h).find((r) => r.children[0].textContent === id).children[2];
+  // Ready, then what it is for -- as before.
+  assert.equal(status("Python + PyTorch").className, "settings-hint model-ok");
+  assert.equal(status("Python + PyTorch").children[0].textContent, "Audio separation, speech-to-text, voices");
+  // Not here yet: only what it is for, where Ready would be (no line of its own).
+  assert.equal(status("Ollama").className, "settings-hint");
+  assert.deepEqual(status("Ollama").children.map((c) => [c.className, c.textContent]),
+    [["model-note", "Local translation (Hunyuan, Gemma 3)"]]);
+  // A model is not a program: one not downloaded keeps its cell empty, as before.
+  assert.deepEqual(status("Gemma 3").children, []);
+  // Installing, the line is the download's own.
+  h.api.installPack("ollama-runtime");
+  await settle();
+  assert.equal(status("Ollama").className, "settings-hint model-busy model-status-long");
+  assert.deepEqual(status("Ollama").children, [], "no note beside the download's line");
+});
+
+test("in a plain browser a program not here yet says who installs it, not what it is for", async (t) => {
+  const h = harness({ rows: [{ id: "ollama-runtime", role: "pack", name: "Ollama", bytes: 0.46e9, state: "not_downloaded",
+                               hint: "Local translation (Hunyuan, Gemma 3)" }] });
+  t.after(h.state.restore);
+  await h.api.refreshModels();
+  const [row] = listRows(h);
+  assert.equal(row.children[2].textContent, "Installed by PersoDub");
+  assert.deepEqual(row.children[2].children, []);
 });
 
 test("a busy model's status takes its own line, so the percent is never cut; Ready stays beside the name", async (t) => {

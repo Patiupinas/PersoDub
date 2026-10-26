@@ -18,18 +18,20 @@ function harness() {
       closest: function () { return this; },
     };
   };
-  const buttons = ["dubbing", "audio", "captions", "erase"].map(button);
+  // The page's order (static/index.html): Home's tools.
+  const buttons = ["dubbing", "erase", "captions", "save"].map(button);
   let onClick = null;
   els.leftTabs = {
     querySelectorAll: () => buttons,
     addEventListener: (ev, fn) => { if (ev === "click") onClick = fn; },
   };
-  for (const id of ["tabAudio", "tabDubbing", "tabCaptions"]) els[id] = { hidden: false };
+  for (const id of ["tabDubbing", "tabCaptions"]) els[id] = { hidden: false };
   const erased = [];
-  const api = initLeftTabs({ $: (id) => els[id], onErase: () => erased.push(1) });
+  const saved = [];
+  const api = initLeftTabs({ $: (id) => els[id], onErase: () => erased.push(1), onSave: () => saved.push(1) });
   const press = (tab) => onClick({ target: buttons.find((b) => b.dataset.tab === tab) });
   const lit = () => buttons.filter((b) => b.classList.contains("on")).map((b) => b.dataset.tab);
-  return { els, api, press, lit, erased, buttons };
+  return { els, api, press, lit, erased, saved, buttons };
 }
 
 test("Dubbing is the tab on show to begin with, and only its body is", () => {
@@ -37,7 +39,6 @@ test("Dubbing is the tab on show to begin with, and only its body is", () => {
   assert.equal(h.api.current(), "dubbing");
   assert.deepEqual(h.lit(), ["dubbing"]);
   assert.equal(h.els.tabDubbing.hidden, false);
-  assert.equal(h.els.tabAudio.hidden, true);
   assert.equal(h.els.tabCaptions.hidden, true);
   assert.equal(h.buttons[0].getAttribute("aria-selected"), "true");
   assert.equal(h.buttons[1].getAttribute("aria-selected"), "false");
@@ -50,8 +51,8 @@ test("pressing a tab shows its body and hides the rest", () => {
   assert.deepEqual(h.lit(), ["captions"]);
   assert.equal(h.els.tabCaptions.hidden, false);
   assert.equal(h.els.tabDubbing.hidden, true);
-  h.press("audio");
-  assert.equal(h.els.tabAudio.hidden, false);
+  h.press("dubbing");
+  assert.equal(h.els.tabDubbing.hidden, false);
   assert.equal(h.els.tabCaptions.hidden, true);
 });
 
@@ -67,31 +68,16 @@ test("Erase goes to the erase screen and leaves the row as it was", () => {
 
 test("the page can put a tab on show itself", () => {
   const h = harness();
-  h.api.show("audio");
-  assert.deepEqual(h.lit(), ["audio"]);
-  assert.equal(h.els.tabAudio.hidden, false);
+  h.api.show("captions");
+  assert.deepEqual(h.lit(), ["captions"]);
+  assert.equal(h.els.tabCaptions.hidden, false);
 });
 
-test("a locked tab is dimmed, says why, cannot be opened, and gives way to Dubbing", () => {
+test("Save video saves the project's video and leaves the row as it was", () => {
   const h = harness();
-  const captions = h.buttons[2];
   h.press("captions");
-  h.api.setLocked("captions", true, "After dubbing");
-  assert.equal(captions.disabled, true);
-  assert.equal(captions.title, "After dubbing");
-  assert.equal(h.api.current(), "dubbing", "it was the tab on show: Dubbing takes its place");
-  assert.equal(h.els.tabCaptions.hidden, true);
-  // Nothing opens it while it is locked, a press or the page itself.
-  h.api.show("captions");
-  assert.equal(h.api.current(), "dubbing");
-  // Locked while another tab is up: that tab stays.
-  h.press("audio");
-  h.api.setLocked("captions", true, "After dubbing");
-  assert.equal(h.api.current(), "audio");
-  // Open again once there is a dub.
-  h.api.setLocked("captions", false);
-  assert.equal(captions.disabled, false);
-  assert.equal(captions.title, "");
-  h.press("captions");
+  h.press("save");
+  assert.equal(h.saved.length, 1);
   assert.equal(h.api.current(), "captions");
+  assert.deepEqual(h.lit(), ["captions"]);
 });

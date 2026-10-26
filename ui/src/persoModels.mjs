@@ -10,19 +10,26 @@
 import { t } from "./i18n.mjs";
 
 // The models known on 2026-10-19 (Perso's API docs and language list), in
-// the order the choice lists them: a line of what each is where Perso says,
-// its price in credits per second, and whether a plan below Pro is refused
-// (VT40314, app/perso_client.py PersoPlanRequiredError).
+// the order the choice lists them: a line of what each is for, from Perso's
+// dubbing models page in the words the owner approved (2026-10-22), its price
+// in credits per second of speech (Nightingale's is 4, owner 2026-10-22), and
+// whether a plan below Pro is refused (VT40314, app/perso_client.py
+// PersoPlanRequiredError). Nightingale's also says one line cannot be remade
+// on its own (app/perso_edit.py nightingale).
 const KNOWN = [
-  { id: "ORIOLE", label: "Oriole", desc: "Default", rate: 1 },
-  { id: "LINNET_4", label: "Linnet 4", rate: 1 },
-  { id: "LINNET_3", label: "Linnet 3", rate: 1 },
-  { id: "WREN", label: "Wren", rate: 1 },
-  { id: "FINCH", label: "Finch", desc: "Lowest-cost basic dubbing", rate: 0.2, pro: true },
-  { id: "NIGHTINGALE", label: "Nightingale", desc: "Premium voice", rate: 6, pro: true },
+  { id: "ORIOLE", label: "Oriole", desc: "Natural local pronunciation, steady voice. Lectures and corporate video", rate: 1 },
+  { id: "LINNET_4", label: "Linnet 4", desc: "New model that follows the context. Honours audio tags", rate: 1 },
+  { id: "LINNET_3", label: "Linnet 3", desc: "The earlier expressive model", rate: 1 },
+  { id: "WREN", label: "Wren", desc: "Steady narration. Lecture scripts, company intros, read-aloud; most even Korean voice", rate: 1 },
+  { id: "FINCH", label: "Finch", desc: "Keeps your own voice, lowest cost. Interviews and whole channels", rate: 0.2, pro: true },
+  { id: "NIGHTINGALE", label: "Nightingale", desc: "Rich emotion for drama and shows. No per-line remake", rate: 4, pro: true },
 ];
-// The one selected until another is chosen, as on Perso's site.
-export const DEFAULT_MODEL = "ORIOLE";
+// What a dubbing nobody chose a model for is made with: Linnet 4, or Oriole
+// in a language Linnet 4 lacks, as Perso's own API picks since 2026-10-12
+// (owner, 2026-10-22). The app always names the model, so it picks alike
+// (app/languages.py model_for).
+export const DEFAULT_MODEL = "LINNET_4";
+const FALLBACK_MODEL = "ORIOLE";
 // What a model's id may look like (Perso's own are like "LINNET_4").
 const MODEL_ID = /^[A-Z][A-Z0-9_]{1,30}$/;
 
@@ -61,18 +68,42 @@ export function languagesFor(list, model) {
   return list.filter((l) => !l.models || l.models.includes(model));
 }
 
-function rateText(info) {
-  return info.rate == null ? "" : t("{n} credits per second", { n: info.rate });
+/** The model a dubbing into this language gets when nobody chose one:
+    Linnet 4 when the language has it, else Oriole. An entry that names no
+    models, or none at all, is Linnet 4's. */
+export function defaultModelFor(entry) {
+  return !entry || !entry.models || entry.models.includes(DEFAULT_MODEL) ? DEFAULT_MODEL : FALLBACK_MODEL;
 }
 
-/** The line under a model in the list: "Default · 1 credit a second · 77 languages". */
+/** The languages a dubbing nobody chose a model for can go into: every one
+    Linnet 4 or Oriole has, each with its own (defaultModelFor). */
+export function defaultLanguages(list) {
+  return list.filter((l) => !l.models || l.models.includes(DEFAULT_MODEL) || l.models.includes(FALLBACK_MODEL));
+}
+
+// One credit is singular in English: the line read "1 credits per second" (2026-10-22).
+function rateText(info) {
+  if (info.rate == null) return "";
+  return info.rate === 1 ? t("{n} credit per second", { n: info.rate }) : t("{n} credits per second", { n: info.rate });
+}
+
+// "80 supported languages", 지원 언어 80개, as one unit: a line too long for
+// its box wraps around it, never inside it (owner, 2026-10-22).
+function supportedLanguages(n) {
+  return t("{n} supported languages", { n }).replaceAll(" ", "\u00a0");
+}
+
+/** The line under a model in the list: "Default · 1 credit per second · 80 supported languages". */
 export function modelCaption(info, languages) {
-  return [info.desc ? t(info.desc) : "", rateText(info), t("{n} languages", { n: languages })]
+  return [info.id === DEFAULT_MODEL ? t("Default") : "", info.desc ? t(info.desc) : "", rateText(info),
+          supportedLanguages(languages)]
     .filter(Boolean).join(" · ");
 }
 
-/** The line under the choice: price, languages, and the plan it needs. */
+/** The line under the choice: price, languages, and the plan it needs. The
+    count is this model's own (Help's "100+" is every model's together), said
+    as the list says it, without "with this model" (owner, 2026-10-22). */
 export function modelHint(info, languages) {
-  return [rateText(info), t("{n} languages", { n: languages }), info.pro ? t("Perso Pro plan and up") : ""]
+  return [rateText(info), supportedLanguages(languages), info.pro ? t("Perso Pro plan and up") : ""]
     .filter(Boolean).join(" · ");
 }

@@ -1219,6 +1219,9 @@ def test_dub_start_records_the_engines_the_job_was_made_with(monkeypatch, tmp_pa
     job = client.get(f"/api/dub/jobs/{jid}").json()
     assert job["stt_engine"] == "perso"
     assert job["translator"] == "gemini"
+    # ...and the model it translates with, which the screen names (B16).
+    from app.config import GEMINI_MODEL
+    assert job["translator_model"] == GEMINI_MODEL
     assert job["tts"] == "qwen3"
     assert job["quality"] == 4
 
@@ -1236,6 +1239,7 @@ def test_dub_start_records_the_engines_the_job_was_made_with(monkeypatch, tmp_pa
     else:
         raise AssertionError("job.json never became readable")
     assert saved["stt_engine"] == "perso" and saved["translator"] == "gemini"
+    assert saved["translator_model"] == GEMINI_MODEL
     assert saved["tts"] == "qwen3" and saved["quality"] == 4
 
 
@@ -1273,7 +1277,7 @@ def test_dub_retry_repeats_the_first_runs_engines(monkeypatch, tmp_path):
     monkeypatch.setattr(dub_api, "run_dub", lambda **kw: calls.append(kw))
     monkeypatch.setattr(dub_api, "default_stt_engine", lambda: "")
     jid = _restored_job(tmp_path, language_code="ko", stt_engine="perso",
-                        translator="gemini", tts="qwen3", quality=4)
+                        translator="gemini", translator_model="gemini-1.5-pro", tts="qwen3", quality=4)
 
     r = client.post(f"/api/dub/jobs/{jid}/retry")
     assert r.status_code == 200
@@ -1284,6 +1288,9 @@ def test_dub_retry_repeats_the_first_runs_engines(monkeypatch, tmp_path):
     # ...and the new job carries them, so its own finished screen says the same.
     new = client.get(f"/api/dub/jobs/{r.json()['job_id']}").json()
     assert new["stt_engine"] == "perso" and new["translator"] == "gemini" and new["quality"] == 4
+    # Translated again today, so with today's model of that translator.
+    from app.config import GEMINI_MODEL
+    assert new["translator_model"] == GEMINI_MODEL
 
 
 def test_dub_retry_of_a_job_saved_before_the_engines_were_kept(monkeypatch, tmp_path):
@@ -1371,10 +1378,10 @@ class _FakeCloudClient:
         self.cancel_check = None
 
     def dub_video(self, video_path, out_path, source_code, target_code, num_speakers=None, space_seq=None, log=None,
-                  tts_model=None):
+                  tts_model=None, title=None):
         _FakeCloudClient.calls.append({
             "video": video_path, "out": out_path, "source": source_code,
-            "target": target_code, "speakers": num_speakers, "tts_model": tts_model,
+            "target": target_code, "speakers": num_speakers, "tts_model": tts_model, "title": title,
         })
         with open(out_path, "wb") as f:
             f.write(b"CLOUDMP4")
@@ -1410,8 +1417,10 @@ def test_dub_start_cloud_mode_skips_local_pipeline(monkeypatch):
     assert j["dub_mode"] == "perso"
     call = _FakeCloudClient.calls[0]
     assert call["target"] == "en" and call["source"] == "ko" and call["speakers"] == 2
-    # Nobody chose a voice model: ORIOLE, and the job says so.
-    assert call["tts_model"] == "ORIOLE" and j["perso_model"] == "ORIOLE"
+    # Nobody chose a voice model: LINNET_4, which English has, and the job says so.
+    assert call["tts_model"] == "LINNET_4" and j["perso_model"] == "LINNET_4"
+    # Named on Perso's workspace as the project is here, not "input".
+    assert call["title"] == "v"
     # and the finished file is the cloud one
     rr = client.get(f"/api/dub/result/{j['id']}")
     assert rr.content == b"CLOUDMP4"

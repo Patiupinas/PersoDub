@@ -244,9 +244,48 @@ test("a field nobody named cannot leave", () => {
   assert.ok(!text.includes("sk-secret"));
   assert.ok(!text.includes("/Users/jane"));
   assert.deepEqual(Object.keys(report).sort(), [
-    "code", "diagnostics", "env", "fingerprint", "installId", "kind", "logTails", "message",
+    "code", "device", "diagnostics", "env", "fingerprint", "installId", "kind", "logTails", "message",
     "packs", "stage", "stageMarker", "step", "version",
   ]);
+});
+
+// The usage counts' id travels as its first twelve characters (0.8.7). A whole
+// id, or anything else, is not one of those and stays behind.
+test("the device is twelve hex characters or nothing", () => {
+  assert.equal(buildReport({ ...SAMPLE, device: "0123456789ab" }).device, "0123456789ab");
+  for (const bad of ["0123456789abcdef0123456789abcdef", "0123456789AB", "0123456789a", "<b>x</b>", null]) {
+    assert.equal(buildReport({ ...SAMPLE, device: bad }).device, "", String(bad));
+  }
+  assert.equal(buildReport(SAMPLE).device, "");
+});
+
+// A debug print of a report lands in shell.log, and the next report sends that
+// log's tail into the public issue. The device is for the private dashboard.
+test("a device field a debug print left in a log is masked", () => {
+  const shell = '[persodub-report] would send: {"kind":"dub","device":"0123456789ab","code":"unknown"}';
+  const report = buildReport({ ...SAMPLE, logTails: { ...SAMPLE.logTails, shell } });
+  assert.ok(!report.logTails.shell.includes("0123456789ab"), report.logTails.shell);
+  assert.match(report.logTails.shell, /"device":"\[REDACTED\]"/);
+});
+
+// ---- a finished job's record ------------------------------------------
+
+test("a finished job's record says what ran, on what and for how long, and nothing about a failure", () => {
+  const timing = { started_hour: 9, elapsed_seconds: 12, stage_seconds: { separate: 11, build: 1 } };
+  const record = buildReport({ ...SAMPLE, kind: "separate", code: "ok", device: "0123456789ab", timing });
+  assert.deepEqual(Object.keys(record).sort(), [
+    "code", "device", "diagnostics", "env", "fingerprint", "installId", "kind", "logTails", "message",
+    "outcome", "packs", "stage", "stageMarker", "step", "timing", "version",
+  ]);
+  assert.deepEqual([record.outcome, record.kind, record.code, record.stage, record.stageMarker, record.message],
+    ["ok", "separate", "ok", "done", "", ""]);
+  assert.deepEqual(record.timing, { elapsed_seconds: 12, sep_seconds: 11 }, "whole seconds, the four steps by their count names");
+  assert.deepEqual([record.logTails, record.diagnostics], [{}, {}]);
+  assert.deepEqual([record.device, record.env.platformKey, record.env.ramGb], ["0123456789ab", "win-gpu", 32]);
+  assert.deepEqual(buildReport({ ...SAMPLE, code: "ok", timing: { elapsed_seconds: -1, stage_seconds: "x" } }).timing, {});
+  assert.equal(buildReport({ ...SAMPLE, kind: "install", code: "ok" }).kind, "unknown", "an install is not a job");
+  assert.equal(buildReport({ ...SAMPLE, kind: "separate" }).kind, "unknown", "a failure keeps the report's own kinds");
+  assert.equal("outcome" in buildReport(SAMPLE), false, "a failure report is as it was");
 });
 
 // ---- what the probes found --------------------------------------------

@@ -58,7 +58,8 @@ class FetchError(RuntimeError):
             "geo": t("This video isn't available in your region."),
             "gone": t("This video is private or has been deleted."),
             "unsupported": t("This site isn't supported yet."),
-        }.get(self.reason, t("Could not fetch the video."))
+        }.get(self.reason, t("Could not fetch the video from this link. "
+                             "Paste it again in a moment, or drag the video file in."))
 
 
 # Ordered: the first group whose needle appears in stderr wins. "network" is
@@ -91,7 +92,7 @@ _PATTERNS: List[Tuple[str, Tuple[str, ...], str]] = [
         "unsupported url", "is not a valid url",
     ), "This site isn't supported yet."),
 ]
-_UNKNOWN = ("unknown", "Could not fetch the video.")
+_UNKNOWN = ("unknown", "Could not fetch the video from this link. Paste it again in a moment, or drag the video file in.")
 
 
 def classify(stderr: str) -> Tuple[str, str]:
@@ -307,7 +308,10 @@ def _download_once(url: str, dest: str, log, cancel_check) -> None:
         code, _out, err = _run(
             YTDLP_BASE + [
                 "--newline", "--no-warnings",
-                "-f", "bv*+ba/b", "--merge-output-format", "mp4",
+                # H.264 + AAC when the site has them at the same resolution:
+                # Windows' player and many editors can't open AV1 or Opus.
+                "-f", "bv*+ba/b", "-S", "lang,res,fps,vcodec:h264,acodec:aac",
+                "--merge-output-format", "mp4",
                 "-o", dest, url,
             ],
             on_line=on_line,

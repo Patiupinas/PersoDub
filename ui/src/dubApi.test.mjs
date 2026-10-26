@@ -14,9 +14,11 @@ import {
   applyEngineAvailability,
   engineChips,
   engineLine,
+  translatorLabel,
   voiceLabel,
   startedLabel,
   startErase,
+  fetchCreditsLeft,
 } from "./dubApi.mjs";
 
 test("buildDubFormData sends exactly the fields app/main.py:dub_start expects", () => {
@@ -355,8 +357,7 @@ test("applyEngineAvailability: a voice engine that failed to start is a warning 
   const failed = { state: "failed", message: "The voice engine is not running because it could not start." };
   const av = { ...ALL_AVAILABLE, local_engines: { voice: failed, translation: { state: "running", message: "" } } };
   assert.equal(applyEngineAvailability(av, { translate: "chatgpt", stt: "local", dubMode: "local" }).warning,
-    "The voice engine is off. This computer cannot dub until it starts.\n"
-    + "The voice engine is not running because it could not start.");
+    "The voice engine is not running because it could not start.");
   // Perso does the whole dub: it needs no voice engine here.
   assert.equal(applyEngineAvailability(av, { translate: "chatgpt", stt: "local", dubMode: "perso" }).warning, null);
   // Starting, running or not installed has its own way of being told.
@@ -364,6 +365,32 @@ test("applyEngineAvailability: a voice engine that failed to start is a warning 
     const other = { ...av, local_engines: { voice: { state, message: "" } } };
     assert.equal(applyEngineAvailability(other, { translate: "chatgpt", stt: "local", dubMode: "local" }).warning, null);
   }
+});
+
+// A28: the translation runtime that failed at start, said for the translators
+// that need it, the way the voice engine's is -- before Start dubbing.
+test("applyEngineAvailability: a translation runtime that failed to start is a warning for Hunyuan and Gemma 3", () => {
+  const av = { ...ALL_AVAILABLE, local_engines: { voice: { state: "running", message: "" },
+                                                   translation: { state: "failed", message: "x" } } };
+  assert.equal(applyEngineAvailability(av, { translate: "hunyuan", dubMode: "local" }).warning,
+    "The translation engine could not start, so Hunyuan cannot translate. Choose another translator, or quit and reopen PersoDub.");
+  assert.match(applyEngineAvailability(av, { translate: "gemma", dubMode: "local" }).warning, /so Gemma 3 cannot translate/);
+  // ChatGPT and Gemini need no runtime, and Perso translates on its side.
+  assert.equal(applyEngineAvailability(av, { translate: "chatgpt", dubMode: "local" }).warning, null);
+  assert.equal(applyEngineAvailability(av, { translate: "hunyuan", dubMode: "perso" }).warning, null);
+});
+
+// A26: the start's own "may be slow" (GET /api/engines ram_slow), said before
+// Start with the memory it is about.
+test("applyEngineAvailability: a computer whose memory makes this dub slow says so, with its size", () => {
+  const av = { ...ALL_AVAILABLE, ram_gb: 14, ram_slow: ["gemma"] };
+  assert.equal(applyEngineAvailability(av, { translate: "gemma", dubMode: "local" }).warning,
+    "This computer has 14 GB of memory, so dubbing may take a while. Dubbing with the Perso API uses almost no memory.");
+  assert.equal(applyEngineAvailability(av, { translate: "chatgpt", dubMode: "local" }).warning, null);
+  assert.equal(applyEngineAvailability(av, { translate: "gemma", dubMode: "perso" }).warning, null);
+  // Under a failed voice engine, one line each.
+  const both = { ...av, local_engines: { voice: { state: "failed", message: "Off." } } };
+  assert.equal(applyEngineAvailability(both, { translate: "gemma", dubMode: "local" }).warning.split("\n").length, 2);
 });
 
 test("applyEngineAvailability: a missing local Gemma is neither disabled nor switched away", () => {
@@ -423,7 +450,7 @@ test("engineChips: the local stack, quality first and every role named", () => {
 test("engineChips: the paid engines are marked, and 1 take is Fast mode", () => {
   const chips = engineChips({ stt_engine: "perso", translator: "gemini", tts: "qwen3", quality: 1 });
   assert.deepEqual(chips.map((c) => `${c.role} ${c.label}`.trim()),
-    ["Fast mode", "STT Perso", "Translation Gemini", "TTS Qwen3-TTS"]);
+    ["Fast mode", "STT Perso", "Translation Gemini API", "TTS Qwen3-TTS"]);
   assert.deepEqual(chips.map((c) => c.api), [false, true, true, false]);
 });
 
@@ -461,6 +488,21 @@ test("engineLine names the role beside every engine", () => {
   assert.equal(engineLine({ project: "old" }), "");
 });
 
+// B14, B16: the translator by the name the company calls it, with the model
+// the job kept; a job from before it was kept names the translator alone.
+test("translatorLabel names the translator with the model the job kept", () => {
+  assert.equal(translatorLabel({ translator: "chatgpt", translator_model: "gpt-5.6-luna" }), "ChatGPT (gpt-5.6-luna)");
+  assert.equal(translatorLabel({ translator: "chatgpt" }), "ChatGPT");
+  assert.equal(translatorLabel({ translator: "gemini", translator_model: "gemini-flash-latest" }), "Gemini API (Flash)");
+  assert.equal(translatorLabel({ translator: "hunyuan", translator_model: "hy-mt2:1.8b" }), "Hunyuan 1.8B");
+  assert.equal(translatorLabel({ translator: "gemma", translator_model: "gemma3:12b" }), "Gemma 3");
+  assert.equal(translatorLabel({ dub_mode: "perso" }), "Perso");
+  assert.equal(translatorLabel({ translator: "made-up" }), "");
+  assert.equal(translatorLabel(null), "");
+  assert.equal(engineLine({ stt_engine: "whisper", translator: "chatgpt", translator_model: "gpt-5.6-luna" }),
+    "Transcription Whisper · Translation ChatGPT (gpt-5.6-luna)");
+});
+
 test("engineChips: a job saved before the fields existed shows nothing", () => {
   assert.deepEqual(engineChips({ project: "old", language_code: "en" }), []);
   assert.deepEqual(engineChips(null), []);
@@ -486,6 +528,9 @@ test("buildDubFormData always names the separation, local included", () => {
   assert.equal(fd2.get("sep_engine"), "local");
   const fd3 = buildDubFormData({ video: new Blob(["x"]), targetLang: "ko" });
   assert.equal(fd3.get("sep_engine"), "local");
+  // Mel-Band RoFormer is a choice of its own now (Advanced options lists it).
+  const fd4 = buildDubFormData({ video: new Blob(["x"]), targetLang: "ko", sepEngine: "roformer" });
+  assert.equal(fd4.get("sep_engine"), "roformer");
 });
 
 test("applyEngineAvailability: a missing Hunyuan keeps the selection (picking it starts the download)", () => {
@@ -644,6 +689,34 @@ test("startErase carries the trim, both fields or neither -- the route refuses o
   // Several kept parts go as the pairs the dub's own route reads.
   assert.equal(sent[2].body.get("ranges"), "[[0,3.4],[6.8,10]]");
   assert.equal(sent[2].body.get("trim_start"), null);
+});
+
+// The credits left that the Before dubbing card shows beside Start (owner,
+// 2026-10-22): the workspace a dubbing spends from, by the engine's own rule.
+test("fetchCreditsLeft reads the picked workspace's credits, or the only one's, and nothing it cannot be sure of", async () => {
+  const real = globalThis.fetch;
+  const answer = (spaces, settings) => {
+    globalThis.fetch = async (url) => ({ ok: true, json: async () => (url === "/api/perso/spaces" ? { spaces } : settings) });
+  };
+  const two = [{ seq: 7, name: "Mine", credits: 1280 }, { seq: 9, name: "Team", credits: 40 }];
+  try {
+    answer(two, { perso_space_seq: "9" });
+    assert.equal(await fetchCreditsLeft(), 40, "the one picked in Settings");
+    answer([two[0]], { perso_space_seq: "" });
+    assert.equal(await fetchCreditsLeft(), 1280, "a key's only workspace needs no pick");
+    answer(two, { perso_space_seq: "" });
+    assert.equal(await fetchCreditsLeft(), null, "several and none picked: the dubbing would ask which");
+    answer([two[0]], { perso_space_seq: "3" });
+    assert.equal(await fetchCreditsLeft(), null, "a pick the list no longer has is not someone else's");
+    answer([{ seq: 7, name: "Mine", credits: null }], { perso_space_seq: "7" });
+    assert.equal(await fetchCreditsLeft(), null, "Perso did not say");
+    globalThis.fetch = async () => ({ ok: false, status: 409, json: async () => ({}) });
+    assert.equal(await fetchCreditsLeft(), null, "no key saved");
+    globalThis.fetch = async () => { throw new TypeError("Failed to fetch"); };
+    assert.equal(await fetchCreditsLeft(), null);
+  } finally {
+    globalThis.fetch = real;
+  }
 });
 
 test("buildDubFormData: the voice engine travels when one is chosen, and only then", () => {

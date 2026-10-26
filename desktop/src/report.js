@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { arch as osArch, cpus, platform as osPlatform, release, totalmem } from "node:os";
-import { ERROR_CODES, INSTALL_STEPS } from "./analytics.js";
+import { ERROR_CODES, INSTALL_STEPS, timingSeconds } from "./analytics.js";
 import { PROBE_NAMES } from "./diagnostics.js";
 
 // Automatic failure reports. A usage count (analytics.js) says a dub failed;
@@ -18,6 +18,10 @@ import { PROBE_NAMES } from "./diagnostics.js";
 // counts' switch: turning one off leaves the other alone.
 
 export const REPORT_KINDS = new Set(["install", "dub", "erase", "agent"]);
+// A job that finished sends a record instead (code "ok", buildReport): the
+// three kinds of job there are, for the private dashboard's list of what ran
+// (owner, 2026-10-22). A record never becomes an issue.
+export const RECORD_KINDS = new Set(["dub", "erase", "separate"]);
 
 // One report, whole, must fit in a GitHub issue body with room to spare.
 // Everything above this is cut out of the log tails (trimToSize below).
@@ -94,6 +98,11 @@ const EMAIL = /\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/g;
 const LONG_TOKEN = /(?<![A-Za-z0-9_\-/\\.])[A-Za-z0-9_-]{32,}(?![A-Za-z0-9_\-/\\.])/g;
 
 const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>)\]}]+/gi;
+
+// A report's own device field, as its debug print (PERSODUB_REPORTS_DEBUG=1)
+// writes it into shell.log, whose tail a later report sends. That field is for
+// the private dashboard, and a log tail goes into the public issue.
+const DEVICE_FIELD = /("device":")[0-9a-f]{12}"/g;
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -213,6 +222,7 @@ export function maskText(text, { home = "", kit = "" } = {}) {
   for (const p of KEY_PATTERNS) out = out.replace(p, "[REDACTED]");
   // A sign-in token and an e-mail address (review 2026-09-23).
   out = out.replace(JWT, "[REDACTED]").replace(EMAIL, "[REDACTED]");
+  out = out.replace(DEVICE_FIELD, '$1[REDACTED]"');
   return out.replace(LONG_TOKEN, "[REDACTED]");
 }
 
@@ -423,8 +433,12 @@ export function buildReport({
   diagnostics = {},
   version = "",
   installId = "",
+  device = "",
   home = "",
   kit = "",
+  // A finished job's timing off its record (analytics.js dubFacts), read only
+  // when code is "ok".
+  timing,
 } = {}, { maxBytes = MAX_BYTES } = {}) {
   const { packs: envPacks, ...machine } = env;
   const isInstall = kind === "install";
@@ -432,6 +446,9 @@ export function buildReport({
     kind: REPORT_KINDS.has(kind) ? kind : "unknown",
     version: String(version || ""),
     installId: String(installId || ""),
+    // The computer's id (analytics.js keepDevice), its first twelve characters
+    // and nothing longer, for the private dashboard only.
+    device: /^[0-9a-f]{12}$/.test(String(device || "")) ? String(device) : "",
     // Install failures name a step out of installSpec's twelve; everything
     // else names a stage out of app/stages.py. Both are held to the published
     // shape for the same reason error codes are (analytics.js).
@@ -455,6 +472,16 @@ export function buildReport({
       ollama: maskTail(withoutEncodedNames(logTails.ollama), { home, kit, maxLines: ENGINE_LOG_LINES }),
     },
   };
+  // A job that finished: its record says what ran, on what machine, and for
+  // how long. No error, no stage it stopped at, no tails and no probes: it
+  // never becomes an issue, and its logs travel in the archive.
+  if (code === "ok") {
+    Object.assign(report, {
+      kind: RECORD_KINDS.has(kind) ? kind : "unknown",
+      stage: "done", stageMarker: "", code: "ok", message: "", diagnostics: {}, logTails: {},
+      outcome: "ok", timing: timingSeconds(timing),
+    });
+  }
   report.fingerprint = fingerprint({
     platformKey: machine.platformKey || "",
     step: report.step || report.stage,

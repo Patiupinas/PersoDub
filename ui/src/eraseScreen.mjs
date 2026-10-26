@@ -21,10 +21,12 @@ import { uploadDownload, downloadVideoUrl, suggestEraseArea, startErase,
          startDownload, fetchDownload, eraseToDub } from "./dubApi.mjs";
 import { clampArea, defaultArea, dragArea, toScreen, videoPerScreen, isWhole,
          estimateSeconds, estimateLabel, progressLine, isPackMissing, noGpuNote, bigBoxNote, AREA_TIPS,
-         packNeededLine, eraseView, workLength, trimNote, partRange } from "./eraseArea.mjs";
+         packNeededLine, eraseView, workLength, trimNote, partRange, rangeLine, cropView } from "./eraseArea.mjs";
 import { getDraft, setDraft, setRanges, onDraftChange,
          isWhole as keptWhole } from "./draft.mjs";
-import { downloadsLabel, errorText, plainFailure, rawLogLines, fmtLength, videoCardHtml } from "./format.mjs";
+import { sourceToKept } from "./cutTools.mjs";
+import { downloadsLabel, errorText, plainFailure, rawLogLines, fmtLength, fmtClockTenths, escapeHtml,
+         videoCardHtml } from "./format.mjs";
 import { emptyTabHtml, wireImportBlock, wireImportInput } from "./importBlock.mjs";
 import { t } from "./i18n.mjs";
 
@@ -54,15 +56,20 @@ export const PACK_ID = "subtitle-eraser";
  *        erased video, on its Dubbing tab
  * @param {(path: string) => void} deps.reveal  show a saved file in the
  *        computer's own file window, or null outside the desktop app
+ * @param {() => Promise<string>} [deps.pickedFolder]  the folder the Download
+ *        dialog's Change picked, "" for Downloads, so the saved line names it
  * @param {(info: object) => void} deps.showTimeline  what the timeline draws
  *        while this screen is up (ui/src/timeline.mjs showErase)
  * @param {() => boolean} [deps.projectOpen]  a dubbing project is open on the
  *        page, so this screen is its Erase tab
+ * @param {(downloadId: string) => void} [deps.onEraseStarted]  an erase was
+ *        started on this held video: its job is the video's card from now on
  * @returns the operations the rest of the page calls.
  */
 export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFile,
                                     installPack, packRow, onPackProgress, onJobsChanged,
-                                    onDub, reveal, showTimeline, projectOpen = () => false }) {
+                                    onDub, reveal, showTimeline, projectOpen = () => false,
+                                    onEraseStarted = () => {}, pickedFolder = async () => "" }) {
   // No video yet: the shared Import block (ui/src/importBlock.mjs), wired at
   // the end of this function.
   $("eraseImportSlot").outerHTML = emptyTabHtml("erase", "eraseZone", "eraseLink");
@@ -158,6 +165,38 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
     el.style.height = `${box.height}px`;
   }
 
+  /**
+   * The Area card's enlargement (design 5, owner 2026-10-22): the box's own
+   * part of the frame at the playhead, the box's edge dotted over it, and the
+   * time it shows. Writing that sticks out of the box shows here first.
+   */
+  function drawCrop() {
+    if ($("eraseCrop").hidden || !area) return;
+    const v = $("eraseVideo");
+    const at = v.currentTime || 0;
+    // The clock under the video counts the timeline's kept time; so does this.
+    $("eraseCropTime").textContent = t("In the box · {time}",
+      { time: fmtClockTenths(source.ranges ? sourceToKept(source.ranges, at) : at) });
+    // Out of sight (another tab, the left panel hidden) there is nothing to
+    // place: the observer below draws it again once it is back.
+    const pic = $("eraseCropPic");
+    const w = pic.clientWidth, h = pic.clientHeight;
+    if (!w || !h) return;
+    const crop = cropView(area, frame.w, frame.h, w / h);
+    const edge = $("eraseCropBox").style;
+    edge.left = `${crop.box.left * 100}%`;
+    edge.top = `${crop.box.top * 100}%`;
+    edge.width = `${crop.box.width * 100}%`;
+    edge.height = `${crop.box.height * 100}%`;
+    // The picture, once the video has a frame to give. Mid-seek it has none
+    // and the last one stays up until "seeked" brings the next.
+    if (!(v.readyState >= 2) || !pic.getContext) return;
+    const scale = window.devicePixelRatio || 1;
+    pic.width = Math.round(w * scale);
+    pic.height = Math.round(h * scale);
+    pic.getContext("2d").drawImage(v, crop.x, crop.y, crop.w, crop.h, 0, 0, pic.width, pic.height);
+  }
+
   /** Everything on screen, from what is known right now. One place, one order. */
   function paint() {
     const view = eraseView({ source, job });
@@ -185,9 +224,13 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
     // An erase opened out of the Projects list has no length on its record:
     // its own video says how long it is once it has loaded.
     const shown = job ? Number($("eraseVideo").duration) || 0 : 0;
-    $("eraseVideoCard").innerHTML = !source ? ""
+    // Before an erase the card also says what it will erase, on one line with
+    // the whole of it on the tip; from the start the erase's own card says so.
+    const range = view === "area" ? rangeLine(source) : "";
+    $("eraseVideoCard").innerHTML = (!source ? ""
       : source.duration ? videoCardHtml({ name: source.title, kept: workLength(source), total: source.duration })
-      : videoCardHtml({ name: source.title, kept: shown, total: shown });
+      : videoCardHtml({ name: source.title, kept: shown, total: shown }))
+      + (range ? `<div class="s erase-range" title="${escapeHtml(range)}">${escapeHtml(range)}</div>` : "");
     $("erasePartCard").hidden = view === "area";
     const pct = working ? Math.round(job.percent || 0) : 0;
     $("erasePartCard").classList.toggle("ok", done);
@@ -198,6 +241,8 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
     $("eraseBarBox").hidden = !working;
     $("eraseFill").style.width = `${pct}%`;
     $("erasePartNote").textContent = done ? t("Compare in the Original and Erased tabs") : "";
+    $("eraseDoneNote").textContent = done
+      ? t("Send the erased video to Dubbing to add new subtitles in the dubbing language. The original subtitles are gone now.") : "";
     $("eraseState").classList.toggle("bad", view === "failed");
     if (working) {
       $("eraseState").textContent = job.status === "cancelling"
@@ -219,11 +264,26 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
     $("eraseAreaTip").textContent = t(AREA_TIPS[1]);
     $("eraseAreaTip").hidden = done || working;
     $("eraseResetBtn").hidden = view !== "area";
+    // The enlargement is for placing the box, so it goes once the box is locked.
+    $("eraseCrop").hidden = view !== "area" || !frame.w || !frame.h;
+    $("eraseCropBox").classList.toggle("finding", finding);
     // The minutes hardly follow the box's size, so a box dragged out over half
     // the frame is warned about in words.
     const big = view === "area" ? bigBoxNote(area, frame.w, frame.h) : "";
     $("eraseBigBox").textContent = big;
     $("eraseBigBox").hidden = !big;
+    // One line under the cards for the state the screen is in (design 5,
+    // owner 2026-10-22). A stopped erase says why in its own card instead.
+    // Placing the box, a card in its room says what the erase makes (owner,
+    // 2026-10-22), and gives way to a warning -- the eraser to download, no
+    // graphics card, a box this big -- as the column at 1280x800 has no room
+    // for both.
+    const warned = packMissing || !!noGpuNote(platformKey) || !!big;
+    $("eraseResult").hidden = view !== "area" || warned;
+    const tip = working ? t("Erasing carries on if you go to another screen. The Home card shows the progress.")
+      : done ? t("Save it with Download, or carry on with Dubbing.") : "";
+    $("eraseTipText").textContent = tip;
+    $("eraseTip").hidden = !tip;
 
     // The foot.
     $("eraseWait").hidden = !working;
@@ -277,8 +337,7 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
       title: source ? ((source.title || "").replace(/\.[A-Za-z0-9]{2,4}$/, "") || t("Erase subtitles")) : t("Erase subtitles"),
       subtitle: done ? t("Erased") : view === "drop" ? "" : trimNote(source),
       back: true,
-      estimate: view === "area" && estSeconds()
-        ? t("{estimate} on this computer", { estimate: estimateLabel(estSeconds()) }) : "",
+      estimate: view === "area" ? estimateLabel(estSeconds()) : "",
       erase: view === "area",
       // The top bar's Export saves the erased video; the page hands the press
       // to this screen while it is the screen that is up.
@@ -295,6 +354,7 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
     $("eraseNoGpu").hidden = !gpuNote;
     $("eraseRunBtn").disabled = !area || packMissing || finding;
     if (view === "area" || working) drawBox();
+    drawCrop();
     if (getScreen() === "erase") showTimeline(timelineOf(view, pct));
   }
 
@@ -322,6 +382,10 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
   // picture changes size -- the window, the agent column folding, anything.
   new ResizeObserver(() => { if (!$("eraseBox").hidden) drawBox(); })
     .observe($("eraseStage"));
+  // The enlargement follows the playhead -- a seek, the frames as the video
+  // plays, the first frame of one just loaded -- and its own size.
+  for (const e of ["loadeddata", "seeked", "timeupdate"]) $("eraseVideo").addEventListener(e, drawCrop);
+  new ResizeObserver(drawCrop).observe($("eraseCropPic"));
 
   // ---- Coming in ------------------------------------------------------------
 
@@ -332,6 +396,8 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
     offered = null;
     tab = "erased";
     setVideo("");
+    // The last video's frame goes with it.
+    $("eraseCropPic").width = 0;
     $("eraseError").textContent = "";
     stopWatchingLink();
     $("eraseDlRow").hidden = true;
@@ -747,6 +813,7 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
     if (!source || !area || packMissing) return;
     $("eraseRunBtn").disabled = true;
     $("eraseError").textContent = "";
+    const held = source.downloadId;
     let jid;
     try {
       // One kept part is a trim; several are joined first, as a dub's are.
@@ -767,6 +834,7 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
     job = { id: jid, status: "queued", percent: 0, done: false };
     paint();
     onJobsChanged();
+    onEraseStarted(held);
     watch(jid);
   });
 
@@ -874,6 +942,9 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
 
   /** The erased job the top bar's Export has something to hand back from. */
   const erasedJob = () => (job && job.done ? job : null);
+  // The erased video as a video to start from (Burn in subtitles): its job,
+  // its name and the length that was erased.
+  const erasedVideo = () => (erasedJob() ? { id: job.id, name: source.title || "", duration: workLength(source) } : null);
 
   /**
    * What the Export dialog saves while this screen is up: the erased video,
@@ -885,9 +956,10 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
   async function exportErased({ audio = "", ratio = null } = {}) {
     if (!erasedJob()) throw new Error(t("This video is not erased yet."));
     const res = await saveErased(job.id, { audio, ratio });
+    const picked = await pickedFolder();
     savedPath = res.path || "";
     // Which folder, the way the dub's export line says it.
-    $("eraseSavedWhere").textContent = downloadsLabel(savedPath) || t("Downloads");
+    $("eraseSavedWhere").textContent = downloadsLabel(savedPath, picked) || t("Downloads");
     // Show is the desktop app's; in a browser there is no file window to open,
     // so the line says where it went and stops there.
     $("eraseShowWrap").hidden = !reveal || !savedPath;
@@ -964,6 +1036,6 @@ export function initEraseScreenUi({ $, showScreen, getScreen, setTopbar, checkFi
   // a dubbing project is open. That project's video is held as the draft for its
   // Erase tab, and Export there handed back the dubbing's own files instead.
   const exportsDraft = () => showsDraft() && !projectOpen();
-  return { openErase, openEraseTab, openEraseWith, openEraseOn, sourceId, openEraseJob, exportErased, erasedJob, hasJob,
+  return { openErase, openEraseTab, openEraseWith, openEraseOn, sourceId, openEraseJob, exportErased, erasedJob, erasedVideo, hasJob,
            showsDraft, exportsDraft, origin };
 }

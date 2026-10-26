@@ -94,6 +94,9 @@ def test_resume_with_another_translator_translates_with_it_and_records_it(monkey
     _wait_not_running(jid)
     job = client.get(f"/api/dub/jobs/{jid}").json()
     assert job["status"] == "done" and job["translator"] == "hunyuan"
+    # Its model goes with it: the screen names the one that translated (B16).
+    from app.config import OLLAMA_HUNYUAN_MODEL
+    assert job["translator_model"] == OLLAMA_HUNYUAN_MODEL
     assert calls[1]["resume"] is True and calls[1]["translate_engine"] == "hunyuan"
     assert "Translating with Hunyuan instead of ChatGPT." in job["logs"]
 
@@ -387,6 +390,19 @@ def test_a_remade_voices_job_resumes_voices_only():
     dub_launch.work_for(job, cancel_check=lambda: False, on_notice=None, resume=True,
                         voices_only=bool(job["voices_only"]), run_dub=lambda **k: seen.update(k))(lambda m: None)
     assert seen["stt_engine"] is None and seen["sep_engine"] is None and seen["translate_engine"] is None
+
+
+def test_a_job_runs_again_with_the_separation_it_recorded():
+    # Demucs and the RoFormer are two choices: "Try again" or Resume separates
+    # with the one the job was started with, not with whichever is on disk.
+    from app import dub_launch
+
+    for recorded in ("demucs", "roformer", "perso"):
+        seen = {}
+        job = {"id": "j", "work_dir": "/w", "separation": recorded, "language_code": "es"}
+        dub_launch.work_for(job, cancel_check=lambda: False, on_notice=None, resume=True,
+                            run_dub=lambda **k: seen.update(k))(lambda m: None)
+        assert seen["sep_engine"] == recorded
 
 
 def test_high_quality_resume_keeps_the_takes_already_made(tmp_path, monkeypatch):

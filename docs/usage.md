@@ -246,7 +246,9 @@ card.
 
 Click one to reopen it. A finished job comes back on the finished screen; a failed or
 cancelled one shows the reason, with **Resume**, which carries on from where it
-stopped, and **Start over** (a Perso API dub has only **Start over**). The **...**
+stopped, and **Start over** (a Perso API dub has only **Start over**). A Perso API dub
+on a free-plan workspace ends as **See it on Perso**: Perso made it but does not let a
+free plan download it, and **Open in Perso** opens it on Perso's site. The **...**
 menu on a card has **Rename** and **Delete** (a draft's, **Delete** alone); **Delete**
 removes the project's folders, with the video, the script and the voices, and cannot
 be undone.
@@ -278,9 +280,9 @@ next dub, no restart needed.
 **Storage** opens the folder your finished videos are saved in (**Show in Finder**, or
 **Show in Explorer** on Windows).
 
-**Privacy** has two switches, both on to begin with: *Anonymous usage counts* and
-*Send job logs*. Keys and folder names are removed from a job's logs before they
-leave.
+**Privacy** has three switches: *Anonymous usage counts* and *Help improve PersoDub*, both on to
+begin with, and *Share App Analytics*, on to begin with in the production edition only.
+Keys and folder names are removed from a job's logs before they leave.
 
 **About** has the version (press it to see what is new) and, under
 **Acknowledgements**, the licences of the open-source components. The full text

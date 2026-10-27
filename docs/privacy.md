@@ -79,6 +79,38 @@ The random install ID is made the first time the app starts, whether the counts 
 or off, and kept on this computer. With the counts off it is not sent here; its first 12
 characters still go with the job logs below while they are on.
 
+## Share App Analytics
+
+From 0.9.2 the app can record which buttons, links, tabs and menu items you press and which
+screens you open, to see which parts of it people use. Each press is a name taken from the
+app's own markup (for example `home_nav_settings`), the screen's name and the time; each
+batch also carries the random install ID, the app version, the edition, and your operating
+system and its version, and, signed in to the production edition, the account as a one-way
+hash of its Perso number that cannot be turned back into the account. Never what you type,
+your video, files, filenames, paths, links, scripts, the account's number or its address. The batches go to the same relay as the job logs, every 30
+seconds, which passes them to Google Analytics (and later Amplitude) and keeps nothing itself.
+
+The same switch records the steps of your way through the app: the app opened (and whether
+it is this computer's first time) and closed (on which screen, signed in or not, after how
+many seconds), the install, the sign-in (started, handed to the browser, finished, cancelled
+or failed, whether the account was just made, whether it has an API key), a video brought in
+(picked, dropped or a link, video or sound), a dubbing started (local or Perso API, the
+language it goes into, the video's length in minutes and seconds, the speakers asked for), its
+stages and how long each took, how it ended and, for a failure, the one error code a failure
+report would carry, the erase, burn and download tools, the credit popups and a Recharge
+pressed, a key saved, an inquiry sent (its kind only), an error screen's code and an update
+found or installed (its version). Each step is a name with a few words and numbers chosen by
+the app from a fixed list: never a title, a file name, a link, what an inquiry says or an
+address. The last batch is sent as the app closes, waiting three seconds at most; what does
+not get through goes the next time the app opens.
+
+It is on to begin with in the production edition and off in the open-source edition. Turn
+it on or off in **Settings → Privacy**, or with `PERSODUB_EVENTS=1` or `0` in `kit.env`; it
+applies to the next batch. With the usage counts off (`PERSODUB_NO_ANALYTICS=1`) nothing
+leaves, and `PERSODUB_EVENTS_DEBUG=1` writes how many would have been sent into the app's
+log instead of sending them. `PERSODUB_EVENTS_SEND=1` is the opposite, for checking the road end to end from a
+from-source run: it sends even where a developer's run would only count. No build sets it.
+
 ## Job logs
 
 With this switch on, the full logs of every job, finished or failed, are kept for 30 days
@@ -130,7 +162,7 @@ not its words, and a Perso job by the credits it used, never your balance (from 
 earlier versions could quote a translation in an error sentence). The relay that posts the
 issue does not store your IP address, and applies the same rules a second time.
 
-Turn it off in **Settings → Privacy** (**Send job logs**) or with `PERSODUB_NO_REPORTS=1`
+Turn it off in **Settings → Privacy** (**Help improve PersoDub**) or with `PERSODUB_NO_REPORTS=1`
 in the kit's `kit.env`; it applies to the next job, no restart. This is a separate switch from
 the usage counts above — turning one off leaves the other alone.
 `PERSODUB_REPORTS_DEBUG=1` prints what would be sent instead of sending it, and a

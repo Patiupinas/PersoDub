@@ -116,7 +116,10 @@ The kit remembers the edition it first ran as in `kit.env`
 The shell also hands the edition to the backend as `PERSODUB_EDITION`
 (`desktop/src/orchestrator.js startEngines`), and `app/setup.py` makes Perso's
 cloud the dub default for production only; the open-source edition, and a
-backend run without the shell, dub on this computer.
+backend run without the shell, dub on this computer. The remembered edition
+is for that default only: the Perso sign-in and the button events' default
+follow the app file's own edition, which the backend gets as
+`PERSODUB_BUILD_EDITION`.
 
 ### 1.2 The kit and the other folders
 
@@ -151,9 +154,11 @@ own `persodub.log` and `job-<id>.log`, written there through `PERSODUB_LOG_DIR`,
 and `timeline.log`, `shell.log`, `persodub.log` and the job logs merged in time
 order by `desktop/src/timeline.js`)
 and `<userData>/ports.json`. `<userData>` is Electron's folder for the app, named
-after `desktop/package.json`'s `name`:
+after the packaged `package.json`'s `name` (`desktop/electron-builder.js`
+sets it per edition):
 `~/Library/Application Support/persodub-desktop-shell` on macOS,
-`%APPDATA%\persodub-desktop-shell` on Windows.
+`%APPDATA%\persodub-desktop-shell` on Windows, and `perso-desktopapp-shell`
+for the production edition, whose kit is in a `PersoDubbing` folder.
 
 ### 1.3 Boot
 

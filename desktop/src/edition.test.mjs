@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { EDITIONS, buildEdition, readEdition, editionFeed, rememberedEdition, kitEdition, editionLine } from "./edition.js";
+import { PRODUCTS, displayName, EDITIONS, buildEdition, readEdition, editionFeed, rememberedEdition, kitEdition, editionLine, buildEnvText, readBuildEnv,
+  PRODUCTION_UPDATE_URL } from "./edition.js";
 
 // A payload folder, with an EDITION file when `edition` is given.
 function payload(edition) {
@@ -14,8 +15,8 @@ function payload(edition) {
   return dir;
 }
 
-test("both editions name the public repository", () => {
-  assert.deepEqual(EDITIONS, { opensource: "stronghamjji/PersoDub", production: "stronghamjji/PersoDub" });
+test("only the open-source edition names a repository", () => {
+  assert.deepEqual(EDITIONS, { opensource: "stronghamjji/PersoDub", production: "" });
 });
 
 test("the build takes a known edition, and unset or empty is the open-source one", () => {
@@ -52,9 +53,31 @@ test("an unknown edition at run time is the open-source one", () => {
   assert.equal(readEdition({ payloadDir: null, env: { PERSODUB_EDITION: "constructor" } }), "opensource");
 });
 
-test("each edition's update feed is its repository's GitHub Releases", () => {
-  assert.deepEqual(editionFeed("production"), { provider: "github", owner: "stronghamjji", repo: "PersoDub" });
+test("the open-source edition's update feed is its repository's GitHub Releases, and production's is Perso's folder", () => {
   assert.deepEqual(editionFeed("opensource"), { provider: "github", owner: "stronghamjji", repo: "PersoDub" });
+  assert.equal(PRODUCTION_UPDATE_URL, "https://portal-static.perso.ai/public/app/desktop/", "the folder, ending with /");
+  assert.deepEqual(editionFeed("production"), { provider: "generic", url: PRODUCTION_UPDATE_URL });
+  assert.equal(editionFeed("production", ""), null, "with no address: never the public releases");
+  // Any other folder given is the production edition's; the open-source edition never reads it.
+  assert.deepEqual(editionFeed("production", "https://downloads.test/persodubbing/"), { provider: "generic", url: "https://downloads.test/persodubbing/" });
+  assert.deepEqual(editionFeed("opensource", "https://downloads.test/persodubbing/"), { provider: "github", owner: "stronghamjji", repo: "PersoDub" });
+});
+
+test("build.env carries the production build's set values only", () => {
+  const env = { PERSODUB_INQUIRY_URL: "", PERSODUB_UPDATE_URL: "https://updates.example/", OTHER: "x" };
+  assert.equal(buildEnvText("production", env), "");
+  assert.equal(buildEnvText("production", { ...env, PERSODUB_INQUIRY_URL: "https://script.example/exec" }),
+    "PERSODUB_INQUIRY_URL=https://script.example/exec\n");
+  assert.equal(buildEnvText("opensource", { ...env, PERSODUB_INQUIRY_URL: "https://script.example/exec" }), "");
+});
+
+test("the running app reads its build values from the payload's build.env, or the environment without a payload", () => {
+  const dir = payload("production");
+  writeFileSync(join(dir, "build.env"), "PERSODUB_INQUIRY_URL=https://script.example/exec\n");
+  const env = { PERSODUB_INQUIRY_URL: "https://elsewhere.example/exec" };
+  assert.deepEqual(readBuildEnv({ payloadDir: dir, env }), { PERSODUB_INQUIRY_URL: "https://script.example/exec" });
+  assert.deepEqual(readBuildEnv({ payloadDir: payload("opensource"), env }), {});
+  assert.deepEqual(readBuildEnv({ payloadDir: null, env: { ...env, OTHER: "x" } }), env);
 });
 
 
@@ -105,4 +128,11 @@ test("the EDITION line says what the edition decides and where it came from", ()
     "EDITION production: dubs default to the Perso API (kept in kit.env; app file: opensource build)");
   assert.equal(editionLine("opensource", "opensource", "first run of this kit, written to kit.env"),
     "EDITION opensource: dubs default to this computer (first run of this kit, written to kit.env; app file: opensource build)");
+});
+
+test("the name on screen: PersoDub for the open-source edition, PersoDubbing for the production edition", () => {
+  assert.equal(displayName("opensource"), "PersoDub");
+  assert.equal(displayName("production"), "PersoDubbing");
+  assert.equal(displayName("nonsense"), "PersoDub");
+  assert.deepEqual(Object.keys(PRODUCTS).sort(), ["opensource", "production"]);
 });

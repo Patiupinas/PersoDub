@@ -10,6 +10,7 @@
 // #keyCancel), and the dropdowns that need a key: #dubModeSelect, #sepSelect,
 // #sttSelect and #translateSelect.
 import { t } from "./i18n.mjs";
+import { record as recordStep } from "./events.mjs";
 
 /**
  * @param {object} deps
@@ -25,7 +26,9 @@ import { t } from "./i18n.mjs";
  *   dropdown `sel` (set back to `back` on Cancel), or for
  *   the workspace alone (`spaceOnly`); `then` runs once it is saved.
  */
-export function initKeyWindow({ $, keySaved, onSaved }) {
+// persoKeyLink: the tagged link to Perso's key page the app's settings carry
+// (perso_signup_link), so the visit says it came from this app; the bare page without it.
+export function initKeyWindow({ $, keySaved, onSaved, persoKeyLink = () => null, record = recordStep }) {
   // Picking a keyed engine with no key saved opens the key window. Save keeps
   // the choice; Cancel puts the dropdown back where it was.
   const KEY_KINDS = {
@@ -91,7 +94,7 @@ export function initKeyWindow({ $, keySaved, onSaved }) {
     keyAsk = { kind, sel, back, spaceOnly, then };
     keySpacesRun += 1;
     $("keyTitle").textContent = spaceOnly ? t("Perso workspace") : KEY_KINDS[kind].title;
-    $("keyLink").href = KEY_KINDS[kind].link;
+    $("keyLink").href = (kind === "perso" && persoKeyLink()) || KEY_KINDS[kind].link;
     $("keyField").hidden = spaceOnly;
     $("keyInput").value = "";
     $("keySpace").replaceChildren();
@@ -149,13 +152,15 @@ export function initKeyWindow({ $, keySaved, onSaved }) {
         body: JSON.stringify(body),
       });
       if (!r.ok) throw new Error();
+      record("key_saved", { ok: true, kind: keyAsk.kind });
       keySaved[keyAsk.kind] = true;
       const then = keyAsk.then;
       closeKey(true);
       onSaved();
       if (then) then();
     } catch {
-      $("keyError").textContent = t("Could not save the key. Is PersoDub running?");
+      if (keyAsk) record("key_saved", { ok: false, kind: keyAsk.kind });
+      $("keyError").textContent = t("Could not save the key. Is {app} running?");
       $("keySave").disabled = false;
     }
   });

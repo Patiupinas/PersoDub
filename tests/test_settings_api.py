@@ -54,12 +54,15 @@ def test_update_appends_when_the_key_is_absent():
 
 def test_get_reports_unset_keys(tmp_path, monkeypatch):
     _kit(tmp_path, monkeypatch, BASE)
+    monkeypatch.delenv("PERSODUB_EDITION", raising=False)
     r = client.get("/api/settings")
     assert r.status_code == 200
     body = r.json()
     # These are computed, not stored -- popped so the rest stays an exact shape check.
     assert body.pop("perso_signup_link").startswith(perso_client.PERSO_SIGNUP_URL)
+    assert body.pop("perso_recharge_link").startswith(perso_client.PERSO_RECHARGE_URL)
     assert body.pop("perso_workspace_link").startswith(perso_client.PERSO_WORKSPACE_URL)
+    assert body.pop("perso_utm").startswith("utm_source=") and "utm_content" not in body
     assert body.pop("app_version") == perso_client.APP_VERSION
     # Where the finished videos actually are. The screen used to guess at this
     # path; it comes from the server now, so a moved workspace still reads true.
@@ -67,7 +70,7 @@ def test_get_reports_unset_keys(tmp_path, monkeypatch):
     assert body == {"gemini_key_set": False, "perso_key_set": False,
                     "gemini_api_key": None, "perso_api_key": None,
                     "perso_space_seq": None, "analytics_off": False,
-                    "reports_off": False, "ui_language": "auto"}
+                    "reports_off": False, "events_enabled": False, "ui_language": "auto"}
 
 
 def test_get_carries_the_utm_tagged_signup_link(tmp_path, monkeypatch):
@@ -528,3 +531,30 @@ def test_cleared_workspace_pin_does_not_fall_back_to_the_process_env(tmp_path, m
     monkeypatch.setenv("PERSO_SPACE_SEQ", "999")
     monkeypatch.setattr(perso_client, "_resolve_space_seq", lambda key, base: 42)
     assert perso_client.PersoClient().space_seq == 42
+
+
+# --- the button events switch ----------------------------------------------
+
+def test_events_follow_the_build_edition_until_the_switch_is_saved(tmp_path, monkeypatch):
+    # The shell decides the same way (desktop/src/events.js eventsOn): no line
+    # in kit.env means on for the production build and off for open source.
+    # The kit's remembered edition (PERSODUB_EDITION) is for a dub's default
+    # only: an open-source build whose kit says production records nothing.
+    _kit(tmp_path, monkeypatch, BASE)
+    monkeypatch.setenv("PERSODUB_EDITION", "opensource")
+    monkeypatch.setenv("PERSODUB_BUILD_EDITION", "production")
+    assert client.get("/api/settings").json()["events_enabled"] is True
+    monkeypatch.setenv("PERSODUB_EDITION", "production")
+    monkeypatch.setenv("PERSODUB_BUILD_EDITION", "opensource")
+    assert client.get("/api/settings").json()["events_enabled"] is False
+
+
+def test_the_events_switch_writes_the_line_the_shell_reads(tmp_path, monkeypatch):
+    kit = _kit(tmp_path, monkeypatch, BASE)
+    monkeypatch.setenv("PERSODUB_BUILD_EDITION", "production")
+    assert client.post("/api/settings", json={"events_enabled": False}).status_code == 200
+    assert "PERSODUB_EVENTS=0" in (kit / "kit.env").read_text(encoding="utf-8")
+    assert client.get("/api/settings").json()["events_enabled"] is False
+    client.post("/api/settings", json={"events_enabled": True})
+    assert "PERSODUB_EVENTS=1" in (kit / "kit.env").read_text(encoding="utf-8")
+    assert client.get("/api/settings").json()["events_enabled"] is True

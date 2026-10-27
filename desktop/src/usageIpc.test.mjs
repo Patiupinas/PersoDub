@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { isJobId, registerUsageIpc } from "./usageIpc.js";
+import { dubFinishedProps, isJobId, registerUsageIpc } from "./usageIpc.js";
 
 // Serves GET /api/dub/jobs/<id> out of `jobs`, the way the backend does.
 async function backend(jobs) {
@@ -22,6 +22,7 @@ function setup({ engines = null, lastRunClosedByUser = false } = {}) {
   const counted = [];
   const reported = [];
   const logged = [];
+  const steps = [];
   registerUsageIpc({
     ipcMain: { on: (channel, fn) => { on[channel] = fn; } },
     ctx: { engines, bootedKitDir: "/kit" },
@@ -29,8 +30,9 @@ function setup({ engines = null, lastRunClosedByUser = false } = {}) {
     sendReport: (opts) => reported.push(opts),
     shellLog: (line) => logged.push(line),
     lastRunClosedByUser,
+    track: (name, props) => steps.push([name, props]),
   });
-  return { on, counted, reported, logged };
+  return { on, counted, reported, logged, steps };
 }
 
 test("a job id is held to the shape the backend gives one before it goes near a URL", () => {
@@ -63,6 +65,21 @@ test("a cancel is neither counted nor reported; a success is counted with the jo
     assert.deepEqual(s.counted, [["dub_success", "/kit", undefined, undefined,
       { engines: { stt_engine: "whisper", separation: "demucs", dub_mode: "perso" }, credits: 3, seconds: 12, timing }]]);
     assert.deepEqual(s.reported, [{ kind: "dub", kitDir: "/kit", code: "ok", jobId: "fedcba", timing }]);
+  } finally {
+    be.close();
+  }
+});
+
+test("a dubbing done on Perso is a success: counted, its record sent, and its own outcome in the step", async () => {
+  // A free-plan workspace's Perso dubbing: made and paid for, the file left
+  // on Perso's site.
+  const be = await backend({ fedcba: { kind: "dub", dub_mode: "perso", perso_credits: 3, duration: 12.4, elapsed_seconds: 80 } });
+  try {
+    const s = setup({ engines: { url: be.url } });
+    await s.on["shell:count-dub"]({}, { status: "on_perso", job: "fedcba" });
+    assert.deepEqual(s.counted.map((c) => c[0]), ["dub_success"]);
+    assert.deepEqual(s.reported.map((r) => [r.code, r.jobId]), [["ok", "fedcba"]]);
+    assert.deepEqual(s.steps, [["dub_finished", { outcome: "on_perso", mode: "perso", minutes: 0, video_seconds: 12, seconds: 80 }]]);
   } finally {
     be.close();
   }
@@ -111,4 +128,36 @@ test("a finished erase sends its record with the job's timing", async () => {
   } finally {
     be.close();
   }
+});
+
+// The dub_finished step (events.js track): once a job, done, failed or
+// cancelled, with the job's own facts and never its title, file or error text.
+test("a dub's end is the dub_finished step, once a job, with the job's own facts and the failure's one word", async () => {
+  const be = await backend({
+    fedcba: { kind: "dub", dub_mode: "perso", duration: 170.4, elapsed_seconds: 412, title: "My wedding", stage_seconds: { upload: 9, "perso-dubbing": 300 } },
+    abc123: { dub_mode: "local", duration: 20, elapsed_seconds: 95, error: "Out of memory in /Users/me/x.mp4",
+              stage_seconds: { separate: 12, transcribe: 30, synthesize: 50 } },
+    a0a0a0: { kind: "separate" },
+  });
+  try {
+    const s = setup({ engines: { url: be.url } });
+    await s.on["shell:count-dub"]({}, { status: "done", job: "fedcba" });
+    await s.on["shell:count-dub"]({}, { status: "done", job: "fedcba" });
+    await s.on["shell:count-dub"]({}, { status: "error", detail: "RuntimeError: CUDA out of memory", job: "abc123" });
+    await s.on["shell:count-dub"]({}, { status: "cancelled", job: "0b0b0b" });
+    await s.on["shell:count-dub"]({}, { status: "done", job: "a0a0a0" });
+    assert.deepEqual(s.steps, [
+      ["dub_finished", { outcome: "done", mode: "perso", minutes: 3, video_seconds: 170, seconds: 412 }],
+      ["dub_finished", { outcome: "failed", stage: "synthesize", reason: "out-of-memory", mode: "local", minutes: 0, video_seconds: 20, seconds: 95 }],
+      ["dub_finished", { outcome: "cancelled" }],
+    ]);
+    assert.equal(s.counted.length, 3, "the cancel is still not counted");
+  } finally {
+    be.close();
+  }
+});
+
+test("a job record the shell could not read still gives the outcome and the reason", () => {
+  assert.deepEqual(dubFinishedProps("error", "interrupted", null), { outcome: "failed", reason: "interrupted" });
+  assert.deepEqual(dubFinishedProps("done", undefined, {}), { outcome: "done", mode: "local" });
 });

@@ -6,12 +6,12 @@
 // Never typed or pressed here: an API key field, a sign-in (ChatGPT, Claude,
 // Codex), a model's Delete confirm, anything that opens an outside site.
 // Notes never carry a key, an account address or a home folder's name.
-import { isClosed, isOpen, onHome, pressable, shown, sleep, textOf, Skip } from "../lib/cdp.mjs";
+import { isClosed, isOpen, isProductionHelp, onHome, pressable, shown, sleep, textOf, Skip } from "../lib/cdp.mjs";
 
 export const area = "settings";
 
-const TABS = ["models", "keys", "storage", "privacy", "about"];
-const TAB_WORDS = ["Models", "API keys", "Storage", "Privacy", "About"];
+const TABS = ["keys", "models", "storage", "privacy", "about"];
+const TAB_WORDS = ["API keys", "Models", "Storage", "Privacy", "About"];
 const GROUPS = ["Audio separation", "Speech-to-text", "Translation", "Text-to-speech", "Required programs"];
 // Names that stay English in the Korean page: products, engines, units, keys, the 12 looks.
 const ALLOW = ["PersoDub", "Perso API", "Perso", "ChatGPT", "Claude", "Codex", "Whisper", "Demucs", "Mel-Band RoFormer",
@@ -21,12 +21,14 @@ const ALLOW = ["PersoDub", "Perso API", "Perso", "ChatGPT", "Claude", "Codex", "
   "Lower Bar", "Neon", "Black Box", "White Box",
   // Two more names, beyond the list the sweep was asked for: the agent's and the copyright holder's.
   "Dub Agent", "ESTsoft corp.",
+  // The Perso workspace picker's label (kept English in Korean too), and the production edition's name.
+  "Workspace", "PersoDubbing",
   // The assistants' model names, shown as their makers write them ("Claude · Opus").
   "Opus", "Sonnet", "Haiku", "Fable", "GPT"];
 // What the person put there, not the app's words: project and file names, the
 // workspace list, the conversation, the signed-in account.
 const USER_TEXT = [".proj-name", ".proj-rename", "#topbarTitle", "#topbarForwardName", "#queueRows", "#persoSpaceSelect",
-  "#assistantLog", "#assistantState", "#draftPartCard", "#homeBannerLink"].join(",");
+  "#assistantLog", "#assistantState", "#draftPartCard", "#homeBannerLink", "#homeAccount", "#persoAccountMail", "#signInAccount"].join(",");
 
 // An address or a home folder never goes into a note.
 const clean = (s) => String(s).replace(/[^\s@"'<>]+@[^\s@"'<>]+\.[A-Za-z]{2,}/g, "<account>").replace(/\/Users\/[^/\s]+/g, "~")
@@ -200,7 +202,11 @@ export const steps = [
       await app.waitFor("the Settings dialog", 10000, isOpen, "#settingsOverlay");
       const names = await app.inPage(() => [...document.querySelectorAll("#settingsTabs .set-tab")].map((b) => b.textContent.trim()));
       const want = TAB_WORDS.map((k) => app.tr(k));
-      if (names.join("|") !== want.join("|")) throw new Error(`the tabs read ${names.join(", ")}, not ${want.join(", ")}`);
+      // The production edition names the first tab "Account and keys" (ui/src/settingsDialog.mjs paintAccount).
+      const production = [app.tr("Account and keys"), ...want.slice(1)];
+      if (names.join("|") !== want.join("|") && names.join("|") !== production.join("|")) {
+        throw new Error(`the tabs read ${names.join(", ")}, not ${want.join(", ")}`);
+      }
       return `opened from the gear; ${names.length} tabs: ${names.join(", ")}`;
     } },
 
@@ -361,11 +367,10 @@ export const steps = [
                  lines: spans.map((s) => ({ text: s.textContent.trim(), top: s.getBoundingClientRect().top, bottom: s.getBoundingClientRect().bottom })) };
       });
       const lines = got.lines;
-      if (lines.length !== 4) throw new Error(`the job-logs text has ${lines.length} sentences, not 4`);
-      const tangled = lines.slice(1).filter((l, i) => l.top < lines[i].bottom - 1);
-      if (tangled.length) throw new Error(`sentences share a line: ${tangled.map((l) => l.text).join(" / ")}`);
+      // One sentence since 0.9.1 (owner, 2026-10-27): what goes, what never goes and why.
+      if (lines.length !== 1) throw new Error(`the job-logs text has ${lines.length} sentences, not 1`);
       const all = lines.map((l) => l.text).join(" ");
-      const need = app.page.lang === "ko" ? ["실패한 작업만", "PersoDub을 더 좋게 만드는 데"] : ["Only failed jobs", "make PersoDub better"];
+      const need = app.page.lang === "ko" ? ["작업 기록만 보내", `${app.page.name} 개선을 도와요`] : ["job records", `Helps improve ${app.page.name}`];
       const absent = need.filter((w) => !all.includes(w));
       if (absent.length) throw new Error(`the job-logs text lacks ${absent.join(", ")}`);
       const was = (await app.api("/api/settings")).analytics_off;
@@ -389,7 +394,7 @@ export const steps = [
       const now = (await app.api("/api/settings")).analytics_off;
       if (now !== was) throw new Error(`analytics_off did not come back to ${was}`);
       const sw = (i) => `${got.labels[i]} ${got.on[i] ? "on" : "off"}`;
-      return `${sw(0)}, ${sw(1)}; job-logs text 4 sentences on 4 lines; usage counts switch → Save → analytics_off ${was}→${flipped}→${now}`;
+      return `${sw(0)}, ${sw(1)}; job-logs text one sentence; usage counts switch → Save → analytics_off ${was}→${flipped}→${now}`;
     } },
 
   { name: "About: version, What's new, Escape", looks: ["#aboutVersion", "#wnTitle"],
@@ -397,7 +402,7 @@ export const steps = [
       const v = (await app.api("/api/settings")).app_version;
       await showTab(app, "about");
       const said = await app.inPage(textOf, "#aboutVersion");
-      if (said !== `PersoDub ${v}`) throw new Error(`the version reads "${said}", GET /api/settings says ${v}`);
+      if (said !== `${app.page.name} ${v}`) throw new Error(`the version reads "${said}", GET /api/settings says ${v}`);
       await app.click("#aboutVersion");
       await app.waitFor("the What's new window", 5000, isOpen, "#whatsNewOverlay");
       const title = await app.inPage(textOf, "#wnTitle");
@@ -466,18 +471,27 @@ export const steps = [
       await app.waitFor("the Dubbing tab", 10000, shown, "#homeBtn");
       await app.click("#homeBtn");
       await app.waitFor("Home", 10000, onHome);
-      await app.click("#homeHelp");
-      await app.waitFor("Help", 5000, isOpen, "#helpOverlay");
-      const help = await app.inPage(textOf, "#helpTitle");
-      await app.key("Escape");
-      await app.waitFor("Escape to close Help", 5000, isClosed, "#helpOverlay");
+      // The production edition's Help is Perso's desktop app page in the browser, not the dialog.
+      let help;
+      if (app.production) {
+        const urls = await app.opened(() => app.click("#homeHelp"));
+        if (urls.length !== 1 || !isProductionHelp(urls[0])) throw new Error(`Help opened ${urls.join(", ") || "nothing"}`);
+        help = "Perso's desktop app page in the browser";
+      } else {
+        await app.click("#homeHelp");
+        await app.waitFor("Help", 5000, isOpen, "#helpOverlay");
+        help = `"${await app.inPage(textOf, "#helpTitle")}"`;
+        await app.key("Escape");
+        await app.waitFor("Escape to close Help", 5000, isClosed, "#helpOverlay");
+        help += ", Escape closed it";
+      }
       await app.click("#homeWhatsNew");
       await app.waitFor("the update window", 5000, isOpen, "#updateOverlay");
       const upd = await app.inPage(() => `${document.querySelector("#updTitle").textContent.trim()} · ${document.querySelectorAll("#updNotes li").length} notes`);
       await app.key("Escape");
       await app.waitFor("Escape to close the update window", 5000, isClosed, "#updateOverlay");
-      return `${app.tr("Home")} (from the Dubbing tab, ${1 + (ctx.state.homeBtn || 0)} presses) back to Home; [${words[0]}] → "${help}", Escape closed it; `
-        + `[${words[2]}] → "${upd}", Escape closed it; [${words[1]}] pressable, not pressed (opens GitHub in the browser)`;
+      return `${app.tr("Home")} (from the Dubbing tab, ${1 + (ctx.state.homeBtn || 0)} presses) back to Home; [${words[0]}] → ${help}; `
+        + `[${words[2]}] → "${upd}", Escape closed it; [${words[1]}] pressable, not pressed (${app.production ? "opens the inquiry form" : "opens GitHub in the browser"})`;
     } },
 
   { name: "Dub Agent panel: who is signed in", looks: ["#homeAgentOpen"],

@@ -33,23 +33,27 @@
  *        without waiting on any of it.
  * @param {object} [deps.shell]  the desktop shell (window.persodubShell), which
  *        says where downloads go (downloadFolder); null in a browser
+ * @param {object} [deps.account]  the Perso sign-in (ui/src/signIn.mjs): its
+ *        status, a way to hear it change, and logout. Only the
+ *        production edition's status is enabled; the sheet is unchanged otherwise.
  * @returns the operations the rest of the page calls.
  */
 import { setupText, watchSetup } from "./chatgptSetup.mjs";
+import { refreshEvents } from "./events.mjs";
 import { errorText } from "./format.mjs";
 import { t, useLanguage } from "./i18n.mjs";
 import { paintMarkupWords } from "./markupWords.mjs";
 
 // The tabs, in the order they stand. Each is #settingsTab-<name> and shows
 // #settingsPanel-<name>.
-export const SETTINGS_TABS = ["models", "keys", "storage", "privacy", "about"];
+export const SETTINGS_TABS = ["keys", "models", "storage", "privacy", "about"];
 
 export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = () => window.location.reload(),
-                                 shell = null }) {
+                                 shell = null, account = null }) {
   // The tab the user last chose, for this sitting only: a new launch starts
-  // on Models again.
-  let lastTab = "models";
-  let shownTab = "models";
+  // on the first tab, the keys, again.
+  let lastTab = "keys";
+  let shownTab = "keys";
   // Whether the user has chosen a tab since the sheet opened, so a late
   // answer about the models does not pull them off the one they chose.
   let chosenSinceOpen = false;
@@ -214,7 +218,7 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = (
 
   // What was saved when the modal opened, so Save only posts actual edits.
   let keysInitial = { gem: "", per: "" };
-  let togglesInitial = { analytics: true, reports: true };
+  let togglesInitial = { analytics: true, reports: true, events: false };
   // The saved language setting ("auto", "en", "ko"); null until the saved
   // setup has been read, so a sheet that could not read it has no change to
   // count in a picker it never filled.
@@ -241,12 +245,15 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = (
       clearTimeout(persoPreviewTimer);
       loadPersoSpaces(persoSpaceInitial); // async on purpose -- the modal opens without waiting on Perso
       if (st.perso_signup_link) $("persoSignupLink").href = st.perso_signup_link;
+      if (st.perso_recharge_link) $("persoRechargeLink").href = st.perso_recharge_link;
+      // The app's name is the edition's: PersoDubbing in production ({app}, ui/src/i18n.mjs).
       if (realVersion(st.app_version)) {
-        $("aboutVersion").textContent = `PersoDub ${st.app_version}`;
+        $("aboutVersion").textContent = `${t("{app}")} ${st.app_version}`;
       }
       $("analyticsToggle").checked = !st.analytics_off;
       $("reportsToggle").checked = !st.reports_off;
-      togglesInitial = { analytics: !st.analytics_off, reports: !st.reports_off };
+      $("eventsToggle").checked = !!st.events_enabled;
+      togglesInitial = { analytics: !st.analytics_off, reports: !st.reports_off, events: !!st.events_enabled };
       languageInitial = st.ui_language || "auto";
       $("uiLanguageSelect").value = languageInitial;
     } catch {
@@ -335,6 +342,58 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = (
     }
   });
 
+  // The production edition's Perso account (mockup 2026-10-25): signed in
+  // through Perso's sign-in window, so the account row takes the pasted
+  // key's place and the tab is "Account and keys". The open-source
+  // edition's status is not enabled, and then nothing here is touched.
+  let lastAccountStatus = null;   // the status last painted, to tell a real change from a repeat
+  function paintAccount(s) {
+    if (!s || !s.enabled) return;
+    lastAccountStatus = s;
+    $("persoAccountRow").hidden = false;
+    $("persoKeyRow").hidden = true;
+    const tab = $("settingsTab-keys");
+    if (tab.dataset.i18n !== "Account and keys") {
+      tab.dataset.i18n = "Account and keys";
+      tab.textContent = t("Account and keys");
+    }
+    $("persoAccountMail").textContent = s.account || t("Perso account");
+    $("persoKeyChip").textContent = s.hasKey ? t("Key connected") : t("No key");
+    $("persoKeyChip").classList.toggle("done", !!s.hasKey);
+  }
+  // A sign-in changes the key in kit.env (another account's, or none): the
+  // open sheet takes the new one and its workspaces, and nothing else it has.
+  async function reloadPersoKey() {
+    try {
+      const r = await fetch("/api/settings");
+      if (!r.ok) return;
+      const st = await r.json();
+      const per = st.perso_api_key || "";
+      if (per === keysInitial.per) return;
+      keysInitial.per = per;
+      $("persoKeyInput").value = per;
+      persoSpaceInitial = st.perso_space_seq || "";
+      persoPreviewedKey = per;
+      loadPersoSpaces(persoSpaceInitial);
+      paintChanges();
+    } catch { /* the next open reads it again */ }
+  }
+  if (account) {
+    paintAccount(account.status());
+    account.onChange((s) => {
+      // The key in kit.env changes only with the account or its key; a status
+      // that repeats them (the sign-in's waiting, a quiet look) asks for nothing.
+      const before = lastAccountStatus;
+      paintAccount(s);
+      // Signed out, from Sign out here or anywhere else: the sign-in screen
+      // takes the window, and the sheet is not left open under it.
+      if (s.enabled && s.required) { closeSettings(); return; }
+      const changed = !before || before.hasKey !== s.hasKey || before.account !== s.account;
+      if (s.enabled && changed && $("settingsOverlay").classList.contains("open")) reloadPersoKey();
+    });
+    $("persoSignOutBtn").addEventListener("click", () => account.logout());
+  }
+
   // Storage's line on where downloads go, the folder they go into now (the
   // one Change in the Download dialog picked, or Downloads). Said, not
   // changed here. A browser saves where it is set to, so the row stays away.
@@ -352,6 +411,7 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = (
     const asked = SETTINGS_TABS.includes(tab) ? tab : "";
     chosenSinceOpen = false;
     showTab(asked || (modelsNeedAttention() ? "models" : lastTab));
+    if (account) paintAccount(account.status());
     loadChatgpt(); // async on purpose -- the sheet opens without waiting on a child process
     paintDownloadFolder(); // the same: the shell answers at once, and the sheet does not wait for it
     await loadSavedSetup();
@@ -386,6 +446,7 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = (
       !keyChanged && !spaceSel.disabled && spaceSel.value !== persoSpaceInitial,
       $("analyticsToggle").checked !== togglesInitial.analytics,
       $("reportsToggle").checked !== togglesInitial.reports,
+      $("eventsToggle").checked !== togglesInitial.events,
       languageInitial !== null && $("uiLanguageSelect").value !== languageInitial,
     ].filter(Boolean).length;
   }
@@ -396,7 +457,7 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = (
     $("settingsSaveBtn").title = n ? "" : t("No changes to save");
   }
   for (const id of ["geminiKeyInput", "persoKeyInput"]) $(id).addEventListener("input", paintChanges);
-  for (const id of ["persoSpaceSelect", "analyticsToggle", "reportsToggle", "uiLanguageSelect"]) {
+  for (const id of ["persoSpaceSelect", "analyticsToggle", "reportsToggle", "eventsToggle", "uiLanguageSelect"]) {
     $(id).addEventListener("change", paintChanges);
   }
 
@@ -409,6 +470,10 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = (
     }
     if ($("reportsToggle").checked !== togglesInitial.reports) {
       if (await setFailureReports($("reportsToggle").checked)) togglesInitial.reports = $("reportsToggle").checked;
+      else ok = false;
+    }
+    if ($("eventsToggle").checked !== togglesInitial.events) {
+      if (await setEvents($("eventsToggle").checked)) togglesInitial.events = $("eventsToggle").checked;
       else ok = false;
     }
     const language = $("uiLanguageSelect").value;
@@ -430,7 +495,7 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = (
     if (ok) { closeSettings(); return; }
     // Beside the button that was pressed, where the eye already is.
     paintChanges();
-    $("settingsChanges").textContent = t("Could not save. Is PersoDub running?");
+    $("settingsChanges").textContent = t("Could not save. Is {app} running?");
   }
   $("settingsSaveBtn").addEventListener("click", saveSettings);
   $("settingsCancelBtn").addEventListener("click", leaveSettings);
@@ -555,6 +620,19 @@ export function initSettingsUi({ $, onSaved, refreshModelCatalog, startAgain = (
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reports_off: !on }),
       });
+      return r.ok;
+    } catch { return false; }
+  }
+
+  // Button and screen events: one POST, then the page asks the shell again,
+  // which reads the line straight back (ui/src/events.mjs).
+  async function setEvents(on) {
+    try {
+      const r = await fetch("/api/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ events_enabled: on }),
+      });
+      if (r.ok) await refreshEvents();
       return r.ok;
     } catch { return false; }
   }

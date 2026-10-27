@@ -274,14 +274,14 @@ test("the foot's mode follows the quality and the Dubbing choice as they are cha
 
 // Before a Perso API dubbing, what it costs and what is left (owner,
 // 2026-10-22, 2-1): the first thing a paid dubbing should say.
-test("a Perso dubbing's foot says at most what it costs, the model's a second times the whole seconds kept, and what is left", async () => {
+test("a Perso dubbing's foot says at most what it costs, the model's a second times the whole seconds kept, and asks only the plan, once", async () => {
   clearDraft();
   const real = globalThis.fetch;
   const asked = [];
   globalThis.fetch = async (url) => {
     asked.push(url);
     return { ok: true, json: async () => (url === "/api/perso/spaces"
-      ? { spaces: [{ seq: 7, name: "Mine", tier: "Free", credits: 1280 }] } : { perso_space_seq: "7" }) };
+      ? { spaces: [{ seq: 7, name: "Mine", tier: "Pro", credits: 1280 }] } : { perso_space_seq: "7" }) };
   };
   try {
     const { $, log } = harness();
@@ -291,24 +291,55 @@ test("a Perso dubbing's foot says at most what it costs, the model's a second ti
     await $("dubModeSelect").fire("change");
     assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Perso API · up to 24 credits", "the price at once");
     await new Promise((r) => setTimeout(r, 0));
-    assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Perso API · up to 24 credits · 1,280 left");
+    assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Perso API · up to 24 credits", "nothing about what is left");
     // Another model prices it again (newProject.mjs fires the pick's change).
     log.model = "NIGHTINGALE";
     await $("persoModelPick").fire("change");
-    assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Perso API · up to 96 credits · 1,280 left");
+    assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Perso API · up to 96 credits");
     log.model = "FINCH";
     await $("persoModelPick").fire("change");
-    assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Perso API · up to 4.8 credits · 1,280 left");
+    assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Perso API · up to 4.8 credits");
     // A cut prices what is kept, in whole seconds; one credit is one.
     log.model = "ORIOLE";
     setRanges([[0, 1.6]]);
-    assert.equal($("draftFootLabel").textContent, "Dubbing 00:01 · Perso API · up to 1 credit · 1,280 left");
-    // What is left was asked once: it moves only when credits are spent.
+    assert.equal($("draftFootLabel").textContent, "Dubbing 00:01 · Perso API · up to 1 credit");
+    // Only the workspace's plan is asked for the foot, once for this video.
     assert.deepEqual(asked, ["/api/perso/spaces", "/api/settings"]);
     // Back on Local model the foot is the mode alone again.
     $("dubModeSelect").value = "local";
     await $("dubModeSelect").fire("change");
     assert.equal($("draftFootLabel").textContent, "Dubbing 00:01 · Fast mode");
+  } finally {
+    globalThis.fetch = real;
+    clearDraft();
+  }
+});
+
+// Perso will not hand a free-plan workspace the video (owner, 2026-10-28):
+// said before Start, and asked again each time Perso API is chosen.
+test("on a free-plan workspace a Perso dubbing's foot says the result is seen on Perso", async () => {
+  clearDraft();
+  const real = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = async (url) => {
+    asked.push(url);
+    return { ok: true, json: async () => (url === "/api/perso/spaces"
+      ? { spaces: [{ seq: 7, name: "Mine", tier: "Free", credits: 1280 }] } : { perso_space_seq: "7" }) };
+  };
+  try {
+    const { $ } = harness();
+    setDraft({ downloadId: "d1", name: "a.mp4", duration: 10, videoUrl: "/v" });
+    $("dubModeSelect").value = "perso";
+    await $("dubModeSelect").fire("change");
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal($("draftFootLabel").textContent, "Dubbing 00:10 · Perso API · up to 10 credits · "
+      + "A free-plan workspace cannot download the result. When it is done, see it in your Perso workspace.");
+    $("dubModeSelect").value = "local";
+    await $("dubModeSelect").fire("change");
+    assert.equal($("draftFootLabel").textContent, "Dubbing 00:10 · Fast mode");
+    $("dubModeSelect").value = "perso";
+    await $("dubModeSelect").fire("change");
+    assert.equal(asked.length, 4, "asked again when Perso API is chosen again");
   } finally {
     globalThis.fetch = real;
     clearDraft();
@@ -430,7 +461,7 @@ test("the foot says the credits for a Perso dubbing and the first download's siz
     $("dubModeSelect").value = "perso";
     await $("dubModeSelect").fire("change");
     await new Promise((r) => setTimeout(r, 0));
-    assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Perso API · up to 24 credits · 1,280 left");
+    assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Perso API · up to 24 credits");
     $("dubModeSelect").value = "local";
     await $("dubModeSelect").fire("change");
     assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Fast mode · 9.6 GB the first time");
@@ -564,4 +595,23 @@ test("a captions project's Dubbing tab is one card instead of the script; a dubb
   assert.equal($("dubbingCaptions").hidden, true);
   assert.equal($("dubbingPaneHead").hidden, false);
   assert.equal($("scriptBox").hidden, false);
+});
+
+// The way to top up stands beside a Perso dubbing's price, whatever is left
+// (owner, 2026-10-27: no balance on screen, just the button).
+test("a Perso dubbing's foot offers Recharge credits; dubbing on this computer does not", async () => {
+  clearDraft();
+  try {
+    const { $, log } = harness();
+    log.model = "ORIOLE";
+    setDraft({ downloadId: "d1", name: "paris_steps.mp4", duration: 24.7, videoUrl: "/v" });
+    $("draftRechargeLink").hidden = true;   // as the markup has it
+    $("dubModeSelect").value = "perso";
+    await $("dubModeSelect").fire("change");
+    assert.equal($("draftFootLabel").textContent, "Dubbing 00:24 · Perso API · up to 24 credits");
+    assert.equal($("draftRechargeLink").hidden, false);
+    $("dubModeSelect").value = "local";
+    await $("dubModeSelect").fire("change");
+    assert.equal($("draftRechargeLink").hidden, true);
+  } finally { clearDraft(); }
 });

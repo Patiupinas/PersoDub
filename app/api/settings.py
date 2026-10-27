@@ -18,14 +18,16 @@ from pydantic import BaseModel
 
 from app import i18n, state
 from app.i18n import t
-from app.perso_client import APP_VERSION, SIGNUP_LINK, WORKSPACE_LINK, list_dubbing_spaces
+from app.perso_client import APP_VERSION, RECHARGE_LINK, SIGNUP_LINK, UTM_TAIL, WORKSPACE_LINK, list_dubbing_spaces
 from app.settings_env import (
     current_value,
     read_analytics_off,
+    read_events_enabled,
     read_key_status,
     read_reports_off,
     read_value,
     write_analytics_off,
+    write_events_enabled,
     write_keys,
     write_language,
     write_reports_off,
@@ -41,6 +43,7 @@ class SettingsRequest(BaseModel):
     perso_space_seq: Optional[str] = None
     analytics_off: Optional[bool] = None
     reports_off: Optional[bool] = None
+    events_enabled: Optional[bool] = None
     ui_language: Optional[str] = None
 
 
@@ -65,10 +68,17 @@ def settings_get():
             "perso_api_key": read_value("PERSO_API_KEY"),
             "perso_space_seq": read_value("PERSO_SPACE_SEQ"),
             "perso_signup_link": SIGNUP_LINK,
+            # Where credits are topped up, tagged the same way: the Recharge links
+            # under the workspace picker and beside a Perso dubbing's price.
+            "perso_recharge_link": RECHARGE_LINK,
             # Tagged the same way; the Home sidebar's perso.ai button opens it.
             "perso_workspace_link": WORKSPACE_LINK,
+            # The tail the page puts on its own links into Perso (edition.mjs persoLink).
+            "perso_utm": UTM_TAIL,
             "analytics_off": read_analytics_off(),
             "reports_off": read_reports_off(),
+            # Button and screen events: on by default in the production edition only.
+            "events_enabled": read_events_enabled(),
             # "auto", "en" or "ko" (app/i18n.py): the page resolves "auto"
             # against the computer's language itself.
             "ui_language": i18n.saved_setting(),
@@ -116,6 +126,9 @@ def settings_post(body: SettingsRequest):
     # the shell re-reads kit.env before it sends one.
     if body.reports_off is not None:
         write_reports_off(body.reports_off)
+    # And the button events', read again by the shell with every batch.
+    if body.events_enabled is not None:
+        write_events_enabled(body.events_enabled)
     # The language, saved and then in force for the engine's next sentence:
     # the engine keeps the one it decided on (app/i18n.py), so it is told.
     if body.ui_language is not None:

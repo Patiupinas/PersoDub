@@ -16,8 +16,14 @@ import { homeText, secondsSince, sizeText, urlText } from "./logLine.js";
 //
 // ctx.updateState is the update as last announced, which the window re-sends
 // on every page load; ctx.engines and ctx.win are read when they are needed.
-// `edition` is the build's (edition.js), whose repository the updates come from.
-export function createUpdater({ app, dialog, ctx, shellLog, edition }) {
+// `edition` is the build's (edition.js), whose updates are read: its
+// repository's releases, or the production edition's PRODUCTION_UPDATE_URL.
+// `load` imports electron-updater and electron; a test hands it stand-ins.
+// `track` records an update found as a step (events.js track), and
+// `beforeQuit` is waited for before Restart to update quits (the last batch
+// of events, which quitAndInstall may not give will-quit the time to send).
+export function createUpdater({ app, dialog, ctx, shellLog, edition, load = (name) => import(name),
+                                track = () => {}, beforeQuit = async () => {} }) {
   let updaterStarted = false;
   let updateDownloaded = false;
 
@@ -33,6 +39,15 @@ export function createUpdater({ app, dialog, ctx, shellLog, edition }) {
       shellLog(`UPDATE CHECK OFF: ${app.isPackaged ? "PERSODUB_DISABLE_UPDATE_CHECK=1" : "not a packaged app"}`);
       return;
     }
+    const feed = resolveFeed(process.env, edition);
+    if (!feed) {
+      shellLog("UPDATE CHECK OFF: this production build has no update address (desktop/src/edition.js PRODUCTION_UPDATE_URL is empty)");
+      // The page's update window then names the version and nothing more: it
+      // cannot say the app is up to date (ui/src/updateWindow.mjs).
+      ctx.updateState = { phase: "check-off" };
+      if (!win.isDestroyed()) win.webContents.send("shell:update-state", ctx.updateState);
+      return;
+    }
     // Whether the error event below has said what went wrong: a failed check
     // also rejects checkForUpdates, and the catch at the end must not say it twice.
     let reported = false;
@@ -43,9 +58,13 @@ export function createUpdater({ app, dialog, ctx, shellLog, edition }) {
       if (!win.isDestroyed()) win.webContents.send("shell:update-state", ctx.updateState);
     };
     try {
-      const { default: electronUpdater } = await import("electron-updater");
+      const { default: electronUpdater } = await load("electron-updater");
       const { autoUpdater } = electronUpdater;
-      const feed = resolveFeed(process.env, edition);
+      // Stable releases only, said outright. electron-updater turns
+      // prereleases on by itself for a version like 1.0.0-rc.1, and then its
+      // GitHub feed takes only tags on that version's own channel ("rc"):
+      // the check finds no release, and v1.0.0 itself is never offered.
+      autoUpdater.allowPrerelease = false;
       autoUpdater.setFeedURL(feed);
       // What electron-updater's own requests met, each once: the address and
       // what answered it, a redirect and where it led (GitHub hands a release
@@ -53,7 +72,7 @@ export function createUpdater({ app, dialog, ctx, shellLog, edition }) {
       // cuts), or why there was no answer. They run on a session of their own
       // (electron-updater's NET_SESSION_NAME); an abort is electron-updater
       // dropping a request it no longer needs, not a failure.
-      const { session, net } = await import("electron");
+      const { session, net } = await load("electron");
       const said = new Set();
       const once = (line, level) => { if (!said.has(line)) { said.add(line); shellLog(line, level); } };
       const web = session.fromPartition("electron-updater", { cache: false }).webRequest;
@@ -75,6 +94,7 @@ export function createUpdater({ app, dialog, ctx, shellLog, edition }) {
       let checkFrom = null;
       autoUpdater.on("update-available", async (info) => {
         shellLog(`PERSODUB_UPDATE available ${info?.version ?? ""}`);
+        track("update_available", { version: info?.version });
         const file = info?.files?.[0];
         if (file) {
           shellLog(`UPDATE CHECK DONE (${secondsSince(checkFrom)}s): ${info.version} available, ${file.url} ${sizeText(file.size)}`);
@@ -173,9 +193,9 @@ export function createUpdater({ app, dialog, ctx, shellLog, edition }) {
         ctx.win.focus();
         const { response } = await dialog.showMessageBox(ctx.win, {
           type: "warning",
-          title: t("PersoDub update"),
+          title: t("{app} update"),
           message: t("Close {names} first, then update", { names }),
-          detail: t("That program is using files in PersoDub's installation folder, so the update may stall halfway through. Close it and click \"Restart to update\" again, or update anyway and PersoDub will try regardless."),
+          detail: t("That program is using files in {app}'s installation folder, so the update may stall halfway through. Close it and click \"Restart to update\" again, or update anyway and {app} will try regardless."),
           // Update anyway leads, because it is the one that finishes: the
           // other button asks the user to go and close something first, and
           // they came here to update.
@@ -187,6 +207,7 @@ export function createUpdater({ app, dialog, ctx, shellLog, edition }) {
       }
     }
     const { default: electronUpdater } = await import("electron-updater");
+    await beforeQuit();
     // quitAndInstall bypasses will-quit in some paths -- stop the engines
     // explicitly first so no uvicorn is orphaned across the swap.
     if (ctx.engines) ctx.engines.stopAll();

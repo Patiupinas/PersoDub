@@ -19,7 +19,12 @@ import { initEscapeKey } from "./escapeKey.mjs";
 // Escape closes what is on top, and one menu is open at a time
 // (ui/src/escapeKey.mjs). First, so it is asked before every dialog's own listener.
 initEscapeKey();
+import { record, startEvents } from "./events.mjs";
+// The buttons pressed and screens shown, while Settings > Privacy allows it
+// (ui/src/events.mjs). Early, so no press goes unseen.
+startEvents();
 import { initSettingsUi } from "./settingsDialog.mjs";
+import { initSignIn } from "./signIn.mjs";
 import { initWhatsNew } from "./whatsNew.mjs";
 import { initKeyWindow } from "./keyWindow.mjs";
 import { initChatgptSignIn } from "./chatgptSignIn.mjs";
@@ -28,6 +33,8 @@ import { initEraseScreenUi, PACK_ID as ERASER_PACK_ID } from "./eraseScreen.mjs"
 import { initProjectsUi, shownName } from "./projects.mjs";
 import { initHomeScreen } from "./homeScreen.mjs";
 import { initHomeSidebar, homeAgentHidden, openHomeAgent, pointAtLink } from "./homeSidebar.mjs";
+import { initFeedbackSheet } from "./feedbackSheet.mjs";
+import { isProduction, persoLink, persoResultLink, DESKTOP_APP_URL } from "./edition.mjs";
 import { countedOnce } from "./reportedOnce.mjs";
 import { initRunningScreenUi, stoppedMark } from "./runningScreen.mjs";
 import { translatorChoices } from "./translatorChoice.mjs";
@@ -46,12 +53,13 @@ import { initDraftSetup } from "./draftSetup.mjs";
 import { initLanguageRow } from "./languageRow.mjs";
 import { initConfirmDialogs } from "./confirmDialogs.mjs";
 import { initExportDialog } from "./exportDialog.mjs";
-import { clearDraft, getDraft, onDraftChange, setDraft, setRanges, setDraftRatio } from "./draft.mjs";
+import { clearDraft, getDraft, keptSeconds, onDraftChange, setDraft, setRanges, setDraftRatio } from "./draft.mjs";
 import { readKept, keepDraft, dropKept, draftMark } from "./keptDrafts.mjs";
 import { initRatioUi } from "./ratio.mjs";
 import { wireUpdates } from "./updateWindow.mjs";
+import { createDubTracker, startedFromForm, startedFromJob } from "./dubTrack.mjs";
 import { fmtClock, fmtClockTenths, fmtLength, formatBytes, escapeHtml, errorText, serverText, statusParts, rawLogLines, restartFailure, restartRanOutOfMemory } from "./format.mjs";
-import { languageName, pageLanguage, savedSettings, t } from "./i18n.mjs";
+import { currentLanguage, languageName, pageLanguage, savedSettings, t } from "./i18n.mjs";
 import { paintMarkupWords } from "./markupWords.mjs";
 
 // The language before anything is drawn, so the first paint is already in it
@@ -100,6 +108,9 @@ const state = {
   job: null,
   pollGeneration: 0, // bumped whenever we switch jobs, so a stale poll loop stops itself
 };
+// A dubbing's stages for the charts, off every job record the page reads
+// (ui/src/dubTrack.mjs).
+const dubTrack = createDubTracker({ parse: parseProgress });
 
 // ---------------- The left panel: the top bar's left pane button -----------
 // Projects moved to the Home screen (new-layout mockup, user 2026-09-29);
@@ -186,13 +197,22 @@ window.addEventListener("resize", () => {
 // and the out-of-credits popup all call settings.openSettings()) and the two
 // things the sheet reaches back for: re-checking which engines a saved key
 // makes usable, and the Models catalog, which modelsDialog.mjs paints.
+// The production edition's Perso sign-in screen (ui/src/signIn.mjs), over the
+// whole window while signed out. The open-source edition never shows it.
+// The window's title is the name this edition shows (desktop/src/edition.js); a plain browser keeps the page's own.
+if (window.persodubShell?.name) document.title = window.persodubShell.name;
+const signIn = initSignIn({ $, shell: window.persodubShell || null });
 const settings = initSettingsUi({
   $,
   onSaved: () => applyEngineAvailabilityToForm(),
   refreshModelCatalog: () => models.refreshModels(),
   // Storage says where downloads go; only the desktop shell knows.
   shell: window.persodubShell || null,
+  // The Perso account row and its buttons, production edition only.
+  account: signIn,
 });
+// Home's account line (ui/src/signIn.mjs paints it) opens the account's own tab.
+$("homeAccount").addEventListener("click", () => settings.openSettings("keys"));
 
 $("settingsBtn").addEventListener("click", settings.openSettings);
 
@@ -203,13 +223,20 @@ initWhatsNew({ $ });
 
 // Help, from the Home sidebar: what each tool does and where it runs. Escape
 // and the backdrop press OK (ui/src/escapeKey.mjs). The two links open the
-// repo's docs in the system browser, the way the sidebar's links do.
-function openHelp() { $("helpOverlay").classList.add("open"); }
+// repo's docs in the system browser, the way the sidebar's links do. The
+// production edition has no repository: its User guide is Perso's desktop app
+// page, and it has no FAQ link. And its Home's Help is that page itself, in
+// the browser, with no dialog first (owner, 2026-10-27).
+function openHelp() {
+  if (isProduction()) window.open(persoLink(DESKTOP_APP_URL, "help", savedSettings()?.perso_utm), "_blank", "noopener");
+  else $("helpOverlay").classList.add("open");
+}
 $("helpOk").addEventListener("click", () => $("helpOverlay").classList.remove("open"));
+$("helpFaqItem").hidden = isProduction();
 for (const [id, doc] of [["helpGuide", "usage"], ["helpFaq", "faq"]]) {
   $(id).addEventListener("click", (e) => {
     e.preventDefault();
-    window.open(`${REPO_URL}/blob/main/docs/${doc}.md`, "_blank", "noopener");
+    window.open(isProduction() ? persoLink(DESKTOP_APP_URL, "help", savedSettings()?.perso_utm) : `${REPO_URL}/blob/main/docs/${doc}.md`, "_blank", "noopener");
   });
 }
 // The way out of a greyed-out "needs API key" option, inside Advanced options.
@@ -271,7 +298,8 @@ applyEngineAvailabilityToForm();
 
 // Picking a keyed engine with no key saved opens the key window (ui/src/keyWindow.mjs).
 // Save keeps the choice; Cancel puts the dropdown back where it was.
-const keyWindow = initKeyWindow({ $, keySaved, onSaved: applyEngineAvailabilityToForm });
+const keyWindow = initKeyWindow({ $, keySaved, onSaved: applyEngineAvailabilityToForm,
+  persoKeyLink: () => savedSettings()?.perso_signup_link });
 
 // Picking Hunyuan before it is downloaded shows a Download button in the
 // field's own hint -- a 1.1GB download must be asked for, never started by a
@@ -593,7 +621,7 @@ function showHome() {
   saveVideoNext = false;
   paintDraftBack();
   showScreen("home");
-  setTopbar({ title: "PersoDub", subtitle: t("Local dubbing") });
+  setTopbar({ title: t("{app}"), subtitle: t("Local dubbing") });
   projects.renderQueueCard().catch(() => {});
   noteLastScreen("");
 }
@@ -807,7 +835,7 @@ const draftSetup = initDraftSetup({
   // A draft that becomes a dubbing is no longer a draft to come back to.
   submitDubStart: async (o) => {
     const d = getDraft();
-    const started = await submitDubStart(o);
+    const started = await submitDubStart({ ...o, seconds: d ? keptSeconds(d) : undefined });
     if (started && d) forgetDraft(d.downloadId);
     if (started) state.draftProject = null;
     return started;
@@ -923,9 +951,18 @@ const languageRow = initLanguageRow({
 // rather than an <a>: the shell hands every http(s) open to the OS browser
 // (desktop/src/windowFactory.js), and in a plain browser it is a new tab either way.
 // The shell's edition decides it (desktop/src/edition.js); a plain browser has
-// no shell and shows the public repository.
+// no shell and shows the public repository. The production edition's logo
+// opens Perso's desktop app page, and is named after the app rather than the
+// repository.
 const REPO_URL = `https://github.com/${window.persodubShell?.repo || "stronghamjji/PersoDub"}`;
-$("brandBtn").addEventListener("click", () => window.open(REPO_URL, "_blank", "noopener"));
+$("brandBtn").addEventListener("click", () => window.open(isProduction() ? persoLink(DESKTOP_APP_URL, "about", savedSettings()?.perso_utm) : REPO_URL, "_blank", "noopener"));
+if (isProduction()) {
+  const brand = $("brandBtn");
+  brand.removeAttribute("data-i18n-title");
+  brand.removeAttribute("data-i18n-aria-label");
+  brand.title = t("{app}");
+  brand.setAttribute("aria-label", t("{app}"));
+}
 
 // ---------------- Upload zone (drag & drop + click to browse) ----------------
 const uploadZone = $("uploadZone");
@@ -995,7 +1032,11 @@ uploadZone.addEventListener("drop", (e) => {
 // The top bar's update icon and the update window (ui/src/updateWindow.mjs).
 // Outside Electron (plain browser, tests) persodubShell is absent: the icon
 // stays grey and the window says the app is up to date.
-wireUpdates({ $, shell: window.persodubShell || null, releases: `${REPO_URL}/releases` });
+// An update with no notes links to its release page, Perso's desktop app page
+// in the production edition.
+wireUpdates({ $, shell: window.persodubShell || null,
+  // The production edition has no release page: the window's own list is enough (owner, 2026-10-26).
+  notesPage: isProduction() ? () => null : (version) => `${REPO_URL}/releases/tag/v${version}` });
 
 // ---------------- Link source (paste a URL) ----------------
 // Probing is cheap (seconds, no download), so it runs as soon as a URL looks
@@ -1201,6 +1242,7 @@ function jobStatusLine(job, progress) {
   if (job.status === "cancelling") return t("Cancelling…");
   if (job.status === "cancelled") return t("Cancelled");
   if (job.status === "error") return t("Dubbing failed");
+  if (job.status === "on_perso") return t("See it on Perso");
   if (job.status !== "running") {
     // What made it rides on this same line (quality, then the engines), in
     // place of the chip row that used to sit under the top bar: one muted
@@ -1288,7 +1330,10 @@ const runningScreen = initRunningScreenUi({
   // the button that offers to stop it.
   getJobId: () => state.jobId,
   getJobStatus: () => (state.job ? state.job.status : null),
-  onCancel: (jobId) => cancelDubJob(jobId),
+  onCancel: (jobId) => {
+    if (state.job && state.job.id === jobId) dubTrack.cancelled(state.job);
+    return cancelDubJob(jobId);
+  },
   // The question, asked in the app's own dialog rather than the browser's.
   askCancel: () => confirmDialogs.askCancelDub(),
   onOpenSettings: () => settings.openSettings("keys"),
@@ -1331,6 +1376,8 @@ const projects = initProjectsUi({
   // worked out, so nothing here costs a second request.
   onJobs: (jobs) => { home.renderProjects(jobs); languageRow.setJobs(jobs); },
   onRunningPct: (jobId, pct) => home.setRunningPct(jobId, pct),
+  // Every job Home's Up next card reads: a dubbing's stages for the charts.
+  onSeen: (job) => dubTrack.see(job),
 });
 
 const home = initHomeScreen({
@@ -1374,6 +1421,12 @@ function forgetDraft(downloadId) {
   home.renderDrafts(keptDrafts);
 }
 onDraftChange(rememberDraft);
+// A video on the draft screen is a step in the charts, once a draft.
+let draftOnScreen = "";
+onDraftChange((d) => {
+  if (d && d.downloadId !== draftOnScreen) record("draft_opened", {});
+  draftOnScreen = d ? d.downloadId : "";
+});
 async function reopenDraft(downloadId) {
   const kept = keptDrafts.find((k) => k.downloadId === downloadId);
   if (!kept) return;
@@ -1420,8 +1473,17 @@ async function reopenDraft(downloadId) {
 
 // The Home sidebar and the cards under the banner (the mockup's first screen,
 // user 2026-09-30): each one opens a way in this page already has.
+// The production edition's Customer support: a Service inquiry form, sent
+// through the shell to the support web app (ui/src/feedbackSheet.mjs).
+const shellInfo = window.persodubShell || {};
+const openFeedback = isProduction() && shellInfo.sendInquiry ? initFeedbackSheet({
+  $, send: (form) => shellInfo.sendInquiry(form),
+  language: currentLanguage,
+  openUrl: (url) => window.open(url, "_blank", "noopener"),
+  account: () => signIn.status().account,
+}) : null;
 initHomeSidebar({
-  $, body: document.body, repoUrl: REPO_URL,
+  $, body: document.body, repoUrl: REPO_URL, production: isProduction(), onFeedback: openFeedback,
   // The UTM-tagged link from the start-up's GET /api/settings; the plain page
   // until that has answered.
   persoUrl: () => savedSettings()?.perso_workspace_link || "https://perso.ai/workspace/vt",
@@ -1464,6 +1526,7 @@ async function cancelQueuedJob(job) {
   const live = job.status !== "queued";
   const question = job.kind === "separate" ? t("Stop separating?") : job.kind === "erase" ? t("Stop erasing?") : undefined;
   if (live && !(await confirmDialogs.askCancelDub(question))) return;
+  dubTrack.cancelled(job);
   try {
     const r = await fetch(`/api/dub/jobs/${job.id}/cancel`, { method: "POST" });
     // 409: it was over already, and the list drawn below says so.
@@ -1494,7 +1557,7 @@ async function resumeJob(jobId) {
     // Another project was clicked (or Home) while this one was being read:
     // the last click is the one on screen, and this answer is dropped whole.
     if (myGeneration !== state.pollGeneration) return;
-    if (job.detail) throw new Error(t("This project is no longer available. PersoDub may have restarted."));
+    if (job.detail) throw new Error(t("This project is no longer available. {app} may have restarted."));
     // Erasing subtitles is the other work this app does, and it has a screen of
     // its own: the same row, the same click, a different place to land.
     if (job.kind === "erase") { eraseScreen.openEraseJob(job); return; }
@@ -1579,10 +1642,13 @@ async function restartVoiceEngine(errorEl) {
 // forever, 2,676 times in 13 seconds on one Mac (issue #117, 2026-09-28).
 // `retry`: try the whole thing again once whatever was missing is fixed (a
 // key saved, a workspace picked, models downloaded, signed in to ChatGPT).
-async function submitDubStart({ fd, label, errorEl, retry, retried = false }) {
+async function submitDubStart({ fd, label, errorEl, retry, retried = false, seconds }) {
   errorEl.textContent = "";
   try {
     const jobId = await startDubJob(fd);
+    // A step in the charts, and its stages watched from here (ui/src/dubTrack.mjs).
+    record("dub_started", startedFromForm(fd, seconds));
+    dubTrack.started(jobId, fd.get("dub_mode"));
     ratioUi.carryTo(jobId);   // a draft's ratio goes with the job it becomes
     state.jobId = jobId;
     noteLastScreen(jobId);
@@ -1613,7 +1679,7 @@ async function submitDubStart({ fd, label, errorEl, retry, retried = false }) {
     } else if (!retried && e && e.status === 422 && /voice engine is not running/.test(serverText(e))) {
       const restart = await restartVoiceEngine(errorEl);
       if (restart.ok) {
-        return submitDubStart({ fd, label, errorEl, retry, retried: true });
+        return submitDubStart({ fd, label, errorEl, retry, retried: true, seconds });
       }
       // The refusal, and under it why starting the engine again did not work.
       errorEl.textContent = restart.alone ? restart.why : [errorText(e), restart.why].filter(Boolean).join("\n");
@@ -1644,6 +1710,7 @@ async function startDubbing() {
     const label = np.file ? np.file.name : (np.probe ? np.probe.title : (np.title || t("Dubbing")));
     const started = await submitDubStart({
       fd, label, errorEl: $("projectError"), retry: () => startDubbing(),
+      seconds: np.probe ? np.probe.duration_sec : undefined,
     });
     if (started) {
       // The video is on its way to the server now; the dialog's copy of it can go.
@@ -1678,7 +1745,9 @@ async function startBatchDubbing(files) {
     for (const f of files) {
       const fd = buildDubFormData({ ...opts, video: f, sourceUrl: null,
                                     downloadId: null, project: undefined, trim: null });
-      await startDubJob(fd);
+      const jobId = await startDubJob(fd);
+      record("dub_started", startedFromForm(fd));
+      dubTrack.started(jobId, fd.get("dub_mode"));
     }
     newProject.closeNewProject();
     projects.renderHistory().catch(() => {});
@@ -1714,7 +1783,7 @@ function runPollLoop(jobId, myGeneration) {
     // takes the red away again the moment the server is back.
     onUnreachable: (e) => {
       if (myGeneration !== state.pollGeneration) return;
-      runningScreen.showNoticeError(t("PersoDub is not answering. Still trying."));
+      runningScreen.showNoticeError(t("{app} is not answering. Still trying."));
     },
   }).catch((e) => {
     // Leaving the job settles the loop without a word (it resolves, it does not
@@ -1733,6 +1802,8 @@ const JOB_SCREENS = new Set(["running", "done", "failed"]);
 // clicked the job (resumeJob), or the job reported in on its own (the poll).
 // Only the second one has to keep its hands off the screen.
 async function handleJobUpdate(job, { opened = false } = {}) {
+  // Its stage, for the charts, wherever the person is (ui/src/dubTrack.mjs).
+  dubTrack.see(job);
   // The Dubbing tab shows this project's script, not the Import block an
   // empty new project left there: painted when another project takes the
   // screen, not on every report of the same one.
@@ -1876,12 +1947,15 @@ async function renderDone(job) {
     // Cancelled and failed are two different stories, and neither has a screen
     // of its own: the back chevron in the top bar is the way out of both. The
     // reason itself is the notice line's job -- it is the copy that carries the
-    // Recharge link, and one sentence said twice reads as a bug.
+    // Recharge link, and one sentence said twice reads as a bug. A dubbing done
+    // on Perso is a third: made, its file on Perso's site (a free-plan
+    // workspace cannot download it), never worded as a failure.
+    const onPerso = job.status === "on_perso";
     runningScreen.paintStopped(job);
     $("doneFailMark").innerHTML = stoppedMark(job.status);
-    $("doneFailWhy").textContent = job.status === "cancelled"
-      ? t("This dubbing was stopped.")
-      : t("Dubbing didn't finish.");
+    $("doneFailWhy").textContent = onPerso ? t("See it on Perso")
+      : job.status === "cancelled" ? t("This dubbing was stopped.")
+        : t("Dubbing didn't finish.");
     // Appended in the order they should read -- why it stopped, what to do
     // about it, and the log last. moveInto leaves a borrowed element where it
     // already is, which put the log above the button the second time round.
@@ -1894,6 +1968,9 @@ async function renderDone(job) {
     // A cloud dub was made on Perso's side: nothing here to pick up from.
     $("doneResume").hidden = job.dub_mode === "perso";
     $("doneRetry").className = job.dub_mode === "perso" ? "btn btn-primary" : "btn btn-secondary";
+    // Nothing to make again there, only the way to it.
+    $("doneRetry").hidden = onPerso;
+    $("doneOpenPerso").hidden = !onPerso;
     return;
   }
   homeNoticeAndLog();
@@ -1924,6 +2001,9 @@ async function retryStopped(jobId) {
       return;
     }
     const { job_id } = await r.json();
+    // A new dubbing in the charts, made as the stopped one was.
+    if (state.job && state.job.id === jobId) record("dub_started", { ...startedFromJob(state.job), again: true });
+    dubTrack.started(job_id, state.job && state.job.dub_mode);
     // Straight onto the new job's running screen, sidebar and all -- the same
     // path Projects takes to open a job.
     projects.renderHistory().catch(() => {});
@@ -1941,6 +2021,10 @@ async function retryStopped(jobId) {
   }
 }
 $("doneRetry").addEventListener("click", () => { if (state.job) retryStopped(state.job.id); });
+// The project's own page on Perso's site, in the browser.
+$("doneOpenPerso").addEventListener("click", () => {
+  if (state.job) window.open(persoResultLink(state.job.perso_project_seq, savedSettings()?.perso_utm), "_blank", "noopener");
+});
 
 // Resume: the same job carries on in its own folder, keeping every stage the
 // earlier run finished -- separation, the transcript, the translation, each
@@ -1980,6 +2064,7 @@ async function resumeStopped(jobId, translator = null) {
       return;
     }
     runningScreen.forgetPopups(jobId);
+    dubTrack.started(jobId, state.job && state.job.id === jobId ? state.job.dub_mode : undefined);
     projects.renderHistory().catch(() => {});
     if (state.jobId === jobId) await resumeJob(jobId);
   } catch (e) {

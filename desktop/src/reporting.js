@@ -6,7 +6,7 @@ import { readKitVersion } from "./engineCheck.js";
 import { packInstalled, torchVariantFor, PACKS } from "./installSpec.js";
 import { analyticsFile, loadState, savedDevice, saveState } from "./analytics.js";
 import { probesFor, runProbes } from "./diagnostics.js";
-import { buildReport, collectEnvironment, maskText, resolveReportMode, withoutEncodedNames, worthReporting } from "./report.js";
+import { buildInquiry, buildReport, collectEnvironment, describeDevice, maskText, MAX_DETAILS_CHARS, resolveReportMode, withoutEncodedNames } from "./report.js";
 import { buildLogArchive } from "./reportLogs.js";
 import { ARCHIVE_EXT, REPORT_EXT, partitionQueue, pendingWork, queueBase } from "./reportQueue.js";
 import { envWithKit } from "./kitEnv.js";
@@ -24,6 +24,14 @@ import { readFileEnd } from "./fileEnd.js";
 // (code "ok", report.js): its logs and how long it took, to the relay's
 // /record, which keeps them for the private dashboard and never opens an
 // issue (owner, 2026-10-22).
+//
+// The production edition's Service inquiry never goes to the relay: Cloudflare
+// is not among the processors Perso's privacy policy lists (owner,
+// 2026-10-27). It goes straight to the support web app the build names
+// (PERSODUB_INQUIRY_URL, edition.js BUILD_KEYS), which mails it to the support
+// inbox, a bug report with the same masked logs a failure sends (sendInquiry
+// below). It waits in the same queue, and goes whatever the switch says: the
+// person pressed Send, after agreeing to it on the form.
 export const REPORT_ENDPOINT = "https://persodub-report.persodub.workers.dev";
 // Reports wait here rather than in userData: a report belongs to the kit that
 // produced it, and a user who deletes a kit is done with its failures too.
@@ -33,6 +41,19 @@ const reportsDir = (kitDir) => join(kitDir, "reports");
 // engine or Ollama that crashed says why. Their last 2 MB is plenty of history.
 const ENGINE_LOGS = { backend: "backend.log", sidecar: "sidecar.log", ollama: "ollama.log" };
 const ENGINE_LOG_BYTES = 2 * 1024 * 1024;
+
+// A bug inquiry's logs ride inside it as base64. Past 20 MB they are left out
+// and its details say so, so the inquiry itself still lands.
+const MAX_INQUIRY_LOGS = 20 * 1024 * 1024;
+const LOGS_LEFT_OUT = "\n\n(logs too large, not attached)";
+
+// The Perso account an inquiry is from: the production edition's signed-in
+// account, its full e-mail and Perso's number for it (`signedIn`, src/auth.js
+// signedInAccount), or empty strings signed out and in the open-source edition.
+function accountForInquiry(signedIn) {
+  const account = signedIn() || {};
+  return { email: account.email || "", id: account.id || "" };
+}
 
 /** Write a queue entry (and its archive) into the kit's queue, under its base name. */
 function queueReport(kitDir, base, entry, archive) {
@@ -52,10 +73,14 @@ function unqueue(kitDir, base) {
 /**
  * The shell's failure reports, for this app. `ctx.engines` is read each time a
  * report is gathered: the backend's half of a report comes from engines that
- * may not be up yet, or never came up. `fetchImpl` is the real fetch, and
- * `probeImpl` the real probes, everywhere but the tests.
+ * may not be up yet, or never came up. `inquiryUrl` is the support web app
+ * Customer support's inquiries go to, "" when the build names none, and
+ * `account` answers the signed-in Perso account an inquiry is from.
+ * `fetchImpl` is the real fetch, and `probeImpl` the real probes, everywhere
+ * but the tests.
  */
-export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = fetch, probeImpl = runProbes }) {
+export function createReporter({ app, BrowserWindow, ctx, shellLog, inquiryUrl = "", account = () => null,
+                                 fetchImpl = fetch, probeImpl = runProbes }) {
   // The report's install id, which the relay's daily limit counts by, lives in
   // its own file and is minted only by a run that really reports. The id the
   // dashboard knows a computer by is analytics.json's, which the launch makes
@@ -85,6 +110,18 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
       return res.ok ? await res.json() : null;
     } catch {
       return null;
+    }
+  }
+
+  // The newest job, for a bug inquiry's logs: the one the person most likely
+  // means. None when the engines are not up or there is no job yet.
+  async function latestJobId() {
+    if (!ctx.engines || !ctx.engines.url) return "";
+    try {
+      const res = await fetchImpl(`${ctx.engines.url}/api/dub/jobs`, { signal: AbortSignal.timeout(5000) });
+      return res.ok ? (((await res.json()).jobs || [])[0] || {}).id || "" : "";
+    } catch {
+      return "";
     }
   }
 
@@ -172,6 +209,7 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
         packs,
         freeDiskBytes: await freeSpaceAt(kitDir),
         edition: kitEdition(kitDir) || "",
+        installed: app.isPackaged,
       }),
       timing,
       logTails: {
@@ -218,8 +256,31 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
     const answer = await postJson(REPORT_ENDPOINT + (record ? "/record" : "/report"), report);
     if (!answer || !answer.id) return { sent: false, id: null, logsSent: false };
     const logs = archive ? await postLogs(answer.id, archive) : "ok";
-    if (!record) announceReport({ id: answer.id, issue: answer.issue ?? null, url: answer.url ?? null, dedup: !!answer.dedup });
+    if (report.userSide) shellLog(`[persodub-report] sent (no issue: the user's own situation) id ${answer.id}`);
+    else if (!record) {
+      shellLog(`[persodub-report] sent id ${answer.id} issue #${answer.issue ?? "?"}${answer.url ? ` (${answer.url})` : ""}`);
+      announceReport({ id: answer.id, issue: answer.issue ?? null, url: answer.url ?? null, dedup: !!answer.dedup });
+    }
     return { sent: true, id: answer.id, logsSent: logs !== "retry" };
+  }
+
+  /**
+   * One inquiry, whole, to the support web app: its fields, and a bug's
+   * masked logs as base64 under `logs`. The web app answers through a
+   * redirect, which fetch follows, with {ok, id} once the mail has gone and
+   * {error} when it has not. The id, or null.
+   */
+  async function postInquiry(inquiry, archive) {
+    let body = inquiry;
+    if (inquiry.type === "bug" && archive) {
+      const logs = archive.toString("base64");
+      body = logs.length <= MAX_INQUIRY_LOGS ? { ...inquiry, logs }
+        : { ...inquiry, details: inquiry.details.slice(0, MAX_DETAILS_CHARS - LOGS_LEFT_OUT.length) + LOGS_LEFT_OUT };
+    }
+    const answer = await postJson(inquiryUrl, body, 20000);
+    const id = answer && answer.ok === true && answer.id ? String(answer.id) : null;
+    shellLog(`[persodub-report] inquiry ${id ? `sent ${id}` : "queued"}`);
+    return id;
   }
 
   // Fire and forget: the caller goes on at once and nothing it does waits on
@@ -232,15 +293,11 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
         if (!kitDir) return;
         const mode = reportMode(kitDir);
         if (mode === "off") return;
-        // Every failure is classified and counted; only the ones somebody here
-        // could act on become an issue. A full disk and a refused cloud key are
-        // the user's own situation -- they are told on screen, and an issue
-        // about them is one more thing for a person to read and close
-        // (user, 2026-09-11).
-        if (!worthReporting(opts.code)) {
-          shellLog(`[persodub-report] not sent (${opts.code}): the user's own situation`);
-          return;
-        }
+        // Every failure is sent; only the ones somebody here could act on
+        // become an issue. A full disk and a refused cloud key are the user's
+        // own situation (report.js userSide) -- told on screen, kept for the
+        // private dashboard, and never one more issue for a person to read and
+        // close (user, 2026-09-11; owner, 2026-10-28).
         // The install id is minted (and written) only on a run that really
         // reports -- the same rule the counts follow, so a machine that never
         // reports never gets one, and no file appears claiming otherwise. It has
@@ -284,6 +341,68 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
   }
 
   /**
+   * Customer support's Service inquiry, from the page, to the support web app
+   * (postInquiry). Written into the queue first, a bug's logs beside it as a
+   * failure's are, so one that cannot land now goes with the next launch's
+   * flush. Answers {id} once the web app has it, {queued: true} when it waits,
+   * {needReplyTo: true}, sending nothing, when no one could be answered (no
+   * Reply-to, and an account with no e-mail), and null when it could not even
+   * be built or the build names nowhere to send it.
+   */
+  async function sendInquiry(form, { kitDir, os, osVersion }) {
+    if (!kitDir) return null;
+    if (!inquiryUrl) {
+      shellLog("[persodub-report] inquiry no destination");
+      return null;
+    }
+    const from = accountForInquiry(account);
+    const inquiry = buildInquiry({
+      ...form, os, osVersion, version: app.getVersion(), edition: kitEdition(kitDir) || "",
+      device: describeDevice({ installed: app.isPackaged, edition: kitEdition(kitDir) || "" }),
+      accountEmail: from.email, accountId: from.id,
+      // The computer's id, the one the dashboard knows it by and hides the
+      // owner's own computers by (EXCLUDED_DEVICES).
+      installId: savedDevice(analyticsFile(app)) || loadState(REPORT_STATE()).device,
+    });
+    if (!inquiry) return null;
+    if (!inquiry.replyTo && !inquiry.accountEmail) return { needReplyTo: true };
+    const base = queueBase(randomBytes(6).toString("hex"), Date.now());
+    inHand.add(base);
+    try {
+      const archive = inquiry.type === "bug"
+        ? (await collectReport({ kind: "unknown", kitDir, code: "unknown", jobId: await latestJobId() })).archive : null;
+      queueReport(kitDir, base, { inquiry, id: null }, archive);
+      const id = await postInquiry(inquiry, archive);
+      if (id) unqueue(kitDir, base);
+      return id ? { id } : { queued: true };
+    } catch {
+      return null;
+    } finally {
+      inHand.delete(base);
+    }
+  }
+
+  /**
+   * Signed out: every inquiry still waiting goes, its logs with it. Each
+   * holds the account's full e-mail, which must not outlive the sign-in on
+   * this computer. Failure reports stay.
+   */
+  function dropInquiries(kitDir) {
+    const dir = kitDir ? reportsDir(kitDir) : "";
+    let names = [];
+    try { names = readdirSync(dir); } catch { return; }
+    let dropped = 0;
+    for (const name of names.filter((n) => n.endsWith(REPORT_EXT))) {
+      let entry = null;
+      try { entry = JSON.parse(readFileSync(join(dir, name), "utf8")); } catch { continue; }
+      if (!entry || !entry.inquiry) continue;
+      unqueue(kitDir, name.slice(0, -REPORT_EXT.length));
+      dropped++;
+    }
+    if (dropped) shellLog(`[persodub-report] inquiry dropped at sign-out: ${dropped}`);
+  }
+
+  /**
    * Reports that could not be sent when they happened, and failures a launch
    * wrote down but did not live to report. Runs as a launch starts, after an
    * install that stopped, and once the app is up (bootFlow.js), and never
@@ -297,7 +416,9 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
     const { retry, expired } = partitionQueue(names);
     const remove = (base) => unqueue(kitDir, base);
     for (const base of expired) remove(base);
-    if (reportMode(kitDir) !== "on") return;   // off or debug: nothing leaves, nothing is deleted
+    // Off or debug: nothing leaves and nothing is deleted, but an inquiry,
+    // which the person sent themselves, once the build names where it goes.
+    const reporting = reportMode(kitDir) === "on";
     for (const base of retry) {
       if (inHand.has(base)) continue;
       inHand.add(base);
@@ -308,11 +429,17 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
     async function flushOne(base) {
       let entry = null;
       try { entry = JSON.parse(readFileSync(join(dir, `${base}${REPORT_EXT}`), "utf8")); } catch { entry = null; }
+      if (entry && entry.inquiry ? !inquiryUrl : !reporting) return;
       const archivePath = join(dir, `${base}${ARCHIVE_EXT}`);
       const hasArchive = existsSync(archivePath);
       let work = pendingWork(entry, { hasArchive });
       if (work === "done") { remove(base); return; }
       let archive = hasArchive ? readFileSync(archivePath) : null;
+      // An inquiry goes whole, its logs inside it, to the web app.
+      if (entry.inquiry) {
+        if (await postInquiry(entry.inquiry, archive)) remove(base);
+        return;
+      }
       if (work === "collect") {
         // A dub's or an erase's report is half the backend's -- its stage and
         // its job's log, which only the engines can give -- and built without
@@ -343,5 +470,5 @@ export function createReporter({ app, BrowserWindow, ctx, shellLog, fetchImpl = 
     }
   }
 
-  return { sendReport, flushReports, reportMode, lastReport: () => lastReport };
+  return { sendReport, sendInquiry, dropInquiries, flushReports, reportMode, lastReport: () => lastReport };
 }

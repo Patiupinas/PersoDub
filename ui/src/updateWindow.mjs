@@ -5,7 +5,8 @@
 // title. The shell downloads a new
 // version in the background and announces {version, phase: "downloading" |
 // "ready" | "download-failed", pct, releaseDate?, releaseNotes?, whatsNew?} as it goes (desktop/src/updater.js
-// nextUpdateState); this file turns that into what the card and the window
+// nextUpdateState), or {phase: "check-failed" | "check-off"} when it found
+// nothing or did not look (desktop/src/updateFlow.js); this file turns that into what the card and the window
 // show. A shell built before releaseDate/releaseNotes existed sends only the
 // first three -- the window then leaves out the date and links to the release
 // page. Outside the desktop shell nothing is announced and the card stays
@@ -83,20 +84,26 @@ export function whatsNewLines(whatsNew, language) {
  * @param currentNotes  the running version's own list (GET /api/whats-new),
  *                   shown when there is nothing newer
  * @param dubRunning whether a dub is running right now
- * @param releases   the releases page of the repository the build points at
+ * @param notesPage  (version) => the page of that release, for an update with no notes
  */
-export function updateWindowView(state, { current = "", currentNotes = [], dubRunning = false, releases } = {}) {
+export function updateWindowView(state, { current = "", currentNotes = [], dubRunning = false, notesPage = () => null } = {}) {
   const shownCurrent = current && current !== "0.0.0" ? t("Current version: {version}", { version: current }) : "";
   // The shell could not reach the releases (desktop/src/updater.js): saying
   // "up to date" then was a guess, and a wrong one when an update was out.
   // It checks once a launch, so opening PersoDub again is what checks again.
   if (state?.phase === "check-failed") {
     return { title: t("Could not check for updates."), current: shownCurrent,
-      next: t("Check your internet connection, then open PersoDub again."), released: "", button: null,
+      next: t("Check your internet connection, then open {app} again."), released: "", button: null,
+      running: "", notes: currentNotes, notesLink: null };
+  }
+  // The production edition with no update address checks nothing
+  // (desktop/src/updateFlow.js): the version, and no word on whether it is the latest.
+  if (state?.phase === "check-off") {
+    return { title: shownCurrent || t("{app}"), current: "", next: "", released: "", button: null,
       running: "", notes: currentNotes, notesLink: null };
   }
   if (!updateLive(state)) {
-    return { title: t("PersoDub is up to date"), current: shownCurrent, next: "", released: "", button: null,
+    return { title: t("{app} is up to date"), current: shownCurrent, next: "", released: "", button: null,
       running: "", notes: currentNotes, notesLink: null };
   }
   const day = releaseDay(state.releaseDate);
@@ -117,21 +124,21 @@ export function updateWindowView(state, { current = "", currentNotes = [], dubRu
     // A restart stops the dub: the job comes back as interrupted, with Resume
     // for a local one (app/jobs.py, app/api/dub.py) -- it does not carry on
     // by itself, so the line says only what is true for every dub.
-    running: failed ? t("Could not download the update. Check your internet connection, then open PersoDub again and it downloads anew.")
+    running: failed ? t("Could not download the update. Check your internet connection, then open {app} again and it downloads anew.")
       : dubRunning ? t("Dubbing is running. Restarting stops it.") : "",
     notes,
-    notesLink: notes.length ? null : `${releases}/tag/v${state.version}`,
+    notesLink: notes.length ? null : notesPage(state.version),
   };
 }
 
 /**
  * Wire the card's mark and the window. `shell` is window.persodubShell or
- * null, and `releases` the releases page the window links to when an update
+ * null, and `notesPage(version)` the page the window links to when an update
  * has no notes. The window opens by itself once per session, the first time
  * an update is announced while no other dialog is open; after that from the
  * `persodub:open-update` event (the card's click, ui/src/homeSidebar.mjs).
  */
-export function wireUpdates({ $, shell, releases }) {
+export function wireUpdates({ $, shell, notesPage }) {
   let state = null;
   let current = "";
   let currentNotes = [];
@@ -150,7 +157,7 @@ export function wireUpdates({ $, shell, releases }) {
     if (v.title) $("homeWhatsNewTitle").textContent = v.title;
   }
   function paint() {
-    const v = updateWindowView(state, { current, currentNotes, dubRunning, releases });
+    const v = updateWindowView(state, { current, currentNotes, dubRunning, notesPage });
     $("updTitle").textContent = v.title;
     $("updCurrent").textContent = v.current;
     // The day in a span that does not wrap, so "2026-09-30" never breaks at a hyphen.

@@ -65,7 +65,7 @@ from app.api._shared import (
 from app.config import QWEN_N_TAKES, default_stt_engine
 from app.downloads import Download
 from app.dub_script import EDITED_NAME, script_path
-from app.i18n import t
+from app.i18n import english, t
 from app.jobs import JobKind, JobStatus, kind_of
 from app.pipeline import run_dub
 from app.source_fetch import fetch as fetch_source
@@ -122,7 +122,7 @@ def _ollama_unavailable_message(engine_name: str, status: str) -> str:
             # A desktop user cannot "make sure Ollama is running": the app owns it.
             return t(
                 "Local {engine} translation is not available right now: the "
-                "translation runtime is not running. Quit and reopen PersoDub, or "
+                "translation runtime is not running. Quit and reopen {app}, or "
                 "choose Gemini in the Translation dropdown.", engine=engine_name)
         return t(
             "Local {engine} translation is not available on this machine "
@@ -213,7 +213,7 @@ def _require_voice_engine_running() -> None:
         # "voice engine is not running" stays in English: the page asks the
         # desktop app to start the engine when it reads it (ui/src/app.mjs).
         told = engines_status.local_engine("voice")["message"]
-        raise HTTPException(422, told or "The voice engine is not running. Quit and reopen PersoDub.")
+        raise HTTPException(422, told or english("The voice engine is not running. Quit and reopen {app}."))
 
 
 def _pack_ready(pack_id: str) -> bool:
@@ -739,7 +739,7 @@ def dub_job_cancel(jid: str):
     boundaries (see app/pipeline.py's cancel_check checkpoints) rather than
     being killed mid-stage, so the job's status goes running -> cancelling ->
     cancelled, not straight to cancelled. 404 for an unknown job id, 409 if
-    the job already finished (done/error) or was already cancelled -- there
+    the job already finished (done/on_perso/error) or was already cancelled -- there
     is nothing left to interrupt.
     """
     was_queued = (state.job_store.get(jid) or {}).get("status") == JobStatus.QUEUED
@@ -748,7 +748,7 @@ def dub_job_cancel(jid: str):
         raise HTTPException(status_code=404, detail=t("Unknown job: {jid}", jid=jid))
     # A queued job comes back "cancelled" from the call that cancelled it --
     # that is this request doing its work, not a job with nothing left to stop.
-    if status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED) and not was_queued:
+    if status in (JobStatus.DONE, JobStatus.ON_PERSO, JobStatus.ERROR, JobStatus.CANCELLED) and not was_queued:
         raise HTTPException(status_code=409, detail=t("Job already {status}, nothing to cancel", status=status))
     return {"job_id": jid, "status": status}
 

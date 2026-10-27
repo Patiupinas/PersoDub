@@ -6,19 +6,22 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { createReporter, REPORT_ENDPOINT } from "./reporting.js";
+import { describeDevice } from "./report.js";
 
 const ok = (body) => ({ ok: true, status: 200, json: async () => body });
 const ISSUE = { id: "r1", issue: 142, url: "https://github.com/o/r/issues/142" };
+// The support web app Customer support's inquiries go to (PERSODUB_INQUIRY_URL).
+const INQUIRY_URL = "https://script.example/macros/s/abc/exec";
 
 // A packaged app with reports on, its kit and userData in a fresh temp folder
 // -- or in an earlier setup's `base`, which is that app's next launch.
 // `relay(url, init)` answers every request the reporter makes, and `probes`
 // stands in for the machine's own diagnostics (diagnostics.js).
 function setup({ packaged = true, kitEnv = "PERSODUB_NO_REPORTS=0\nPERSODUB_REPORTS_DEBUG=0\n",
-                 engines = null, relay = () => ok(ISSUE), probes = async () => ({}),
-                 base = mkdtempSync(join(tmpdir(), "odreporting-")) } = {}) {
+                 engines = null, relay = () => ok(ISSUE), probes = async () => ({}), inquiryUrl = INQUIRY_URL,
+                 account = undefined, base = mkdtempSync(join(tmpdir(), "odreporting-")) } = {}) {
   const kitDir = join(base, "kit");
   const userData = join(base, "userData");
   mkdirSync(kitDir, { recursive: true });
@@ -31,13 +34,13 @@ function setup({ packaged = true, kitEnv = "PERSODUB_NO_REPORTS=0\nPERSODUB_REPO
   const logged = [];
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
-    calls.push({ url, method: init.method || "GET", body: init.body });
+    calls.push({ url, method: init.method || "GET", body: init.body, headers: init.headers });
     return relay(url, init);
   };
   const ctx = { engines };
   const reporter = createReporter({
     app, BrowserWindow: { getAllWindows: () => [win] }, ctx,
-    shellLog: (line) => logged.push(line), fetchImpl, probeImpl: probes,
+    shellLog: (line) => logged.push(line), inquiryUrl, account, fetchImpl, probeImpl: probes,
   });
   const queued = () => (existsSync(join(kitDir, "reports")) ? readdirSync(join(kitDir, "reports")).sort() : []);
   const readQueued = (name) => JSON.parse(readFileSync(join(kitDir, "reports", name), "utf8"));
@@ -73,6 +76,7 @@ test("a failure goes to the relay with the backend's half, then its logs, and th
   assert.deepEqual(s.pushed, [["shell:report-sent", announced]]);
   assert.deepEqual(s.reporter.lastReport(), announced);
   assert.deepEqual(s.queued(), [], "nothing left to retry");
+  assert.ok(s.logged.includes(`[persodub-report] sent id r1 issue #142 (${ISSUE.url})`), s.logged.join("\n"));
 });
 
 // The backend's tail of a long job has lost the job's opening; its whole log,
@@ -275,11 +279,20 @@ test("a failure no probe speaks to runs none", async () => {
   assert.deepEqual(JSON.parse(s.calls[0].body).diagnostics, {});
 });
 
-test("a failure that is the user's own situation is logged, never sent", async () => {
-  const s = setup();
-  await s.reporter.sendReport({ kind: "install", kitDir: s.kitDir, code: "disk-full", message: "Needs 9 GB" });
-  assert.deepEqual(s.calls, []);
-  assert.deepEqual(s.logged, ["[persodub-report] not sent (disk-full): the user's own situation"]);
+test("a failure that is the user's own situation is sent with its logs, marked userSide, for the dashboard; the page hears of no issue", async () => {
+  for (const code of ["disk-full", "cloud-refused", "perso-busy", "perso-credits", "perso-key", "perso-length", "perso-plan", "gemini-busy", "gemini-quota"]) {
+    const s = setup({ relay: (url) => (url.endsWith("/report") ? ok({ id: "u1" }) : { ok: true, status: 200 }) });
+    await s.reporter.sendReport({ kind: "dub", kitDir: s.kitDir, code, message: "Needs 9 GB" });
+    assert.deepEqual(s.calls.map((c) => `${c.method} ${c.url}`), [`POST ${REPORT_ENDPOINT}/report`, `POST ${REPORT_ENDPOINT}/report/u1/logs`], code);
+    const sent = JSON.parse(s.calls[0].body);
+    assert.deepEqual([sent.code, sent.userSide], [code, true], code);
+    assert.deepEqual(s.logged, ["[persodub-report] sent (no issue: the user's own situation) id u1"], code);
+    assert.deepEqual(s.pushed, [], code);
+    assert.deepEqual(s.queued(), [], code);
+  }
+  const fixable = setup();
+  await fixable.reporter.sendReport({ kind: "dub", kitDir: fixable.kitDir, code: "unknown", message: "boom" });
+  assert.equal(JSON.parse(fixable.calls[0].body).userSide, undefined);
 });
 
 test("with reports off nothing is gathered, sent, queued or minted", async () => {
@@ -426,4 +439,187 @@ test("a report queued while the counts were on still names the computer once the
   await s.reporter.flushReports(s.kitDir);
   assert.equal(s.calls[0].url, `${REPORT_ENDPOINT}/report`);
   assert.equal(JSON.parse(s.calls[0].body).device, "0123456789ab");
+});
+
+// ---- a Service inquiry (production, 0.9.1) ---------------------------------
+// Straight to the support web app, never through the relay (owner, 2026-10-27).
+
+const FORM = { type: "bug", subject: " Export stops ", details: "At 90%, every time.", replyTo: "me@example.com", locale: "ko" };
+const FACTS = { os: "mac", osVersion: "15.1.0" };
+const SENT = (id) => ok({ ok: true, id });
+const posted = (call) => JSON.parse(call.body);
+
+test("a bug inquiry goes to the support web app with the app, the computer and the newest job's masked logs inside it, reports off or not", async () => {
+  const s = setup({
+    kitEnv: "PERSODUB_NO_REPORTS=1\n",
+    engines: { url: "http://backend" },
+    relay: (url) => {
+      if (url === "http://backend/api/dub/jobs") return ok({ jobs: [{ id: "new1" }, { id: "old1" }] });
+      if (url === "http://backend/api/report/bundle?job=new1") return ok({ job: {}, logs: { app: "app log", job: "job log of new1" } });
+      return url === INQUIRY_URL ? SENT("7C2E91AB") : { ok: false, status: 404 };
+    },
+  });
+  writeFileSync(join(s.userData, "analytics.json"), JSON.stringify({ device: COUNTS_ID, lastDay: null }));
+  writeFileSync(join(s.kitDir, "kit.env"), "PERSODUB_NO_REPORTS=1\nPERSODUB_EDITION=production\n");
+  const answer = await s.reporter.sendInquiry(FORM, { kitDir: s.kitDir, ...FACTS });
+
+  assert.deepEqual(answer, { id: "7C2E91AB" });
+  assert.deepEqual(s.calls.map((c) => `${c.method} ${c.url}`), [
+    "GET http://backend/api/dub/jobs",
+    "GET http://backend/api/report/bundle?job=new1",
+    `POST ${INQUIRY_URL}`,
+  ], "nothing goes to the relay");
+  assert.equal(s.calls[2].headers["content-type"], "application/json");
+  const { logs, ...fields } = posted(s.calls[2]);
+  assert.deepEqual(fields, {
+    type: "bug", subject: "Export stops", details: "At 90%, every time.", replyTo: "me@example.com",
+    accountEmail: "", accountId: "",
+    installId: COUNTS_ID, version: "0.7.1", edition: "production", os: "mac", osVersion: "15.1.0",
+    device: describeDevice({ installed: true, edition: "production" }), locale: "ko",
+  });
+  assert.match(fields.device, / · installed · production$/);
+  const archive = gunzipSync(Buffer.from(logs, "base64")).toString("utf8");
+  assert.match(archive, /job log of new1/);
+  assert.match(archive, /PERSODUB_VERSION 0\.7\.1/, "shell.log too");
+  assert.deepEqual(s.logged.filter((l) => l.includes("inquiry")), ["[persodub-report] inquiry sent 7C2E91AB"]);
+  assert.deepEqual(s.queued(), []);
+  assert.deepEqual(s.pushed, [], "no failure report announced");
+});
+
+test("an inquiry of another kind carries no logs, and a form the web app would refuse is not sent", async () => {
+  const s = setup({ engines: { url: "http://backend" }, relay: () => SENT("Q2Q2Q2Q2") });
+  assert.deepEqual(await s.reporter.sendInquiry({ ...FORM, type: "payment" }, { kitDir: s.kitDir, ...FACTS }), { id: "Q2Q2Q2Q2" });
+  assert.deepEqual(s.calls.map((c) => c.url), [INQUIRY_URL]);
+  assert.equal("logs" in posted(s.calls[0]), false);
+  s.calls.length = 0;
+  assert.equal(await s.reporter.sendInquiry({ ...FORM, type: "Bug report" }, { kitDir: s.kitDir, ...FACTS }), null);
+  assert.equal(await s.reporter.sendInquiry({ ...FORM, subject: "  " }, { kitDir: s.kitDir, ...FACTS }), null);
+  assert.deepEqual(s.calls, []);
+});
+
+test("an inquiry carries the signed-in account's full e-mail and Perso number, and empty strings signed out", async () => {
+  let signedIn = { email: "someone@example.com", id: "1001" };
+  const s = setup({ relay: () => SENT("A1A1A1A1"), account: () => signedIn });
+  await s.reporter.sendInquiry({ ...FORM, type: "other", replyTo: "" }, { kitDir: s.kitDir, ...FACTS });
+  assert.deepEqual([posted(s.calls[0]).accountEmail, posted(s.calls[0]).accountId, posted(s.calls[0]).replyTo],
+    ["someone@example.com", "1001", ""]);
+  signedIn = null;
+  await s.reporter.sendInquiry({ ...FORM, type: "other" }, { kitDir: s.kitDir, ...FACTS });
+  assert.deepEqual([posted(s.calls[1]).accountEmail, posted(s.calls[1]).accountId], ["", ""]);
+});
+
+// An account signed in through Google or Microsoft may have no e-mail: with
+// no Reply-to either, nobody could answer, so the form is asked for one.
+test("with no Reply-to and no account e-mail the shell asks for an address, and sends and keeps nothing", async () => {
+  for (const account of [() => ({ email: "", id: "1001" }), () => null]) {
+    const s = setup({ relay: () => SENT("N0N0N0N0"), account });
+    for (const replyTo of ["", "   ", undefined]) {
+      assert.deepEqual(await s.reporter.sendInquiry({ ...FORM, type: "other", replyTo }, { kitDir: s.kitDir, ...FACTS }), { needReplyTo: true });
+    }
+    assert.deepEqual(s.calls, []);
+    assert.deepEqual(s.queued(), []);
+  }
+  const typed = setup({ relay: () => SENT("N1N1N1N1"), account: () => ({ email: "", id: "1001" }) });
+  assert.deepEqual(await typed.reporter.sendInquiry({ ...FORM, type: "other" }, { kitDir: typed.kitDir, ...FACTS }), { id: "N1N1N1N1" });
+  const fromAccount = setup({ relay: () => SENT("N2N2N2N2"), account: () => ({ email: "someone@example.com", id: "1001" }) });
+  assert.deepEqual(await fromAccount.reporter.sendInquiry({ ...FORM, type: "other", replyTo: "" }, { kitDir: fromAccount.kitDir, ...FACTS }),
+    { id: "N2N2N2N2" });
+});
+
+test("a build with no web app sends nothing, says so, and leaves a waiting inquiry where it is", async () => {
+  const s = setup({ inquiryUrl: "" });
+  assert.equal(await s.reporter.sendInquiry(FORM, { kitDir: s.kitDir, ...FACTS }), null);
+  assert.deepEqual(s.logged, ["[persodub-report] inquiry no destination"]);
+  assert.deepEqual(s.queued(), []);
+  mkdirSync(join(s.kitDir, "reports"));
+  writeFileSync(join(s.kitDir, "reports", `bbbbbbbbbbbb-${Date.now()}.json`),
+    JSON.stringify({ inquiry: { type: "other", subject: "s", details: "d" }, id: null }));
+  await s.reporter.flushReports(s.kitDir);
+  assert.deepEqual(s.calls, [], "and never the relay instead");
+  assert.equal(s.queued().length, 1);
+});
+
+test("an inquiry the web app did not take waits in the kit and goes to the web app on the next launch, reports off, alone", async () => {
+  let answer = () => { throw new TypeError("fetch failed"); };
+  const s = setup({ kitEnv: "PERSODUB_NO_REPORTS=1\n", relay: () => answer() });
+  assert.deepEqual(await s.reporter.sendInquiry({ ...FORM, type: "other" }, { kitDir: s.kitDir, ...FACTS }), { queued: true });
+  const [json] = s.queued();
+  assert.deepEqual([s.readQueued(json).inquiry.subject, s.readQueued(json).id], ["Export stops", null]);
+  // A failure report waiting beside it stays: its switch is off.
+  writeFileSync(join(s.kitDir, "reports", `aaaaaaaaaaaa-${Date.now()}.json`), JSON.stringify({ report: { kind: "dub" }, id: null }));
+
+  // The web app's refusal, and an answer that is not a 2xx, leave it waiting too.
+  for (const refused of [ok({ error: "rate limited" }), { ok: false, status: 500, json: async () => ({ ok: true, id: "NOPE" }) }]) {
+    answer = () => refused;
+    await s.reporter.flushReports(s.kitDir);
+    assert.equal(s.queued().length, 2);
+  }
+  answer = () => SENT("Q3Q3Q3Q3");
+  s.calls.length = 0;
+  await s.reporter.flushReports(s.kitDir);
+  assert.deepEqual(s.calls.map((c) => c.url), [INQUIRY_URL]);
+  assert.equal(s.queued().length, 1);
+  assert.ok(s.queued()[0].startsWith("aaaaaaaaaaaa-"), "the report is still there");
+  assert.deepEqual(s.logged.filter((l) => l.includes("inquiry")), [
+    "[persodub-report] inquiry queued", "[persodub-report] inquiry queued", "[persodub-report] inquiry queued",
+    "[persodub-report] inquiry sent Q3Q3Q3Q3",
+  ]);
+});
+
+// A waiting inquiry holds the signed-in account's full e-mail: once the
+// account has left this computer, so has every inquiry still waiting.
+test("signing out drops the inquiries still waiting, their logs too, and keeps the failure reports", async () => {
+  const s = setup({ engines: { url: "http://backend" }, account: () => ({ email: "someone@example.com", id: "1001" }),
+    relay: (url) => (url === INQUIRY_URL ? (() => { throw new TypeError("fetch failed"); })() : ok({ jobs: [] })) });
+  assert.deepEqual(await s.reporter.sendInquiry(FORM, { kitDir: s.kitDir, ...FACTS }), { queued: true });
+  assert.deepEqual(await s.reporter.sendInquiry({ ...FORM, type: "other" }, { kitDir: s.kitDir, ...FACTS }), { queued: true });
+  writeFileSync(join(s.kitDir, "reports", `aaaaaaaaaaaa-${Date.now()}.json`), JSON.stringify({ report: { kind: "dub" }, id: null }));
+  assert.ok(s.queued().some((n) => n.endsWith(".tar.gz")), "the bug inquiry's logs wait beside it");
+  assert.equal(s.queued().length, 4);
+
+  s.reporter.dropInquiries(s.kitDir);
+  assert.equal(s.queued().length, 1);
+  assert.ok(s.queued()[0].startsWith("aaaaaaaaaaaa-"), "the failure report stays");
+  assert.ok(!s.logged.join("\n").includes("someone@example.com"));
+  s.reporter.dropInquiries(null);
+  s.reporter.dropInquiries(join(s.base, "no-kit"));
+});
+
+// What 0.9.1's first cut queued, for the relay: no account fields and a bug's
+// logs beside it -- and one the relay had taken whose logs had not followed.
+test("an inquiry queued for the relay goes to the web app with its logs as base64, and one the relay took is dropped", async () => {
+  const s = setup({ kitEnv: "PERSODUB_NO_REPORTS=1\n", relay: () => SENT("Q4Q4Q4Q4") });
+  const reports = join(s.kitDir, "reports");
+  mkdirSync(reports);
+  const old = { type: "bug", subject: "Export stops", details: "At 90%.", replyTo: "", installId: COUNTS_ID,
+                version: "0.9.1", edition: "production", os: "mac", osVersion: "15.1.0", locale: "ko" };
+  const at = Date.now();
+  writeFileSync(join(reports, `cccccccccccc-${at}.json`), JSON.stringify({ inquiry: old, id: null }));
+  writeFileSync(join(reports, `cccccccccccc-${at}.tar.gz`), gzipSync("old logs"));
+  writeFileSync(join(reports, `dddddddddddd-${at}.json`), JSON.stringify({ inquiry: old, id: "q1" }));
+  writeFileSync(join(reports, `dddddddddddd-${at}.tar.gz`), gzipSync("taken"));
+  await s.reporter.flushReports(s.kitDir);
+
+  assert.deepEqual(s.calls.map((c) => `${c.method} ${c.url}`), [`POST ${INQUIRY_URL}`]);
+  const { logs, ...fields } = posted(s.calls[0]);
+  assert.deepEqual(fields, old);
+  assert.equal(gunzipSync(Buffer.from(logs, "base64")).toString("utf8"), "old logs");
+  assert.deepEqual(s.queued(), []);
+});
+
+test("logs past 20 MB as base64 are left out, and the details say so inside their 4,000 characters", async () => {
+  const s = setup({ relay: () => SENT("Q5Q5Q5Q5") });
+  const reports = join(s.kitDir, "reports");
+  mkdirSync(reports);
+  const at = Date.now();
+  writeFileSync(join(reports, `eeeeeeeeeeee-${at}.json`),
+    JSON.stringify({ inquiry: { type: "bug", subject: "Big", details: "x".repeat(4000), replyTo: "" }, id: null }));
+  writeFileSync(join(reports, `eeeeeeeeeeee-${at}.tar.gz`), Buffer.alloc(16 * 1024 * 1024));   // 21.3 MB as base64
+  await s.reporter.flushReports(s.kitDir);
+
+  const body = posted(s.calls[0]);
+  assert.equal("logs" in body, false);
+  assert.equal(body.details.length, 4000);
+  assert.ok(body.details.endsWith("x\n\n(logs too large, not attached)"));
+  assert.deepEqual(s.queued(), []);
 });

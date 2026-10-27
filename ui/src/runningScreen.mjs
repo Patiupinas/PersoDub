@@ -23,6 +23,7 @@ import { CHECK_ICON } from "./icons.mjs";
 import { STAGES, SYNTH_STEP, stepLabels } from "./dubApi.mjs";
 import { resetsSentence } from "./translatorChoice.mjs";
 import { t } from "./i18n.mjs";
+import { record as recordStep } from "./events.mjs";
 
 // The card's steps, in the order parseProgress numbers them: read off the one
 // stage table (dubApi.mjs) rather than written out again, so a seventh pipeline
@@ -53,12 +54,13 @@ const STOPPED_AT = {
 // The mark above that sentence on a job that stopped. Two states share the one
 // screen and only the words told them apart, so a stopped job read the same as
 // a finished one until it was read: a stop square when someone cancelled it, an
-// exclamation when it failed on its own.
+// exclamation when it failed on its own. A tick on a dubbing done on Perso.
 const STOPPED_MARKS = {
   cancelled: '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/>',
   error: '<path d="M12 7.5v5.5"/><path d="M12 16.6h.01"/>',
+  on_perso: '<path d="M7 12.5l3.2 3.2L17 9"/>',
 };
-/** The mark for a job that stopped -- anything not cancelled has failed. */
+/** The mark for a job that stopped -- anything not cancelled or done on Perso has failed. */
 export function stoppedMark(status) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${STOPPED_MARKS[status] || STOPPED_MARKS.error}</svg>`;
 }
@@ -181,6 +183,8 @@ const CREDIT_MODALS = {
  *        anchor's own target="_blank" behaviour by setting its href; passing it
  *        in is what lets a test see which link the user was offered, and what
  *        would let the desktop shell open it its own way later.
+ * @param {Storage} [deps.storage]  where the jobs whose popup was seen are
+ *        kept for the page's session (sessionStorage)
  * @returns the operations the rest of the page calls.
  */
 export function initRunningScreenUi({ $, parseProgress, trimLabel, homeNoticeAndLog,
@@ -188,15 +192,27 @@ export function initRunningScreenUi({ $, parseProgress, trimLabel, homeNoticeAnd
                                       onOpenSettings, openExternal,
                                       jobNote = () => "",
                                       translatorChoices = async () => [],
-                                      onResumeWith = () => {} }) {
+                                      onResumeWith = () => {}, record = recordStep,
+                                      storage = globalThis.sessionStorage }) {
   // Every element this file names is required markup (index.html always has
   // it), so nothing here null-checks what $ returns -- same as
   // ui/src/settingsDialog.mjs. A missing id is a broken page.
-  const shownFor = new Set();   // jobs whose popup has already been seen
+  // Jobs whose popup has already been seen. Kept for the page's session, not
+  // only in memory: a Settings save that changes the language starts the page
+  // again (settingsDialog.mjs startAgain) while the engine still holds the
+  // job's notices, and each such save opened the same popup again (Windows,
+  // 2026-10-27).
+  const SHOWN_KEY = "persodub.popupsShown";
+  const shownFor = new Set();
+  try { for (const id of JSON.parse(storage.getItem(SHOWN_KEY) || "[]")) shownFor.add(String(id)); } catch { /* memory alone */ }
+  const keepShown = () => {
+    try { storage.setItem(SHOWN_KEY, JSON.stringify([...shownFor])); } catch { /* memory alone */ }
+  };
   let modalAction = null;       // "settings" while the open popup's button is an in-app action
   let modalJob = null;          // the job the open popup's translator buttons resume
   let modalPick = null;         // or, from Translate again, what a translator button does instead
   let modalShown = 0;           // which popup the translators being fetched are for
+  let modalType = "";           // the notice the open popup is for
 
   // The job's own video in the center panel, and under it which part of it is
   // being dubbed. A job that stopped shows the same two (paintStopped).
@@ -306,7 +322,9 @@ export function initRunningScreenUi({ $, parseProgress, trimLabel, homeNoticeAnd
     const message = failed
       ? (ERROR_SENTENCES[job.error] || (detail && job.error_shown)
          || plainFailure(job.error_shown || job.error) || said || failedAt(job))
-      : said;
+      : job.status === "on_perso"
+        ? t("A free-plan workspace cannot download the result. The dubbing is done; see it in your Perso workspace.")
+        : said;
     const linkText = n && CREDIT_MODALS[n.type] ? CREDIT_MODALS[n.type].button : t("Recharge");
     const html = ((n && n.link && linkText)
       ? `${escapeHtml(message)} <a href="${escapeHtml(n.link)}" target="_blank" rel="noopener">${linkText}</a>`
@@ -330,7 +348,7 @@ export function initRunningScreenUi({ $, parseProgress, trimLabel, homeNoticeAnd
   function failedAt(job) {
     const progress = parseProgress(job.logs);
     if (!progress.stage) {
-      return t("It stopped while getting the dubbing ready. Press Start over. If it stops again, quit and reopen PersoDub, then try again.");
+      return t("It stopped while getting the dubbing ready. Press Start over. If it stops again, quit and reopen {app}, then try again.");
     }
     if (job.dub_mode === "perso") return t("It stopped while dubbing with the Perso API. Press Start over.");
     return (STOPPED_AT[progress.raw] || STOPPED_AT[4])();
@@ -349,6 +367,7 @@ export function initRunningScreenUi({ $, parseProgress, trimLabel, homeNoticeAnd
     const n = (job.notices || []).find((x) => CREDIT_MODALS[x.type]);
     if (!n || shownFor.has(job.id)) return;
     shownFor.add(job.id);
+    keepShown();
     showCreditModal(n, job);
   }
 
@@ -369,6 +388,8 @@ export function initRunningScreenUi({ $, parseProgress, trimLabel, homeNoticeAnd
   function showCreditModal(notice, job = null, onPick = null) {
     const cfg = CREDIT_MODALS[notice.type];
     const shown = ++modalShown;
+    modalType = notice.type;
+    record("credit_popup_shown", { reason: notice.type });
     modalPick = onPick;
     $("creditTitle").textContent = cfg.title;
     $("creditMessage").textContent = creditMessage(notice, cfg, false);
@@ -400,6 +421,7 @@ export function initRunningScreenUi({ $, parseProgress, trimLabel, homeNoticeAnd
     // Link-type button: the link opens in a new tab and the popup closes.
     // Action-type button ("Open Settings"): stay in the app and open Settings.
     if (modalAction === "settings") { e.preventDefault(); onOpenSettings(); }
+    else if (modalType === "perso_credit_exhausted") record("recharge_opened", { from: "popup" });
     hideCreditModal();
   });
   $("creditOverlay").addEventListener("click", (e) => { if (e.target === $("creditOverlay")) hideCreditModal(); });
@@ -466,7 +488,7 @@ export function initRunningScreenUi({ $, parseProgress, trimLabel, homeNoticeAnd
   }
 
   // A resumed job keeps its id: its popups may be shown again.
-  function forgetPopups(jobId) { shownFor.delete(jobId); }
+  function forgetPopups(jobId) { shownFor.delete(jobId); keepShown(); }
 
   return { paintRunning, paintStopped, paintNotices, showCreditModal, hideCreditModal,
            showNoticeError, paintCancel, reset, starting, forgetPopups };

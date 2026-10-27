@@ -147,11 +147,14 @@
              2026-09-30). ui/src/homeSidebar.mjs wires every button to a way
              in the page already has. No Home item: this is the only screen
              it is on. -->
-        <aside class="home-side" aria-label="PersoDub">
+        <aside class="home-side" aria-label="PersoDub" data-i18n-aria-label="{app}">
           <div class="home-gh">
             <button class="home-perso" id="homePerso" type="button" aria-label="Perso Dubbing"><img src="/perso-dubbing.svg" alt="Perso Dubbing"></button>
             <button class="home-gh-name" id="homeGhName" type="button">
               <span class="home-gh-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.4 1.1 2.9.8.1-.6.4-1.1.6-1.3-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.8 1a9.5 9.5 0 0 1 5 0c1.9-1.3 2.8-1 2.8-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.8V21c0 .3.2.6.7.5A10 10 0 0 0 12 2z"/></svg></span><span data-i18n>PersoDub on GitHub</span></button>
+            <!-- The signed-in account, production edition only (ui/src/signIn.mjs paints it): the
+                 full e-mail under the brand, which opens Settings > Account and keys. -->
+            <button class="home-account" id="homeAccount" type="button" hidden><span class="home-account-dot"></span><span class="home-account-name" id="homeAccountName"></span></button>
           </div>
           <div data-i18n class="home-grp">Tools</div>
           <button class="home-nav" id="homeNavDub" type="button"><svg class="icon" viewBox="0 0 24 24"><path d="M8.8 20v-4.1l1.9.2a2.3 2.3 0 0 0 2.164-2.1V8.3A5.37 5.37 0 0 0 2 8.25c0 2.8.656 3.054 1 4.55a5.77 5.77 0 0 1 .029 2.758L2 20"/><path d="M19.8 17.8a7.5 7.5 0 0 0 .003-10.603"/><path d="M17 15a3.5 3.5 0 0 0-.025-4.975"/></svg><span data-i18n>Dubbing</span></button>
@@ -163,7 +166,7 @@
           <button class="home-nav" id="homeNavSettings" type="button"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2-1.2L14 3h-4l-.6 2.7a7 7 0 0 0-2 1.2l-2.3-1-2 3.4 2 1.5a7 7 0 0 0 0 2.4l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2 1.2L10 21h4l.6-2.7a7 7 0 0 0 2-1.2l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/></svg><span data-i18n>Settings</span></button>
           <div class="home-grow"></div>
           <button class="home-fb" id="homeHelp" type="button"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>Help</button>
-          <button class="home-fb" id="homeFeedback" type="button"><svg class="icon" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg><span data-i18n>Send feedback</span></button>
+          <button class="home-fb" id="homeFeedback" type="button"><svg class="icon" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg><span data-i18n id="homeFeedbackLabel">Send feedback</span></button>
           <button class="home-promo" id="homeWhatsNew" type="button"><b id="homeWhatsNewTitle">What&#8217;s new</b></button>
         </aside>
         <div class="home2">
@@ -342,6 +345,8 @@
                 <div class="form-error" id="draftError"></div>
                 <div class="draft-foot">
                   <span id="draftFootLabel"></span>
+                  <!-- Beside a Perso dubbing's price, whenever Perso API is chosen (ui/src/draftSetup.mjs paintFoot). -->
+                  <a class="btn btn-outline btn-sm" id="draftRechargeLink" href="https://perso.ai/en/workspace/space-settings?tab=Subscription" target="_blank" rel="noopener" data-i18n hidden>Recharge credits</a>
                   <button data-i18n class="btn btn-primary" id="draftStartBtn" type="button">Start dubbing</button>
                 </div>
               </div>
@@ -523,10 +528,12 @@
                   <!-- Resume carries on in the same folder from the first stage
                        with no result (POST /api/dub/jobs/{id}/resume); Start
                        over is a new job from the top. A cloud dub has only
-                       Start over. -->
+                       Start over. A dubbing done on Perso (a free-plan
+                       workspace cannot download it) has only Open in Perso. -->
                   <div class="done-fail-actions" id="doneFailActions">
                     <button data-i18n class="btn btn-primary" id="doneResume" type="button">Resume</button>
                     <button data-i18n class="btn btn-secondary" id="doneRetry" type="button">Start over</button>
+                    <button data-i18n class="btn btn-primary" id="doneOpenPerso" type="button" hidden>Open in Perso</button>
                   </div>
                   <!-- Only if the retry itself cannot start (the folder was
                        deleted since). Kept apart from the reason above, which
@@ -1003,17 +1010,42 @@
      Brief help where it is asked for, not a tour (Apple's HIG; owner, 2026-10-09). -->
 <div class="modal-overlay" id="helpOverlay">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="helpTitle" style="max-width: 480px">
-    <div class="modal-head"><h2 id="helpTitle">What PersoDub does</h2></div>
+    <div class="modal-head"><h2 id="helpTitle">What {app} does</h2></div>
     <div class="modal-body">
       <div class="modal-inner">
         <div class="help-item"><b>Dubbing</b><p>Voices a video in another language, in each speaker&#8217;s own voice. You get the dubbed video, its subtitles and a script you can fix line by line.</p><div class="help-where">Local model (10 languages, free) or Perso API (100+ languages in all, depending on the dubbing model; credits).</div></div>
         <div class="help-item"><b>Erase subtitles</b><p>Why: Original subtitles left in the video overlap the translated ones.</p><p>How: Fit the box → Erase subtitles → Dubbing → Burn in subtitles.</p><div class="help-where">Time: About 10 min for a 10-second video (Local model).</div></div>
         <div class="help-item"><b>Save video</b><p>Paste a YouTube, TikTok or Reels link. The video is fetched to this computer; Download saves it, or dub it or erase it from there.</p><div class="help-where">This computer.</div></div>
         <div class="help-item"><b>Dub Agent</b><p>Ask in plain words, such as &#8220;Korean dubbing for this link&#8221; or &#8220;make line 9 fit&#8221;. It works through the same tools and shows each step.</p><div class="help-where">Claude Code, installed and signed in, or Codex, which the app can download and sign in.</div></div>
-        <p class="help-links"><a href="#" id="helpGuide">User guide</a> · <a href="#" id="helpFaq">FAQ</a></p>
+        <p class="help-links"><a href="#" id="helpGuide">User guide</a><span id="helpFaqItem"> · <a href="#" id="helpFaq">FAQ</a></span></p>
       </div>
     </div>
     <div class="modal-foot"><button class="btn btn-primary" id="helpOk" type="button">OK</button></div>
+  </div>
+</div>
+
+<!-- Customer support, the production edition's (ui/src/feedbackSheet.mjs): a
+     Service inquiry form like Perso's own, sent to the support inbox. The
+     open-source edition's Send feedback opens the repository's issues instead. -->
+<div class="modal-overlay" id="feedbackOverlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle" style="max-width: 460px">
+    <div class="modal-head"><h2 data-i18n id="feedbackTitle">Service inquiry</h2></div>
+    <div class="modal-body">
+      <div class="modal-inner">
+        <div class="field"><label data-i18n for="feedbackType">Inquiry type</label><select id="feedbackType"><option value="problem" data-i18n>Problem or inconvenience</option><option value="bug" data-i18n>Bug report</option><option value="payment" data-i18n>Payment or refund</option><option value="other" data-i18n>Other</option></select></div>
+        <div class="field"><label data-i18n for="feedbackSubjectInput">Subject</label><input type="text" id="feedbackSubjectInput" maxlength="120" required></div>
+        <div class="field"><label data-i18n for="feedbackDetails">Details</label><textarea id="feedbackDetails" rows="5" maxlength="4000" required></textarea></div>
+        <div class="field"><label data-i18n for="feedbackReplyTo">Reply-to email</label><input type="text" id="feedbackReplyTo" inputmode="email" autocomplete="email" maxlength="254"><div data-i18n class="settings-hint" id="feedbackReplyToHint">Leave it empty to be answered at your account's address.</div></div>
+        <p data-i18n class="help-where">The app version and your computer are added automatically.</p>
+        <p class="help-where" id="feedbackLogsNote" hidden><span data-i18n>A bug report also sends the app's logs.</span> <span data-i18n>Titles, file names, links and dialogue are not sent.</span></p>
+        <div class="feedback-consent"><input type="checkbox" id="feedbackConsent"><label data-i18n for="feedbackConsent">I agree to the collection and use of my personal information for this inquiry.</label> <a href="#" id="feedbackPrivacy" data-i18n>Privacy policy</a></div>
+        <p class="help-where" id="feedbackStatus" role="status"></p>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button data-i18n class="btn btn-secondary" id="feedbackClose" type="button">Close</button>
+      <button data-i18n class="btn btn-primary" id="feedbackSend" type="button" disabled>Send</button>
+    </div>
   </div>
 </div>
 
@@ -1125,14 +1157,14 @@
            ui/src/settingsDialog.mjs shows one panel at a time and picks the
            one to open on. -->
       <div class="set-tabs" id="settingsTabs" role="tablist" aria-label="Settings" data-i18n-aria-label="Settings">
-        <button class="set-tab" id="settingsTab-models" type="button" role="tab" aria-selected="true" aria-controls="settingsPanel-models" data-i18n>Models</button>
-        <button class="set-tab" id="settingsTab-keys" type="button" role="tab" aria-selected="false" aria-controls="settingsPanel-keys" tabindex="-1" data-i18n>API keys</button>
+        <button class="set-tab" id="settingsTab-keys" type="button" role="tab" aria-selected="true" aria-controls="settingsPanel-keys" data-i18n>API keys</button>
+        <button class="set-tab" id="settingsTab-models" type="button" role="tab" aria-selected="false" aria-controls="settingsPanel-models" tabindex="-1" data-i18n>Models</button>
         <button class="set-tab" id="settingsTab-storage" type="button" role="tab" aria-selected="false" aria-controls="settingsPanel-storage" tabindex="-1" data-i18n>Storage</button>
         <button class="set-tab" id="settingsTab-privacy" type="button" role="tab" aria-selected="false" aria-controls="settingsPanel-privacy" tabindex="-1" data-i18n>Privacy</button>
         <button class="set-tab" id="settingsTab-about" type="button" role="tab" aria-selected="false" aria-controls="settingsPanel-about" tabindex="-1" data-i18n>About</button>
       </div>
 
-      <div class="set-panel" id="settingsPanel-models" role="tabpanel" aria-labelledby="settingsTab-models">
+      <div class="set-panel" id="settingsPanel-models" role="tabpanel" aria-labelledby="settingsTab-models" hidden>
         <!-- The whole list, always open: the tab is the fold now.
              renderModelsList marks #modelsFold when a model is busy, and the
              sheet opens on this tab for it. Rows keep the App Store grammar:
@@ -1144,12 +1176,12 @@
         </div>
       </div>
 
-      <div class="set-panel" id="settingsPanel-keys" role="tabpanel" aria-labelledby="settingsTab-keys" hidden>
+      <div class="set-panel" id="settingsPanel-keys" role="tabpanel" aria-labelledby="settingsTab-keys">
         <!-- Saved values still prefill (a hidden-once-saved field just looked
              empty -- user decision 2026-08-06), but masked by default with a
              Show toggle: screen shares and screenshots were putting the keys
              on other people's screens (review 2026-08-07). -->
-        <div class="set-row">
+        <div class="set-row" id="persoKeyRow">
           <label data-i18n for="persoKeyInput">Perso API key</label>
           <div class="set-ctl">
             <input type="password" id="persoKeyInput" placeholder="Not set" data-i18n-placeholder="Not set" spellcheck="false">
@@ -1159,6 +1191,19 @@
                  UTM-tagged link from /api/settings on open; this plain URL is the fallback
                  so the link still works if that request fails. -->
             <a class="settings-link" id="persoSignupLink" href="https://developers.perso.ai/api-keys" target="_blank" rel="noopener" data-i18n>Get a Perso API key…</a>
+          </div>
+        </div>
+        <!-- The production edition signs in to Perso instead of taking a
+             pasted key: the account row stands in the key row's place, which hides
+             (ui/src/settingsDialog.mjs paintAccount, mockup 2026-10-25). -->
+        <div class="set-row" id="persoAccountRow" hidden>
+          <span data-i18n>Perso account</span>
+          <div class="set-ctl">
+            <div class="set-ctl set-inline"><span class="acct-mail" id="persoAccountMail"></span><span class="status-chip acct-chip" id="persoKeyChip"></span></div>
+            <div class="set-ctl set-inline">
+              <button data-i18n class="btn btn-outline btn-sm" id="persoSignOutBtn" type="button">Sign out</button>
+            </div>
+            <div data-i18n class="settings-hint">Used when Choose a model, Voice separation or Speech-to-text is set to Perso API. Uses Perso credits.</div>
           </div>
         </div>
         <div class="set-row">
@@ -1173,6 +1218,7 @@
             <div data-i18n class="job-notice danger" id="persoSpaceWarning" style="display:none">
               This workspace has 0 credits left. Perso dubbing will fail until it
               is recharged. Pick another workspace, or use Whisper (free, offline).</div>
+            <a class="btn btn-outline btn-sm" id="persoRechargeLink" href="https://perso.ai/en/workspace/space-settings?tab=Subscription" target="_blank" rel="noopener" data-i18n style="margin-top:8px;display:inline-flex">Recharge credits</a>
           </div>
         </div>
         <div class="set-row">
@@ -1207,7 +1253,7 @@
         </div>
         <div class="settings-alert" id="settingsSaveError" style="display:none">
           <svg class="icon" viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-          <span data-i18n id="settingsSaveErrorText">Saving the key(s) failed. Is PersoDub running?</span>
+          <span data-i18n id="settingsSaveErrorText">Saving the key(s) failed. Is {app} running?</span>
         </div>
       </div>
 
@@ -1238,26 +1284,31 @@
           <div class="set-ctl">
             <input type="checkbox" class="switch" id="analyticsToggle" checked>
             <!-- The shell re-reads the file before every count, so promising
-                 a restart would be wrong. The hint is empty until a save
-                 fails -- the label says what the switch does. -->
-            <div class="settings-hint" id="analyticsHint"></div>
+                 a restart would be wrong. One sentence: what goes and why. -->
+            <div class="settings-hint" id="analyticsHint"><span data-i18n>Helps improve {app} by sending only how often the app is used, anonymously.</span></div>
           </div>
         </div>
         <div class="set-row">
-          <label data-i18n for="reportsToggle">Send job logs</label>
+          <label data-i18n for="eventsToggle">Share App Analytics</label>
+          <div class="set-ctl">
+            <!-- Checked from GET /api/settings' events_enabled: with nothing
+                 saved, on in the production edition and off in the
+                 open-source one (desktop/src/events.js). -->
+            <input type="checkbox" class="switch" id="eventsToggle">
+            <div class="settings-hint" id="eventsHint"><span data-i18n>Helps improve {app} by sending only which screens and buttons you used, never what you type.</span></div>
+          </div>
+        </div>
+        <div class="set-row">
+          <label data-i18n for="reportsToggle">Help improve {app}</label>
           <div class="set-ctl">
             <input type="checkbox" class="switch" id="reportsToggle" checked>
             <!-- Separate from the counts: this one carries the logs of finished
                  and failed jobs, so it is its own choice. Nothing personal
                  leaves -- keys and folder names are taken out first
-                 (desktop/src/report.js). What goes, where, for how long, what
-                 never goes and what it is for, a sentence a line (owner,
-                 2026-10-22, 9). -->
+                 (desktop/src/report.js). One sentence: what goes, what never
+                 goes and why; the rest is in docs/privacy.md (owner, 2026-10-27). -->
             <div class="settings-hint" id="reportsHint">
-              <span data-i18n>Keeps a record of finished and failed jobs (masked logs, time per step, device ID) on a private dashboard for 30 days.</span>
-              <span data-i18n>Only failed jobs go into a public GitHub issue, as a summary of the cause.</span>
-              <span data-i18n>Titles, file names, links and dialogue are not sent.</span>
-              <span data-i18n>What you send helps make PersoDub better.</span>
+              <span data-i18n>Helps improve {app} by sending only job records, never titles, files or dialogue.</span>
             </div>
           </div>
         </div>
@@ -1284,7 +1335,7 @@
              real version lives in desktop/package.json); the license list
              below is static -- keep it in sync with NOTICE, which lists all
              seven and is the authoritative text. It ships inside the app
-             (Contents/Resources/NOTICE, via package.json extraResources) --
+             (Contents/Resources/NOTICE, via desktop/electron-builder.js extraResources) --
              this list is the pointer to it, not a replacement for it.
              FFmpeg's terms depend on the build the installer fetches, so it
              is labelled the way NOTICE labels it rather than pinned here. -->
@@ -1507,6 +1558,41 @@
      Since 2026-09-01 that includes starting a dub (queue_dub), behind the
      confirm gate every spending tool has: nothing starts until the user has
      been asked and agreed. cancel_dub stops a job when the user asks. -->
+
+<!-- The production edition's sign-in (ui/src/signIn.mjs; the shell signs in
+     to Perso in a window of its own, desktop/src/auth.js). Over the whole
+     window while signed out, while that window is open on Perso, and while the
+     account has no API key (mockup 2026-10-25). The open-source edition never
+     shows it. The top strip moves the window, as the top bar does. -->
+<div class="signin" id="signInScreen" hidden>
+  <div class="signin-bar"></div>
+  <div class="signin-stage" id="signInStart">
+    <img class="signin-logo" src="/logo.png" alt="">
+    <div class="signin-name" id="signInName" data-i18n>{app}</div>
+    <button class="btn btn-primary signin-btn" id="signInBtn" type="button"></button>
+    <div class="signin-hint" id="signInHint"></div>
+  </div>
+  <div class="signin-stage" id="signInWait" hidden>
+    <img class="signin-logo sm" src="/logo.png" alt="">
+    <h1 id="signInWaitTitle"></h1>
+    <p id="signInWaitNote" hidden></p>
+    <div class="signin-prog"><b></b></div>
+    <div class="signin-btns"><button class="btn btn-secondary signin-btn" id="signInReopen" type="button"></button></div>
+    <button data-i18n class="signin-link" id="signInCancel" type="button">Cancel</button>
+  </div>
+  <div class="signin-stage" id="signInNoKey" hidden>
+    <img class="signin-logo sm" src="/logo.png" alt="">
+    <h1 data-i18n>No API key yet</h1>
+    <p data-i18n>The key page is open in your browser. Make a key there; {app} carries on by itself.</p>
+    <div class="signin-acct" id="signInAccount"></div>
+    <div class="signin-btns">
+      <button data-i18n class="btn btn-primary signin-btn" id="signInMakeKey" type="button">Make a key</button>
+      <button data-i18n class="btn btn-secondary signin-btn" id="signInCheckKey" type="button">Check again</button>
+    </div>
+    <div class="signin-hint danger" id="signInKeyNote"></div>
+    <button data-i18n class="signin-link" id="signInSignOut" type="button">Sign out</button>
+  </div>
+</div>
 
 <!-- The app's script is ui/src/app.mjs. It is imported in the "from" form
      because that is the form app/main.py stamps with the launch token: a bare

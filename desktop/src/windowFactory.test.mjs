@@ -11,7 +11,7 @@ import { currentLanguage, useLanguage } from "./i18n.js";
 
 const DESKTOP = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-function setup({ workArea = { width: 1440, height: 900 }, ctx = {}, platform = "darwin" } = {}) {
+function setup({ workArea = { width: 1440, height: 900 }, ctx = {}, platform = "darwin", edition } = {}) {
   const opened = [];
   const on = {};
   class BrowserWindow {
@@ -29,9 +29,11 @@ function setup({ workArea = { width: 1440, height: 900 }, ctx = {}, platform = "
       };
     }
     isDestroyed() { return false; }
+    on(event, fn) { on[`win:${event}`] = fn; }
   }
   const win = createWindow({
     app: { isPackaged: true }, BrowserWindow, ctx, appDir: "/app", repo: "owner/PersoDub", locale: "ko", platform,
+    edition,
     screen: { getPrimaryDisplay: () => ({ workAreaSize: workArea }) },
     shell: { openExternal: (url) => opened.push(url) },
   });
@@ -54,7 +56,21 @@ test("the window opens at 1280 by 800, or at the screen's size when that is smal
     // The page's GitHub links follow the build's edition (preload.cjs repo).
     // ...and Auto's language follows the computer's (preload.cjs locale).
     // ...and the page is told which system it is on (preload.cjs platform).
-    additionalArguments: ["--persodub-repo=owner/PersoDub", "--persodub-locale=ko", "--persodub-platform=darwin"] });
+    // ...and its edition (preload.cjs edition), and the name it shows (preload.cjs name).
+    additionalArguments: ["--persodub-repo=owner/PersoDub", "--persodub-locale=ko", "--persodub-platform=darwin",
+      "--persodub-edition=opensource", "--persodub-name=PersoDub"] });
+  assert.equal(big.title, undefined, "the open-source window takes each page's title");
+});
+
+test("the production window is PersoDubbing whatever its page is called, and tells the page its edition and name", () => {
+  const { win, on } = setup({ edition: "production", platform: "win32" });
+  assert.equal(win.options.title, "PersoDubbing");
+  let kept = false;
+  on["win:page-title-updated"]({ preventDefault: () => { kept = true; } });
+  assert.ok(kept, "a page's own title does not replace it");
+  const args = win.options.webPreferences.additionalArguments;
+  assert.ok(args.includes("--persodub-edition=production"));
+  assert.ok(args.includes("--persodub-name=PersoDubbing"));
 });
 
 // Windows hung its white system title bar over the dark app, with the app's own
@@ -86,6 +102,8 @@ test("the preload stamps the system on the page, and the bundled screens can be 
   const preload = readFileSync(join(DESKTOP, "preload.cjs"), "utf8");
   assert.match(preload, /const PLATFORM_ARG = "--persodub-platform=";/);
   assert.match(preload, /document\.documentElement\.dataset\.platform = platform;/);
+  // ...and the edition, for the production edition's palette and type.
+  assert.match(preload, /if \(edition\) document\.documentElement\.dataset\.edition = edition;/);
   for (const name of ["loading", "installing", "not-installed", "error"]) {
     const html = readFileSync(join(DESKTOP, "screens", `${name}.html`), "utf8");
     assert.match(html, /\.drag \{ position: fixed; top: 0; left: 0; right: 0; height: 36px; -webkit-app-region: drag; \}/, name);
@@ -134,7 +152,7 @@ test("the window moves only between the app's own pages; anything else goes to t
 
 test("only http(s) is ever handed to the system", () => {
   const opened = [];
-  for (const url of ["https://a.example/", "HTTP://b.example/", "file:///x", "ftp://c.example/", "javascript:alert(1)"]) {
+  for (const url of ["https://a.example/", "HTTP://b.example/", "mailto:team@example.com?subject=x", "file:///x", "ftp://c.example/", "javascript:alert(1)"]) {
     openExternally({ openExternal: (u) => opened.push(u) }, url);
   }
   assert.deepEqual(opened, ["https://a.example/", "HTTP://b.example/"]);

@@ -22,16 +22,17 @@ import { erasePercent } from "./eraseArea.mjs";
 import { t } from "./i18n.mjs";
 
 // Anything that is not finished, failed or cancelled is still going.
-const JOB_DOT = { done: "dot-done", error: "dot-error", cancelled: "dot-cancelled",
+const JOB_DOT = { done: "dot-done", on_perso: "dot-done", error: "dot-error", cancelled: "dot-cancelled",
                   queued: "dot-queued" };
 
 // The same five states, said in shape as well as in colour: five coloured dots
 // are one dot to anyone who does not see colour the way the palette assumes.
 // Drawn at 12px in the page's own inline-SVG way -- no icon font, still offline.
-// Done is a tick, waiting is an empty ring, running is that ring filled, a
-// failure is a cross and a cancelled job is the ring struck through.
+// Done is a tick (done on Perso too), waiting is an empty ring, running is that
+// ring filled, a failure is a cross and a cancelled job is the ring struck through.
 const JOB_MARK = {
   done: '<path d="M2.6 6.4l2.4 2.4 4.5-5"/>',
+  on_perso: '<path d="M2.6 6.4l2.4 2.4 4.5-5"/>',
   error: '<path d="M3.2 3.2l5.6 5.6"/><path d="M8.8 3.2l-5.6 5.6"/>',
   cancelled: '<circle cx="6" cy="6" r="3.6"/><path d="M3.5 8.5l5-5"/>',
   queued: '<circle cx="6" cy="6" r="3.6"/>',
@@ -113,7 +114,9 @@ export function initProjectsUi({ $, getActiveJobId, isHomeScreen, langName,
                                  // onJobs gets the raw list renderHistory just
                                  // fetched, onRunningPct the percent
                                  // renderQueueCard works out for the job on air.
-                                 onJobs, onRunningPct }) {
+                                 // onSeen gets each job renderQueueCard reads,
+                                 // the one on air with its log.
+                                 onJobs, onRunningPct, onSeen = () => {} }) {
   // A name too long for the column is cut off with an ellipsis, and hovering it
   // is then the only way to read the rest. Only the names actually cut off get a
   // tooltip: one that repeats a name already fully on show is noise under the
@@ -143,6 +146,7 @@ export function initProjectsUi({ $, getActiveJobId, isHomeScreen, langName,
     try {
       jobs = (await (await fetch("/api/dub/jobs")).json()).jobs || [];
     } catch { return; }
+    for (const j of jobs) onSeen(j);
     const running = jobs.filter((j) => j.status === "running" || j.status === "cancelling");
     const waiting = jobs.filter((j) => j.status === "queued");
     // A job that finished while the user was on Home: the cards kept saying
@@ -159,6 +163,7 @@ export function initProjectsUi({ $, getActiveJobId, isHomeScreen, langName,
     if (running.length) {
       try {
         const detail = await (await fetch(`/api/dub/jobs/${running[0].id}`)).json();
+        onSeen(detail);
         // The two kinds of work count themselves differently: a dub logs the
         // stage it is on, an erase logs a percentage of one long stage.
         // A separation has no percentage of its own to give.
@@ -235,7 +240,7 @@ export function initProjectsUi({ $, getActiveJobId, isHomeScreen, langName,
     try {
       jobs = (await (await fetch("/api/dub/jobs")).json()).jobs || [];
     } catch {
-      if (!folded()) container.innerHTML = `<div class="history-empty">${t("The connection to PersoDub dropped for a moment. If it stays this way, quit and reopen PersoDub.")}</div>`;
+      if (!folded()) container.innerHTML = `<div class="history-empty">${t("The connection to {app} dropped for a moment. If it stays this way, quit and reopen {app}.")}</div>`;
       return;
     }
     if (onJobs) onJobs(jobs);

@@ -28,6 +28,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { readPage } from "../testlib/readPage.mjs";
 import { lucide } from "./icons.mjs";
+import { applyTranslations, setLanguage } from "./i18n.mjs";
 
 // The timeline draws its own head and lane, so their ids live in the module.
 const TIMELINE = fileURLToPath(new URL("./timeline.mjs", import.meta.url));
@@ -97,10 +98,65 @@ test("there is one dark theme, and its fonts are the app's own", () => {
     ["primary-ink", "#7aacf6"], ["timeline-fit", "#49a072"], ["destructive", "#f47b74"]]) {
     assert.match(html, new RegExp(`--${name}: ${value};`), `--${name} is not ${value}`);
   }
+  // The production edition's sheet is Perso's workspace dark under the same
+  // blue, and its type Pretendard (owner, 2026-10-27).
+  const prod = html.slice(html.indexOf(':root[data-edition="production"] {'));
+  for (const [name, value] of [["desk", "#121119"], ["background", "#17161f"], ["well", "#1f1e28"],
+    ["secondary", "#26252f"], ["border", "rgba\\(255, 255, 255, 0\\.07\\)"], ["control-line", "rgba\\(255, 255, 255, 0\\.2\\)"],
+    ["foreground", "#ededf0"], ["muted-foreground", "#a3a2ad"], ["success", "#0bc673"], ["warning", "#ffa31a"],
+    ["destructive", "#f03d3d"]]) {
+    assert.match(prod.slice(0, prod.indexOf("}")), new RegExp(`--${name}: ${value};`), `production --${name} is not ${value}`);
+  }
+  assert.ok(!prod.slice(0, prod.indexOf("}")).includes("--primary"), "the production edition keeps our blue");
+  assert.match(html, /:root\[data-edition="production"\] body \{\n    font-family: "Twemoji Country Flags", "Pretendard Variable", Onest,/);
   // Timeline bars that fit are green now, never the old violet.
   assert.ok(!/#8B5CF6/i.test(html), "the violet timeline colour is back");
   // Burned-in subtitles keep the font ffmpeg draws with.
   assert.match(html, /\.sub-ov-text \{[^}]*font-family: "Apple SD Gothic Neo"/);
+});
+
+// The production edition's Customer support is a Service inquiry form like
+// Perso's own, sent to the support inbox with a consent like Perso's (owner, 2026-10-27);
+// its words in Korean as approved.
+test("Customer support's form asks the kind, a subject, the details, a reply-to address and the consent", () => {
+  const html = readPage();
+  assert.match(html, /<span data-i18n id="homeFeedbackLabel">Send feedback<\/span>/);
+  const at = html.indexOf('<div class="modal-overlay" id="feedbackOverlay">');
+  const dialog = html.slice(at, html.indexOf('<div class="modal-overlay"', at + 1));
+  assert.match(dialog, /<h2 data-i18n id="feedbackTitle">Service inquiry<\/h2>/);
+  // The values are the shell's kinds (desktop/src/report.js INQUIRY_TYPES), the words the form's.
+  assert.deepEqual([...dialog.matchAll(/<option value="([^"]+)" data-i18n>([^<]+)<\/option>/g)].map((m) => [m[1], m[2]]),
+    [["problem", "Problem or inconvenience"], ["bug", "Bug report"], ["payment", "Payment or refund"], ["other", "Other"]]);
+  assert.match(dialog, /<label data-i18n for="feedbackSubjectInput">Subject<\/label><input type="text" id="feedbackSubjectInput" maxlength="120" required>/);
+  assert.match(dialog, /<label data-i18n for="feedbackDetails">Details<\/label><textarea id="feedbackDetails" rows="5" maxlength="4000" required><\/textarea>/);
+  assert.match(dialog, /<label data-i18n for="feedbackReplyTo">Reply-to email<\/label><input type="text" id="feedbackReplyTo" inputmode="email" autocomplete="email" maxlength="254">/);
+  // Left empty, the answer goes to the signed-in account's address (desktop/src/reporting.js accountForInquiry).
+  assert.match(dialog, /maxlength="254"><div data-i18n class="settings-hint" id="feedbackReplyToHint">Leave it empty to be answered at your account's address\.<\/div><\/div>/);
+  assert.match(dialog, /<p data-i18n class="help-where">The app version and your computer are added automatically\.<\/p>/);
+  assert.match(dialog, /<p class="help-where" id="feedbackLogsNote" hidden><span data-i18n>A bug report also sends the app's logs\.<\/span>/);
+  assert.match(dialog, /<input type="checkbox" id="feedbackConsent"><label data-i18n for="feedbackConsent">I agree to the collection and use of my personal information for this inquiry\.<\/label> <a href="#" id="feedbackPrivacy" data-i18n>Privacy policy<\/a>/);
+  assert.match(dialog, /<p class="help-where" id="feedbackStatus" role="status"><\/p>/);
+  assert.match(dialog, /<button data-i18n class="btn btn-secondary" id="feedbackClose" type="button">Close<\/button>\s*<button data-i18n class="btn btn-primary" id="feedbackSend" type="button" disabled>Send<\/button>/);
+  assert.ok(!dialog.includes("github"), "no repository link in the production form");
+  const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
+  assert.deepEqual(["Customer support", "Service inquiry", "Problem or inconvenience", "Bug report", "Payment or refund", "Other",
+                    "Subject", "Details", "Reply-to email", "Close", "Send",
+                    "I agree to the collection and use of my personal information for this inquiry.", "Received. Reference {id}",
+                    "Leave it empty to be answered at your account's address."].map((k) => ko[k]),
+    ["고객 지원센터", "서비스 문의", "불편사항", "버그 신고", "결제·환불", "기타", "제목", "문의 내용", "답장 받을 이메일", "닫기", "보내기",
+     "문의 처리를 위한 개인정보 수집·이용에 동의해요", "접수됐어요. 접수 번호 {id}", "비워 두면 계정 이메일로 답장해요."]);
+});
+
+// The production Home heads with the wordmark alone, white letters on the
+// sidebar's dark, 170px wide and to the left, with no box (owner, 2026-10-27);
+// the open-source one keeps its pale pill.
+test("the production sidebar's logo is the white-lettered wordmark with no box", () => {
+  const html = readPage();
+  assert.match(html, /<button class="home-perso" id="homePerso" type="button" aria-label="Perso Dubbing"><img src="\/perso-dubbing\.svg" alt="Perso Dubbing"><\/button>/);
+  assert.match(html, /:root\[data-edition="production"\] \.home-gh \{ background: none; border: none; padding: 6px 0 4px; \}/);
+  assert.match(html, /:root\[data-edition="production"\] \.home-side \.home-perso \{ justify-content: flex-start; padding: 0; background: none; \}/);
+  assert.match(html, /:root\[data-edition="production"\] \.home-perso img \{ width: 170px; height: auto; content: url\(\/perso-dubbing-white\.svg\); \}/);
+  assert.match(html, /\.home-side \.home-perso \{[^}]*background: linear-gradient\(90deg, #dfe8ff, #bfe3ff\); \}/);
 });
 
 // The shell's icons are Lucide lines that stay 1.5px on screen at any size
@@ -645,7 +701,8 @@ test("the update's dot is on the What's new card, not in the top bar; the key wi
   const html = readPage();
   assert.ok(!html.includes('id="updateBtn"'), "the top bar's update icon is gone (2026-10-21)");
   assert.match(html, /#homeWhatsNew\.live::after \{ content: ""; position: absolute;/);
-  assert.match(html, /wireUpdates\(\{ \$, shell: window\.persodubShell \|\| null, releases: `\$\{REPO_URL\}\/releases` \}\);/);
+  // An update with no notes links to its release, Perso's desktop app page in production.
+  assert.match(html, /wireUpdates\(\{ \$, shell: window\.persodubShell \|\| null,\n  \/\/[^\n]*\n  notesPage: isProduction\(\) \? \(\) => null : \(version\) => `\$\{REPO_URL\}\/releases\/tag\/v\$\{version\}` \}\);/);
   for (const id of ["updateOverlay", "updClose", "updTitle", "updCurrent", "updNext", "updGo", "updRunning", "updNotesBox", "updNotes", "updNotesLink"]) {
     assert.match(html, new RegExp(`id="${id}"`), id);
   }
@@ -727,7 +784,8 @@ test("there is no rail, and the logo in Settings > About is the way to the proje
   assert.ok(!/class="rail|id="(dubToggle|eraseToggle|historyToggle)"/.test(html),
     "the rail and its buttons are gone (mockup 2026-09-29)");
   assert.match(html, /<button class="about-logo-btn" id="brandBtn"[^>]*title="PersoDub on GitHub"[^>]*><img class="about-logo" src="\/logo.png"/);
-  assert.match(html, /\$\("brandBtn"\)\.addEventListener\("click", \(\) => window\.open\(REPO_URL, "_blank", "noopener"\)\)/);
+  // ...and Perso's desktop app page in the production edition, which has no repository.
+  assert.match(html, /\$\("brandBtn"\)\.addEventListener\("click", \(\) => window\.open\(isProduction\(\) \? persoLink\(DESKTOP_APP_URL, "about", savedSettings\(\)\?\.perso_utm\) : REPO_URL, "_blank", "noopener"\)\)/);
 });
 
 // Which repository the project's links open is the shell's to say: the build's
@@ -958,7 +1016,7 @@ test("a start that restarted the voice engine tries once more, never in a loop",
   const branch = html.match(/else if \(([^\n]*voice engine is not running[^\n]*)\) \{\n[^\n]*restartVoiceEngine[^\n]*\n\s*if \(restart\.ok\) \{\n\s*(return submitDubStart\([^;]*\));/);
   assert.ok(branch, "the voice-engine retry branch is where it was");
   assert.match(branch[1], /^!retried && /);
-  assert.equal(branch[2], "return submitDubStart({ fd, label, errorEl, retry, retried: true })");
+  assert.equal(branch[2], "return submitDubStart({ fd, label, errorEl, retry, retried: true, seconds })");
 });
 
 test("a Perso key is asked for with its workspace, and a missing workspace is asked for at the start", () => {
@@ -979,11 +1037,11 @@ test("Settings is five tabs, each with its panel, and keeps every control it had
   const from = html.indexOf('<div class="modal-overlay" id="settingsOverlay">');
   const sheet = html.slice(from, html.indexOf('id="settingsSaveBtn"', from) + 200);
   assert.match(sheet, /<div class="set-tabs" id="settingsTabs" role="tablist"/);
-  const names = ["models", "keys", "storage", "privacy", "about"];
+  const names = ["keys", "models", "storage", "privacy", "about"];
   const tabs = [...sheet.matchAll(/id="settingsTab-(\w+)"[^>]*role="tab"[^>]*aria-controls="settingsPanel-(\w+)"[^>]*>([^<]+)</g)];
   assert.deepEqual(tabs.map((m) => m[1]), names);
   assert.deepEqual(tabs.map((m) => m[2]), names);
-  assert.deepEqual(tabs.map((m) => m[3]), ["Models", "API keys", "Storage", "Privacy", "About"]);
+  assert.deepEqual(tabs.map((m) => m[3]), ["API keys", "Models", "Storage", "Privacy", "About"]);
   assert.equal((sheet.match(/aria-selected="true"/g) || []).length, 1, "one tab is selected in the markup");
   // Each control sits in the panel of its own tab.
   const panel = (name) => {
@@ -1062,27 +1120,29 @@ test("the models dialog keeps its line break, and is wider than the other confir
   assert.ok(en >= 351 + 34 && ko >= 299 + 34, `${en} and ${ko} are too narrow`);
 });
 
-// Settings > Privacy, Send job logs: what goes and where, for how long, what
-// never goes, and what it is for, a sentence a line (owner, 2026-10-22, 9).
-// It used to call the failed jobs stopped ones, and said nothing of where.
-test("Send job logs says what goes where, what never goes and why, a sentence a line", () => {
+// Settings > Privacy: each switch says in one sentence what goes, what never
+// goes and why, in the words the owner chose (2026-10-27); the rest is in
+// docs/privacy.md. It used to say it in four sentences, a line each.
+test("each privacy switch says in one sentence what goes, what never goes and why", () => {
   const html = readPage();
-  const hint = html.match(/<div class="settings-hint" id="reportsHint">([\s\S]*?)<\/div>/)[1];
-  const sentences = [...hint.matchAll(/<span data-i18n>([^<]*)<\/span>/g)].map((m) => m[1]);
+  const hintOf = (id) => [...html.match(new RegExp(`<div class="settings-hint" id="${id}">([\\s\\S]*?)<\\/div>`))[1]
+    .matchAll(/<span data-i18n>([^<]*)<\/span>/g)].map((m) => m[1]);
+  const labels = [...html.matchAll(/<label data-i18n for="(analyticsToggle|eventsToggle|reportsToggle)">([^<]*)<\/label>/g)].map((m) => m[2]);
+  assert.deepEqual(labels, ["Anonymous usage counts", "Share App Analytics", "Help improve {app}"]);
+  const sentences = [...hintOf("analyticsHint"), ...hintOf("eventsHint"), ...hintOf("reportsHint")];
   assert.deepEqual(sentences, [
-    "Keeps a record of finished and failed jobs (masked logs, time per step, device ID) on a private dashboard for 30 days.",
-    "Only failed jobs go into a public GitHub issue, as a summary of the cause.",
-    "Titles, file names, links and dialogue are not sent.",
-    "What you send helps make PersoDub better.",
+    "Helps improve {app} by sending only how often the app is used, anonymously.",
+    "Helps improve {app} by sending only which screens and buttons you used, never what you type.",
+    "Helps improve {app} by sending only job records, never titles, files or dialogue.",
   ]);
   const ko = JSON.parse(readFileSync(new URL("../../static/i18n/ui.ko.json", import.meta.url), "utf8"));
-  assert.deepEqual(sentences.map((s) => ko[s]), [
-    "끝난 작업과 실패한 작업의 기록(가린 로그, 단계별 시간, 기기 번호)을 비공개 대시보드에 30일 보관해요.",
-    "실패한 작업만 깃헙 공개 이슈에 원인 요약으로 올라가요.",
-    "제목·파일 이름·링크·대사는 안 보내요.",
-    "보내 주시면 PersoDub을 더 좋게 만드는 데 써요.",
+  assert.deepEqual([...labels, ...sentences].map((s) => ko[s]), [
+    "익명 사용 통계", "앱 분석 공유", "앱 개선에 참여",
+    "앱을 쓴 횟수만 익명으로 보내 {app} 개선을 도와요.",
+    "입력한 내용 없이 어떤 화면과 버튼을 썼는지만 보내 {app} 개선을 도와요.",
+    "제목·파일·대사 없이 작업 기록만 보내 {app} 개선을 도와요.",
   ]);
-  // Each sentence starts a line of its own, and the label stays by the switch.
+  // The label stays by the switch, beside a hint of its own.
   assert.match(html, /#reportsHint > span \{ display: block; \}/);
   assert.match(html, /\.set-row:has\(> \.set-ctl > #reportsHint\) \{ align-items: start; \}/);
   const old = "Keeps the logs of finished and failed jobs for 30 days. Only failed jobs go into a public issue.";
@@ -1498,7 +1558,7 @@ test("a draft is kept when it changes and when it is left, and let go when it is
   // Kept with the tab it is on, and opened there again; Home keeps the one it had.
   assert.match(html, /const tab = screen === "erase" \? "erase" : screen === "home"\n    \? \(keptDrafts\.find\(\(k\) => k\.downloadId === d\.downloadId\) \|\| \{\}\)\.tab : leftTabs\.current\(\);\n  keptDrafts = keepDraft\(localStorage, \{ \.\.\.d, tab \}, keptDrafts\);/);
   assert.match(html, /if \(kept\.tab === "erase"\) \{ eraseScreen\.openEraseTab\(\); return; \}\n  draftSetup\.showDraftScreen\(\);\n  leftTabs\.show\(kept\.tab\);\n\}/);
-  assert.match(html, /const started = await submitDubStart\(o\);\n    if \(started && d\) forgetDraft\(d\.downloadId\);/);
+  assert.match(html, /const started = await submitDubStart\(\{ \.\.\.o, seconds: d \? keptSeconds\(d\) : undefined \}\);\n    if \(started && d\) forgetDraft\(d\.downloadId\);/);
   // The delete question is ui/src/confirmDialogs.mjs's, written one level in.
   assert.match(readFileSync(CONFIRMS, "utf8"), /if \(job\.draftId\) \{\n      forgetDraft\(job\.draftId\);/);
   // Reopened: held again first (the app forgets what it holds when it restarts).
@@ -1639,6 +1699,26 @@ test("a script line pressed stops the video at its start and the strip is brough
 // Home's four tools, the same four in the same order on the cards and in the
 // sidebar (owner, 2026-10-23), and the banner's line naming what a video
 // can be made into.
+// A screen reader names the sidebar as the screen shows the app: PersoDub,
+// or PersoDubbing in the production edition (the shell's name, {app}).
+test("Home's sidebar is labelled with the edition's own name", () => {
+  const tag = readPage().match(/<aside class="home-side"[^>]*>/)[0];
+  assert.equal(tag, '<aside class="home-side" aria-label="PersoDub" data-i18n-aria-label="{app}">');
+  const attrs = new Map([["aria-label", "PersoDub"]]);
+  const aside = { dataset: { i18nAriaLabel: "{app}" }, setAttribute: (k, v) => attrs.set(k, v) };
+  const page = { querySelectorAll: (sel) => (sel === "[data-i18n-aria-label]" ? [aside] : []) };
+  const hadWindow = Object.hasOwn(globalThis, "window");
+  const before = globalThis.window;
+  globalThis.window = { persodubShell: { name: "PersoDubbing" } };
+  try {
+    setLanguage("en");
+    applyTranslations(page);
+    assert.equal(attrs.get("aria-label"), "PersoDubbing");
+  } finally {
+    if (hadWindow) globalThis.window = before; else delete globalThis.window;
+  }
+});
+
 test("Home's cards and sidebar are Dubbing, Erase subtitles, Burn in subtitles and Save video", () => {
   const html = readPage();
   const cards = html.slice(html.indexOf('<div class="home-cards">'), html.indexOf('id="linkCard"'));
@@ -1666,17 +1746,22 @@ test("Home's Help sits above Send feedback and opens its tools and the Dub Agent
   const at = html.indexOf('<div class="modal-overlay" id="helpOverlay">');
   assert.ok(at > 0, "the Help dialog is in the page");
   const dialog = html.slice(at, html.indexOf('<div class="modal-overlay"', at + 1));
-  assert.match(dialog, /aria-labelledby="helpTitle"[^>]*>\s*<div class="modal-head"><h2 id="helpTitle">What PersoDub does<\/h2>/);
+  assert.match(dialog, /aria-labelledby="helpTitle"[^>]*>\s*<div class="modal-head"><h2 id="helpTitle">What {app} does<\/h2>/);
   const names = [...dialog.matchAll(/<div class="help-item"><b>([^<]+)<\/b>(?:<p>[^<]+<\/p>)+<div class="help-where">[^<]+<\/div><\/div>/g)].map((m) => m[1]);
   // Separate audio is no tool of its own (owner, 2026-10-23).
   assert.deepEqual(names, ["Dubbing", "Erase subtitles", "Save video", "Dub Agent"]);
-  assert.match(dialog, /<p class="help-links"><a href="#" id="helpGuide">User guide<\/a> · <a href="#" id="helpFaq">FAQ<\/a><\/p>/);
+  assert.match(dialog, /<p class="help-links"><a href="#" id="helpGuide">User guide<\/a><span id="helpFaqItem"> · <a href="#" id="helpFaq">FAQ<\/a><\/span><\/p>/);
   assert.match(dialog, /<div class="modal-foot"><button class="btn btn-primary" id="helpOk" type="button">OK<\/button><\/div>/);
   assert.ok(!dialog.includes("modal-close"), "no corner X");
   assert.ok(!dialog.includes("—"), "no em dash in the copy");
   // The links open the repo's docs and stay off the page's own "#".
   assert.match(html, /\[\["helpGuide", "usage"\], \["helpFaq", "faq"\]\]/);
-  assert.match(html, /e\.preventDefault\(\);\n    window\.open\(`\$\{REPO_URL\}\/blob\/main\/docs\/\$\{doc\}\.md`, "_blank", "noopener"\);/);
+  assert.match(html, /e\.preventDefault\(\);\n    window\.open\(isProduction\(\) \? persoLink\(DESKTOP_APP_URL, "help", savedSettings\(\)\?\.perso_utm\) : `\$\{REPO_URL\}\/blob\/main\/docs\/\$\{doc\}\.md`, "_blank", "noopener"\);/);
+  // The production edition has no repository: its User guide is Perso's desktop
+  // app page, and it has no FAQ link.
+  assert.match(html, /\$\("helpFaqItem"\)\.hidden = isProduction\(\);/);
+  // ...and its Help opens that page in the browser instead of the dialog.
+  assert.match(html, /function openHelp\(\) \{\n  if \(isProduction\(\)\) window\.open\(persoLink\(DESKTOP_APP_URL, "help", savedSettings\(\)\?\.perso_utm\), "_blank", "noopener"\);\n  else \$\("helpOverlay"\)\.classList\.add\("open"\);\n\}/);
 });
 
 // Help's Erase subtitles says why, how and how long, a line each (owner,

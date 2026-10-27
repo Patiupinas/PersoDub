@@ -39,7 +39,7 @@ function makeEl(id) {
     question gives. The question is the app's own dialog now, handed in like
     every other way this screen reaches out (user, 2026-09-10). */
 function harness({ jobId = "j1", status = "running", confirmAnswer = true,
-                   onCancel = null, choices = [] } = {}) {
+                   onCancel = null, choices = [], storage = null } = {}) {
   const els = new Map();
   const $ = (id) => {
     if (!els.has(id)) {
@@ -55,7 +55,7 @@ function harness({ jobId = "j1", status = "running", confirmAnswer = true,
     return els.get(id);
   };
   const log = { homeNoticeAndLog: 0, cancelled: [], settings: 0, opened: [], warned: [],
-                resumed: [], choicesFor: [] };
+                resumed: [], choicesFor: [], steps: [] };
 
   const real = { warn: console.warn };
   console.warn = (m) => log.warned.push(m);
@@ -78,6 +78,10 @@ function harness({ jobId = "j1", status = "running", confirmAnswer = true,
     jobNote: (job) => job.note || "",
     translatorChoices: async (job) => { log.choicesFor.push(job.id); return choices; },
     onResumeWith: (id, translator) => { log.resumed.push([id, translator]); },
+    record: (name, props) => log.steps.push([name, props]),
+    // null unless a test shares one: Node has a sessionStorage of its own,
+    // which would carry one test's seen popups into the next.
+    storage,
   });
   return { $, api, log };
 }
@@ -301,6 +305,28 @@ test("a credit-exhausted notice draws the line AND pops the popup once, with the
   h.api.hideCreditModal();
   h.api.paintNotices(EXHAUSTED);
   assert.ok(!h.$("creditOverlay").classList.contains("open"));
+});
+
+// A Settings save that changes the language starts the page again, and the
+// engine still holds the notice: the popup came back after every such save
+// (Windows, 2026-10-27). Seen once is remembered for the page's session.
+test("a popup seen once stays seen when the page starts again, until the job is resumed", (t) => {
+  const kept = new Map();
+  const storage = { getItem: (k) => kept.get(k) ?? null, setItem: (k, v) => kept.set(k, String(v)) };
+  const first = harness({ storage });
+  t.after(first.log.restore);
+  first.api.paintNotices({ ...EXHAUSTED, status: "error" });
+  assert.ok(first.$("creditOverlay").classList.contains("open"));
+
+  const again = harness({ storage });   // the page, started again
+  t.after(again.log.restore);
+  again.api.paintNotices({ ...EXHAUSTED, status: "error" });
+  assert.ok(!again.$("creditOverlay").classList.contains("open"), "not again after the page started over");
+
+  // Resumed, it is a new run that may run short again.
+  again.api.forgetPopups("j1");
+  again.api.paintNotices({ ...EXHAUSTED, status: "error" });
+  assert.ok(again.$("creditOverlay").classList.contains("open"));
 });
 
 test("a busy-server notice has nowhere to send anyone, so it shows no button", (t) => {
@@ -571,6 +597,7 @@ test("a stopped job wears a mark: a stop square cancelled, an exclamation failed
   assert.doesNotMatch(cancelled, /<path /);
   assert.match(failed, /<path d="M12 7\.5v5\.5"\/><path d="M12 16\.6h\.01"\/>/,
     "a failure is a stroke and the dot under it");
+  assert.match(stoppedMark("on_perso"), /<path d="M7 12\.5l3\.2 3\.2L17 9"\/>/, "done on Perso is a tick");
   // Anything the server did not call cancelled has failed.
   assert.equal(stoppedMark("interrupted"), failed);
   assert.equal(stoppedMark(undefined), failed);
@@ -640,4 +667,21 @@ test("a failed dub shows a plain sentence, never what the program said when it b
     "It stopped while getting the dubbing ready. Press Start over. If it stops again, quit and reopen PersoDub, then try again.");
   h.api.paintNotices({ id: "j1", status: "error", error: "local STT reported an error ([Errno 2] No such file)" });
   assert.equal(h.$("doneNotice").innerHTML, "Local STT reported an error.");
+});
+
+// The charts' steps (ui/src/events.mjs): which popup came up, and a Recharge pressed in it.
+test("a popup shown is a step by its notice, and Recharge pressed in it another; See plans and Open Settings are not recharges", async (t) => {
+  const h = harness();
+  t.after(h.log.restore);
+  h.api.showCreditModal({ type: "perso_credit_exhausted", link: "https://perso.example/recharge" });
+  await h.$("creditRechargeBtn").fire("click", { preventDefault() {} });
+  h.api.showCreditModal({ type: "perso_plan_required", link: "https://perso.ai/pricing" });
+  await h.$("creditRechargeBtn").fire("click", { preventDefault() {} });
+  h.api.showCreditModal({ type: "perso_invalid_key" });
+  await h.$("creditRechargeBtn").fire("click", { preventDefault() {} });
+  assert.deepEqual(h.log.steps, [
+    ["credit_popup_shown", { reason: "perso_credit_exhausted" }], ["recharge_opened", { from: "popup" }],
+    ["credit_popup_shown", { reason: "perso_plan_required" }],
+    ["credit_popup_shown", { reason: "perso_invalid_key" }],
+  ]);
 });

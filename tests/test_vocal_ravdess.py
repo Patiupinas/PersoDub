@@ -94,9 +94,8 @@ def test_zero_or_wrong_archive_count_does_not_look_like_complete_dataset(tmp_pat
 
 def test_duplicates_in_zip_are_rejected(tmp_path):
     paths, digests = _archives(tmp_path)
-    with pytest.warns(UserWarning, match="Duplicate name"):
-        with zipfile.ZipFile(paths["song"], "a") as archive:
-            archive.writestr(_member(1, 2), b"duplicate")
+    with pytest.warns(UserWarning, match="Duplicate name"), zipfile.ZipFile(paths["song"], "a") as archive:
+        archive.writestr(_member(1, 2), b"duplicate")
     digests["song"] = hashlib.md5(paths["song"].read_bytes()).hexdigest()
     with pytest.raises(RavdessIndexError, match="duplicate WAV"):
         _run(paths, digests, {"speech": 3, "song": 4})

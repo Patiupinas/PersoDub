@@ -12,7 +12,6 @@ import re
 import zipfile
 from pathlib import Path
 
-
 PUBLISHED_MD5 = {
     "speech": "bc696df654c87fed845eb13823edef8a",
     "song": "5411230427d67a21e18aa4d466e6d1b9",

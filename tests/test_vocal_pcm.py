@@ -14,7 +14,6 @@ from app.vocal_decisions import DecisionValidationError
 from app.vocal_pcm import (
     CHUNK_FRAMES,
     PCMAssemblyError,
-    _check_protected,
     assemble_vocal_wav,
     verify_preserved_wav,
 )

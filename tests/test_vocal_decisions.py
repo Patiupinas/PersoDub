@@ -6,7 +6,6 @@ import pytest
 
 from app.vocal_decisions import DecisionValidationError, parse_decision_manifest
 
-
 SOURCE_SHA = "a" * 64
 PCM_SHA = "b" * 64
 

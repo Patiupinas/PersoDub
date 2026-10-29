@@ -16,7 +16,6 @@ from app.vocal_offline_demo import RATE, create_demo
 from app.vocal_pcm import PCMAssemblyError, assemble_vocal_wav, verify_preserved_wav
 from app.vocal_policy import select_vocal_decisions
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 

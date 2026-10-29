@@ -36,5 +36,7 @@ jobs:
         run: python -m pip install pytest==8.4.2
       - name: Compile pure-Python modules
         run: python -m compileall -q app/vocal_decisions.py app/vocal_pcm.py app/vocal_benchmark.py app/vocal_offline_demo.py
-      - name: Run all vocal contract and integration tests
-        run: python -m pytest tests/test_vocal_decisions.py tests/test_vocal_pcm.py tests/test_vocal_benchmark.py tests/test_vocal_offline_demo.py -q
+      # These isolated tests have no dependency on the production app.
+      # The standard tests/conftest.py imports full backend dependencies.
+      - name: Run model-free vocal contract and integration tests
+        run: python -m pytest --noconftest tests/test_vocal_decisions.py tests/test_vocal_pcm.py tests/test_vocal_benchmark.py tests/test_vocal_offline_demo.py -q

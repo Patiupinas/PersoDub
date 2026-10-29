@@ -13,7 +13,6 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-
 SCHEMA_VERSION = 1
 LEAF_ACTIONS = frozenset(("TRANSLATE", "PRESERVE", "REVIEW"))
 ACTIONS = LEAF_ACTIONS | {"MIXED"}

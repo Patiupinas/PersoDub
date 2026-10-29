@@ -16,7 +16,6 @@ from pathlib import Path
 from app.vocal_benchmark import score_vocal_decisions
 from app.vocal_pcm import assemble_vocal_wav, verify_preserved_wav
 
-
 RATE = 48000
 CHANNELS = 2
 SECONDS = 4

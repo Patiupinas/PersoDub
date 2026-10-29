@@ -12,7 +12,6 @@ from pathlib import Path
 
 from app.vocal_decisions import DecisionManifest, parse_decision_manifest
 
-
 LABELS = ("TRANSLATE", "PRESERVE", "REVIEW")
 
 
@@ -47,7 +46,7 @@ def score_vocal_decisions(gold_raw, predicted_raw):
     predicted = parse_decision_manifest(predicted_raw)
     _matched(gold, predicted)
 
-    confusion = {g: {p: 0 for p in LABELS} for g in LABELS}
+    confusion = {g: dict.fromkeys(LABELS, 0) for g in LABELS}
     affected_gold_ids = set()
     ambiguous_affected = set()
     gi = pi = 0

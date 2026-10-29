@@ -12,12 +12,12 @@ import json
 import os
 import tempfile
 import wave
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from app.vocal_decisions import DecisionManifest, parse_decision_manifest
-
+from app.vocal_decisions import parse_decision_manifest
 
 CHUNK_FRAMES = 65536
 
@@ -230,10 +230,8 @@ def assemble_vocal_wav(source_wav, output_wav, raw_manifest, tts_wavs):
         temp_path = None
     finally:
         if temp_path is not None:
-            try:
+            with suppress(FileNotFoundError):
                 os.unlink(temp_path)
-            except FileNotFoundError:
-                pass
     return AssemblyReport(output_digest.hexdigest(), manifest.total_samples,
                           translated, protected, spoken, silence)
 

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from app.vocal_policy import ALLOWED_LABELS, select_vocal_decisions
 
+
 class ObservationAlignmentError(ValueError):
     """Input tracks or intervals cannot support a trustworthy decision."""
 

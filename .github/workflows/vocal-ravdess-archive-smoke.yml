@@ -1,0 +1,58 @@
+# One-shot read-only compatibility probe of two public, original RAVDESS ZIPs.
+# The workflow only runs when this file is changed on its dedicated branch.
+# Media stays inside the ephemeral GitHub runner, never in Git/artifacts.
+name: Public RAVDESS archive smoke
+
+on:
+  push:
+    branches:
+      - feature/vocal-ravdess-real-archive-check
+    paths:
+      - '.github/workflows/vocal-ravdess-archive-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-public-archives:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download only public audio-only RAVDESS archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ravdess"
+          curl -fLSs --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 20 \
+            --max-time 900 --output "$RUNNER_TEMP/ravdess/Audio_Speech_Actors_01-24.zip" \
+            'https://zenodo.org/api/records/1188976/files/Audio_Speech_Actors_01-24.zip/content'
+          curl -fLSs --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 20 \
+            --max-time 900 --output "$RUNNER_TEMP/ravdess/Audio_Song_Actors_01-24.zip" \
+            'https://zenodo.org/api/records/1188976/files/Audio_Song_Actors_01-24.zip/content'
+          stat -c '%n %s bytes' "$RUNNER_TEMP"/ravdess/*.zip
+      - name: Verify published MD5 and index actual ZIP file entries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m app.vocal_ravdess \
+            --speech "$RUNNER_TEMP/ravdess/Audio_Speech_Actors_01-24.zip" \
+            --song "$RUNNER_TEMP/ravdess/Audio_Song_Actors_01-24.zip" \
+            --output "$RUNNER_TEMP/ravdess/index.json"
+          python - <<'PY'
+          import json
+          import os
+
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ravdess', 'index.json'), encoding='utf-8') as stream:
+              data = json.load(stream)
+          for category, expected in (('speech', 1440), ('song', 1012)):
+              actual = sum(data['counts'][partition][category] for partition in ('train', 'dev', 'test'))
+              assert actual == expected, (category, actual, expected)
+              print(category, 'verified WAVs=', actual,
+                    'MD5=', data['archives'][category]['md5'],
+                    'SHA256=', data['archives'][category]['sha256'])
+          print('No audio files extracted or published')
+          PY

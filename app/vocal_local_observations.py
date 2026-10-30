@@ -160,6 +160,8 @@ def normalize_local_whisper_cues(
             if " ".join(reconstructed.split()) != " ".join(text.split()):
                 reasons.append("word_text_mismatch")
             ordered_words = sorted(words, key=lambda word: (word.start_sample, word.end_sample))
+            if any(b.start_sample < a.start_sample for a, b in zip(words, words[1:])):
+                reasons.append("nonmonotonic_word_order")
             if any(b.start_sample < a.end_sample for a, b in zip(ordered_words, ordered_words[1:])):
                 reasons.append("overlapping_word_timestamps")
 

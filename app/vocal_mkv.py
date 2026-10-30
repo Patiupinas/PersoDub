@@ -36,8 +36,8 @@ def inspect_master(path, *, source_language):
     expected = ["rus", _SOURCE_LANGUAGES[source_language]]
     if [s.get("tags", {}).get("language") for s in audio] != expected:
         raise ValueError("Audio stream language metadata does not match the contract")
-    if audio[0]["codec_name"] != "flac":
-        raise ValueError("Master Russian audio must be FLAC")
+    if any(track["codec_name"] != "flac" or track.get("sample_fmt") != "s16" for track in audio):
+        raise ValueError("Both master audio tracks must be lossless 16-bit FLAC")
     if [s.get("disposition", {}).get("default", 0) for s in audio] != [1, 0]:
         raise ValueError("Russian audio must be the sole default track")
     if [s.get("tags", {}).get("language") for s in subs] != [expected[1], "rus", "mul"]:
@@ -51,8 +51,8 @@ def build_master(*, source_video, dubbed_pcm_wav, source_srt, russian_srt,
                  bilingual_ass, output_mkv, source_language):
     """Mux a finished PCM dub, original A/V, and three switchable subtitle tracks.
 
-    Video and original audio are stream-copied. The Russian PCM is encoded
-    losslessly as FLAC. Inputs remain unchanged, output is published atomically.
+    Video is stream-copied. Both decoded audio tracks are encoded as 16-bit
+    lossless FLAC to preserve AAC decoder priming and exact source PCM samples. Inputs remain unchanged, output is published atomically.
     """
     if source_language not in _SOURCE_LANGUAGES:
         raise ValueError("source_language must be en, de, es or mul")
@@ -85,7 +85,8 @@ def build_master(*, source_video, dubbed_pcm_wav, source_srt, russian_srt,
             "-map", "0:v:0", "-map", "1:a:0", "-map", "0:a:0",
             "-map", "2:s:0", "-map", "3:s:0", "-map", "4:s:0",
             "-map_metadata", "0", "-map_chapters", "0",
-            "-c:v", "copy", "-c:a:0", "flac", "-c:a:1", "copy", "-c:s", "copy",
+            "-c:v", "copy", "-c:a:0", "flac", "-sample_fmt:a:0", "s16",
+            "-c:a:1", "flac", "-sample_fmt:a:1", "s16", "-c:s", "copy",
             "-metadata:s:a:0", "language=rus",
             "-metadata:s:a:0", "title=Russian dubbed explanations",
             "-disposition:a:0", "default",
@@ -107,11 +108,8 @@ def build_master(*, source_video, dubbed_pcm_wav, source_srt, russian_srt,
             raise RuntimeError(f"MKV mux failed: {process.stderr.strip()[-500:]}")
         checked = inspect_master(temporary, source_language=source_language)
         original_video = _streams(input_paths[0], "video")[0]
-        original_audio = _streams(input_paths[0], "audio")[0]
         if checked["video"]["codec_name"] != original_video["codec_name"]:
             raise ValueError("Video codec changed during intended stream-copy")
-        if checked["audios"][1]["codec_name"] != original_audio["codec_name"]:
-            raise ValueError("Original audio codec changed during intended stream-copy")
         os.replace(temporary, output)
         temporary = None
     finally:

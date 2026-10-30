@@ -196,3 +196,16 @@ def test_large_nonoverlapping_batch_preserves_all_word_ids():
     result = labels(words, [turn(0, 10000)])
     assert len(result) == len(words)
     assert all(not r.needs_review for r in result)
+
+def test_reordering_source_turns_does_not_change_attribution():
+    turns = [turn(300, 600, "SPK1"), turn(0, 300, "SPK0")]
+    words = [word(50, 150, "w0"), word(350, 450, "w1")]
+    assert labels(words, turns) == labels(words, list(reversed(turns)))
+
+
+def test_speaker_boundary_is_half_open_not_shared_at_exact_end():
+    words = [word(0, 100, "left"), word(100, 200, "right")]
+    turns = [turn(0, 100, "SPK0"), turn(100, 200, "SPK1")]
+    out = labels(words, turns)
+    assert [item.speaker_id for item in out] == ["SPK0", "SPK1"]
+    assert all(not item.needs_review for item in out)

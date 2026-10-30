@@ -113,3 +113,68 @@ def test_bad_pcm_clock_rejected(rate, total):
 def test_aggregate_requires_at_least_one_real_clip():
     with pytest.raises(MAVCScoringError, match="no clip"):
         combine_mavc_scores([])
+
+
+def _prepare_cli_bundle(tmp_path):
+    import hashlib
+    import json
+
+    from app.vocal_mavc100_score import main
+
+    label_dir = tmp_path / "labels"
+    label_dir.mkdir()
+    annotation = gold()
+    (label_dir / "Example_0.csv").write_bytes(annotation)
+    audit = {"selected": [{"clip_id": "Example_0", "annotation_sha256": hashlib.sha256(annotation).hexdigest()}]}
+    pcm = [{"clip_id": "Example_0", "source_mp4_sha256": "a" * 64,
+            "audio_stream": {"start_time": "0.000000"},
+            "decoded_pcm_48000_s16le_stereo_frames": 1440000}]
+    predictions = {"model": "INA-SMN", "model_version": "0.8.0", "model_sha256": "b" * 64,
+                   "device": "synthetic", "clips": [{"clip_id": "Example_0", "source_sha256": "a" * 64,
+                   "segments": [pred("speech", 0, 1), pred("music", 1, 2), pred("speech", 2, 2.6)]}]}
+    paths = {}
+    for name, data in (("audit", audit), ("pcm", pcm), ("predictions", predictions)):
+        file = tmp_path / f"{name}.json"
+        file.write_text(json.dumps(data), encoding="utf-8")
+        paths[name] = file
+    output = tmp_path / "scores.json"
+    argv = ["--labels", str(label_dir), "--audit", str(paths["audit"]), "--pcm", str(paths["pcm"]),
+            "--predictions", str(paths["predictions"]), "--output", str(output)]
+    return main, argv, paths, output
+
+
+def test_cli_integrates_audit_pcm_and_predictions_without_model_or_media(tmp_path):
+    import json
+
+    main, argv, _, output = _prepare_cli_bundle(tmp_path)
+    assert main(argv) == 0
+    payload = json.loads(output.read_text())
+    assert payload["aggregate"]["gold_singing_predicted_speech_samples"] == 500 * 48
+    assert payload["aggregate"]["singing_events_touched_by_predicted_speech"] == 1
+    assert payload["model_sha256"] == "b" * 64
+    with pytest.raises(MAVCScoringError, match="already exists"):
+        main(argv)
+
+
+@pytest.mark.parametrize("case", ["label_hash", "source_sha", "pts", "missing_clip", "duplicate_pcm"])
+def test_cli_rejects_cross_file_provenance_mismatches(tmp_path, case):
+    import json
+
+    main, argv, paths, output = _prepare_cli_bundle(tmp_path)
+    file = paths[{"label_hash": "audit", "source_sha": "predictions", "pts": "pcm",
+                  "missing_clip": "predictions", "duplicate_pcm": "pcm"}[case]]
+    data = json.loads(file.read_text())
+    if case == "label_hash":
+        data["selected"][0]["annotation_sha256"] = "z" * 64
+    elif case == "source_sha":
+        data["clips"][0]["source_sha256"] = "z" * 64
+    elif case == "pts":
+        data[0]["audio_stream"]["start_time"] = "0.042"
+    elif case == "missing_clip":
+        data["clips"][0]["clip_id"] = "Unknown_9"
+    elif case == "duplicate_pcm":
+        data.append(data[0].copy())
+    file.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(MAVCScoringError):
+        main(argv)
+    assert not output.exists()

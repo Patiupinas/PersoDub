@@ -177,6 +177,8 @@ def audit_mavc_directory(
     if selected_clip_ids is not None:
         if not isinstance(selected_clip_ids, (tuple, list)) or not selected_clip_ids:
             raise MAVCAnnotationError("selected_clip_ids must be a nonempty list of exact clip IDs")
+        if any(not isinstance(clip_id, str) or not clip_id for clip_id in selected_clip_ids):
+            raise MAVCAnnotationError("selected clip IDs must be nonempty strings")
         if len(selected_clip_ids) > limit or len(set(selected_clip_ids)) != len(selected_clip_ids):
             raise MAVCAnnotationError("selected clip count or duplicate identifiers are invalid")
         eligible = {clip.clip_id: (clip, triads) for clip, triads in ranked}

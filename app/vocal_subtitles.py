@@ -6,6 +6,7 @@ Source SRT, Russian SRT, and dual-language ASS reuse PersoDub renderers.
 from app.subtitle_ass import build_ass
 from app.text.srt import build_srt
 
+
 def build_subtitle_tracks(segments, *, sample_rate, width, height):
     """Render approved translation cues without captioning protected vocal sound.
 

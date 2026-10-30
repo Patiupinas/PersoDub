@@ -226,3 +226,44 @@ def test_no_second_rounding_or_speaker_confidence_is_fabricated():
     assert result[0].words[0].start_sample == 4800
     assert not hasattr(result[0], "speaker_confidence")
     assert not hasattr(result[0], "action")
+
+
+def test_real_local_whisper_worker_payload_can_be_projected_without_inference():
+    from types import SimpleNamespace
+
+    from app.scripts.whisper_transcribe import _cues_from
+
+    raw = _cues_from([SimpleNamespace(
+        start=0.1, end=0.4, text=" Hello world",
+        words=[SimpleNamespace(start=0.1, end=0.2, word=" Hello"),
+               SimpleNamespace(start=0.2, end=0.4, word=" world")],
+    )], word_timestamps=True)
+    assert "words" in raw[0]
+    raw[0]["speaker"] = "SPK0"
+    result = project(raw)
+    assert len(result[0].words) == 2
+    assert result[0].words[0].start_sample == 4800
+    assert result[0].speaker_evidence == "campplus_asr_cue"
+
+
+def test_real_local_worker_without_word_timestamps_is_not_silently_filled():
+    from types import SimpleNamespace
+
+    from app.scripts.whisper_transcribe import _cues_from
+
+    raw = _cues_from([SimpleNamespace(
+        start=0.1, end=0.3, text=" Hello world", words=None,
+    )], word_timestamps=True)
+    result = project(raw)
+    assert result[0].words == ()
+    assert "word_timestamps_unavailable" in result[0].review_reasons
+
+
+def test_real_clamp_cues_does_not_hide_out_of_range_word_timing():
+    from app.text.srt import clamp_cues
+
+    raw = [cue(0, 2.0, " Hello world", words=[word(1.8, 1.99, " Hello world")])]
+    clamped = clamp_cues(raw, duration=1.5)
+    assert clamped[0]["end"] == 1.5
+    with pytest.raises(LocalCueProjectionError, match="outside parent cue"):
+        project(clamped)

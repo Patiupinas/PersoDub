@@ -186,3 +186,13 @@ def test_cli_does_not_overwrite_annotation_input(tmp_path):
         main(["--annotations", str(source), "--manifest-out", str(source),
               "--summary-out", str(summary)])
     assert failure.value.code == 2
+
+def test_summary_explicitly_zeroes_absent_event_categories():
+    source = annotations([event(0, 100, "non_target", "quiet")])
+    _, result = compile_gold_annotations(source)
+    assert result["event_counts"] == {
+        "explanation": 0, "vocal_demo": 0, "non_target": 1,
+        "speech_vocal_overlap": 0, "uncertain": 0,
+    }
+    assert result["vocal_demo_events"] == 0
+    assert result["vocal_demo_samples"] == 0

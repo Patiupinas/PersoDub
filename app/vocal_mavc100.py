@@ -86,7 +86,9 @@ def parse_mavc_csv(raw: bytes, *, filename: str) -> MAVCClip:
         where = f"{filename}:{line}"
         if None in row or row["Type"] != "Cue" or row["Time Format"] != "decimal":
             raise MAVCAnnotationError(f"{where}: malformed cue row")
-        marker = row["Name"]
+        marker_value = row["Name"]
+        # A published file has a harmless trailing space after one start marker.
+        marker = marker_value.strip() if isinstance(marker_value, str) else marker_value
         if marker is None or len(marker) != 2 or marker[0] not in KIND_NAMES or marker[1] not in "se":
             raise MAVCAnnotationError(f"{where}: unrecognized label marker")
         code, edge = marker
@@ -130,6 +132,7 @@ def audit_mavc_directory(
     limit: int = 3,
     min_event_ms: int = 500,
     max_gap_ms: int = 3000,
+    selected_clip_ids: tuple[str, ...] | None = None,
 ) -> dict:
     """Select source-disjoint candidates; never infer that Speech == explanation."""
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
@@ -171,10 +174,23 @@ def audit_mavc_directory(
             pair[0].clip_id,
         ),
     )
+    if selected_clip_ids is not None:
+        if not isinstance(selected_clip_ids, (tuple, list)) or not selected_clip_ids:
+            raise MAVCAnnotationError("selected_clip_ids must be a nonempty list of exact clip IDs")
+        if len(selected_clip_ids) > limit or len(set(selected_clip_ids)) != len(selected_clip_ids):
+            raise MAVCAnnotationError("selected clip count or duplicate identifiers are invalid")
+        eligible = {clip.clip_id: (clip, triads) for clip, triads in ranked}
+        if any(not isinstance(clip_id, str) or clip_id not in eligible for clip_id in selected_clip_ids):
+            raise MAVCAnnotationError("a requested clip is unknown or lacks a strict transition")
+        candidates = [eligible[clip_id] for clip_id in selected_clip_ids]
+    else:
+        candidates = ranked
     picks: list[dict] = []
     used_sources: set[str] = set()
-    for clip, triads in ranked:
+    for clip, triads in candidates:
         if clip.source_id in used_sources:
+            if selected_clip_ids is not None:
+                raise MAVCAnnotationError("requested clips reuse the same original source recording")
             continue
         used_sources.add(clip.source_id)
         picks.append({
@@ -202,6 +218,11 @@ def audit_mavc_directory(
         "valid_label_files": len(valid),
         "invalid_label_files": invalid,
         "mixed_speech_singing_files": mixed,
+        "mixed_min_duration_files": sum(
+            any(e.kind == "speech" and e.duration_ms >= min_event_ms for e in clip.events)
+            and any(e.kind == "singing" and e.duration_ms >= min_event_ms for e in clip.events)
+            for clip, _ in valid
+        ),
         "speech_singing_speech_files": sum(bool(triads) for _, triads in valid),
         "selected": picks,
         "notes": [
@@ -220,12 +241,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=3)
     parser.add_argument("--max-gap-ms", type=int, default=3000)
     parser.add_argument("--min-event-ms", type=int, default=500)
+    parser.add_argument("--clip", dest="selected_clip_ids", action="append",
+                        help="Exact existing clip ID; repeat to limit the selected subset")
     args = parser.parse_args(argv)
     report = audit_mavc_directory(
         args.labels,
         limit=args.limit,
         min_event_ms=args.min_event_ms,
         max_gap_ms=args.max_gap_ms,
+        selected_clip_ids=tuple(args.selected_clip_ids) if args.selected_clip_ids is not None else None,
     )
     output = Path(args.output)
     if output.exists():

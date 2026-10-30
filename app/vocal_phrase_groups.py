@@ -27,7 +27,7 @@ class PhraseGroup:
 
 
 def _checked_samples(value: int, name: str, *, zero_allowed: bool) -> int:
-    if type(value) is not int or value < 0 or (not zero_allowed and value == 0):
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0 or (not zero_allowed and value == 0):
         raise ValueError(f"{name} must be a {'non-negative' if zero_allowed else 'positive'} integer")
     return value
 

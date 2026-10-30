@@ -85,6 +85,12 @@ def test_mkv_has_two_independent_audio_and_three_subtitle_tracks(tmp_path):
     assert streams["audios"][0]["disposition"]["default"] == 1
     assert streams["audios"][1]["disposition"]["default"] == 0
     assert [s["codec_name"] for s in streams["subtitles"]] == ["subrip", "subrip", "ass"]
+    for index, fmt, expected in ((0, "srt", "Hallo"), (1, "srt", "Привет"),
+                                 (2, "ass", "Hallo\\NПривет")):
+        extracted = subprocess.run(["ffmpeg", "-v", "error", "-i", str(result),
+                                    "-map", f"0:s:{index}", "-f", fmt, "-"],
+                                   capture_output=True, check=True).stdout.decode("utf-8")
+        assert expected in extracted
     assert decoded_pcm(result, 0) == dubbed_data
     assert decoded_pcm(result, 1) == original_data
     assert dubbed_data[:48000 * 4] != original_data[:48000 * 4]

@@ -5,7 +5,7 @@ speech/vocal classifier. The WhisperNotes source code is never imported.
 """
 
 from dataclasses import dataclass, replace
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Sequence
 
 from app.vocal_word_speakers import TimedWord

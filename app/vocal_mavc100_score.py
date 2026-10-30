@@ -180,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     for item in predicted:
         clip_id = item["clip_id"]
-        if not isinstance(clip_id, str) or "/" in clip_id or "\" in clip_id:
+        if not isinstance(clip_id, str) or "/" in clip_id or "\\" in clip_id:
             raise MAVCScoringError("invalid clip identifier")
         origin = pcm_map[clip_id]
         if item["source_sha256"] != origin["source_mp4_sha256"]:
@@ -212,8 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         "results": results,
         "aggregate": combine_mavc_scores(results),
     }
-    output.write_text(json.dumps(content, indent=2) + "
-", encoding="utf-8")
+    output.write_text(json.dumps(content, indent=2) + "\n", encoding="utf-8")
     return 0
 
 

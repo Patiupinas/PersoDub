@@ -56,6 +56,9 @@ Ran `Segmenter(vad_engine="sm", detect_gender=False, batch_size=16)` on **the sa
 
 ## Reproducible pure-data scorer
 
+The six **model-only prediction and score JSON files**, source-label audit and decoded-PCM metadata are committed in the [metadata-only pilot bundle](vocal-mavc100-pilot/README.md). They intentionally exclude source media, neural weights and the dataset's original CSV label contents. `tests/test_vocal_mavc100_pilot_snapshot.py` verifies the two model outcomes, source-video hashes, source-label hashes and aggregated frame denominators without network access. Original audio label CSVs can be fetched from the upstream 52,122-byte archive if independent re-scoring is desired.
+
+
 `app/vocal_mavc100_score.py` uses only the standard Python library and the parser from PR #18, without loading any model or media. An independent inference agent supplies existing JSON with actual `speech/music/noise/noEnergy` intervals; the Mac pilot used the actual `inaSpeechSegmenter` output. It checks exact video and label SHA256 cross-document identity, source zero-time audio PTS, finite/nonoverlapping predicted intervals, no created silence outside PCM, valid counts, and prevents accidental overwrite.
 
 ```bash

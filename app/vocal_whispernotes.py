@@ -4,7 +4,7 @@ This adapter does not run ASR, diarization, or vocal-event classification.
 """
 
 import re
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 SCHEMA_VERSION = 1
 _LANGUAGE_CODES = {"en", "de", "es", "ru", "und"}

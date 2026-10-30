@@ -8,7 +8,7 @@ import argparse
 import hashlib
 import json
 from collections import Counter
-from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from pathlib import Path
 
 from app.vocal_mavc100 import parse_mavc_csv

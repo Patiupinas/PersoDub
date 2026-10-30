@@ -6,7 +6,6 @@ import pytest
 
 from app.vocal_whispernotes import import_session
 
-
 SOURCE = "a" * 64
 
 

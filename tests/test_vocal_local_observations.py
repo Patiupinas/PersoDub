@@ -267,3 +267,12 @@ def test_real_clamp_cues_does_not_hide_out_of_range_word_timing():
     assert clamped[0]["end"] == 1.5
     with pytest.raises(LocalCueProjectionError, match="outside parent cue"):
         project(clamped)
+
+def test_out_of_order_word_timestamps_keep_literal_order_and_review_reason():
+    rows = [cue(text="two one", words=[
+        word(0.15, 0.2, "two"), word(0.1, 0.15, " one")
+    ])]
+    out = project(rows)
+    assert [w.text for w in out[0].words] == ["two", " one"]
+    assert "nonmonotonic_word_order" in out[0].review_reasons
+    assert "overlapping_word_timestamps" not in out[0].review_reasons

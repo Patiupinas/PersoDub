@@ -13,7 +13,7 @@ The published source video container is 30.030 s, while its actual decoded first
 - **Host:** connected Apple Silicon macOS 27, 64 GiB RAM; Python **3.11.16**; FFmpeg 9.0.2
 - **Isolated package:** inaSpeechSegmenter **0.8.0**, `Segmenter(vad_engine="smn", detect_gender=False, batch_size=16)`; TensorFlow **2.20.0**, official ONNX Runtime **1.31.1**, NumPy **1.26.4**, Keras **3.15.1**
 - **Weights:** official `keras_speech_music_noise_cnn.hdf5`, exactly **3,244,808 bytes**, SHA-256 `f04b5e3c86fa2e81666d106b0867350fe7858c7bd006c2a74c27b5b45507e7d8`
-- **Acquisition:** one acoustic model file was downloaded, no other detector weights or new video datasets. The default INA PyPI GPU dependency was not installed on macOS; CPU-compatible dependencies were provided in a private, isolated `uv` environment as documented in the [Mac A2 audit](https://github.com/Patiupinas/misc/blob/design/vocal-dubbing-agent-architecture-20261030/vocal-lecture-dubbing/A2_MAC_DEPENDENCY_AUDIT_20261030.md).
+- **Acquisition:** the initial SMN acoustic model file and, for a subsequent narrow A/B comparison, one additional **SM** weights file were downloaded; no other detector weights or new video datasets. The default INA PyPI GPU dependency was not installed on macOS; CPU-compatible dependencies were provided in a private, isolated `uv` environment as documented in the [Mac A2 audit](https://github.com/Patiupinas/misc/blob/design/vocal-dubbing-agent-architecture-20261030/vocal-lecture-dubbing/A2_MAC_DEPENDENCY_AUDIT_20261030.md).
 - **Execution:** real, original, full-length 30-second MP4 input passed to the model; measured inference durations after model import **0.859 s**, **0.769 s**, **0.637 s**. Model output is a sequence of `speech/music/noise/noEnergy` timestamp spans; no ASR, TTS, or new diarization ran.
 
 ## Exact validated results
@@ -38,6 +38,21 @@ The scorer weights all sample counts by the decoded 48 kHz source PCM clock, usi
 | Jess Glynne - 123 4 | 1,288,512 | 0 | 97,392 | 0 |
 
 These are **measured on three selected musical performances**; they are *not* an estimate of false-speech risk across all vocal techniques or a representative speech recall. The detector preserves singing in this very small sample (no sung frames labeled speech), but **fails to recover most onstage speech over music**, so it cannot be the only permission gate for replacing explanations.
+
+## Same-source A/B test: alternate INA speech/music model
+
+Ran `Segmenter(vad_engine="sm", detect_gender=False, batch_size=16)` on **the same three verified MP4 files** with no additional video/annotation downloads. Unlike SMN, the SM classifier has only speech and music classes for energetic regions. Its official weights file `keras_speech_music_cnn.hdf5` is **5,885,888 bytes**, SHA-256 `14379ba71352d8981bc24a15c069c84cf6f78ff2ffe7377d43b32465ebd06e01`. Both A/B runs use the same INA 0.8.0 install, decoding, PCM profile, label inventory and scorer.
+
+| Metric across three clips | SMN (speech/music/noise) | SM (speech/music) |
+| --- | ---: | ---: |
+| Singing incorrectly predicted speech | **0 / 2,364,768 frames (0%)** | **52,416 / 2,364,768 frames (2.21654%)** |
+| Singing events with any predicted speech | **0 / 13** | **1 / 13** |
+| Gold speech identified as speech | 300,288 / 1,009,680 (29.74091%) | 313,104 / 1,009,680 (31.01022%) |
+| Gold speech predicted music | 708,576 frames (70.17827%) | 695,760 frames (68.90896%) |
+| Gold singing predicted music | 2,076,288 frames (87.80092%) | 2,238,768 frames (94.67178%) |
+| Actual inference duration Ellie / Jessie / Jess | 0.859 / 0.769 / 0.637 s | 1.203 / 0.933 / 1.052 s |
+
+**Interpretation:** In this selected sample SM recovered only **12,816 extra frames / 0.267 seconds of speech** but falsely classified **52,416 frames / 1.092 seconds of singing as speech** (the Jessie J clip). The conservative SMN mode is the better **first tested INA baseline** for *protecting singing*, but low speech recall requires an additional independent speech analysis. SM and SMN are **not two independent detectors** for A4 voting because they share a model family and frontend. None of these observations approves any vocal-lecture span for TTS.
 
 ## Reproducible pure-data scorer
 

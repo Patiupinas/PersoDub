@@ -1,7 +1,5 @@
 """Synthetic scores enforce source integrity and duration, not acoustic quality."""
 
-from pathlib import Path
-
 import pytest
 
 from app.vocal_mavc100_score import MAVCScoringError, combine_mavc_scores, score_mavc_clip

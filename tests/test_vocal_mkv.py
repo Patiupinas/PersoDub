@@ -102,3 +102,18 @@ def test_mkv_mixed_original_language_tag(tmp_path):
                  russian_srt=ru, bilingual_ass=dual, output_mkv=result, source_language="mul")
     report = inspect_master(result, source_language="mul")
     assert report["audios"][1]["tags"]["language"] == "mul"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="requires local FFmpeg and ffprobe")
+def test_mp4_aac_source_decodes_to_identical_original_pcm_in_mkv(tmp_path):
+    source_mkv, dubbed, de, ru, dual, _, _ = make_inputs(tmp_path)
+    source_mp4 = tmp_path / "aac-source.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-v", "error", "-y",
+                    "-i", str(source_mkv), "-map", "0:v:0", "-map", "0:a:0",
+                    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(source_mp4)],
+                   capture_output=True, check=True)
+    target = tmp_path / "aac-source.ru.mkv"
+    build_master(source_video=source_mp4, dubbed_pcm_wav=dubbed, source_srt=de,
+                 russian_srt=ru, bilingual_ass=dual, output_mkv=target, source_language="de")
+    assert inspect_master(target, source_language="de")["audios"][1]["codec_name"] == "flac"
+    assert decoded_pcm(target, 1) == decoded_pcm(source_mp4, 0)

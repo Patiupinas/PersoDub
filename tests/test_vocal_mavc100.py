@@ -143,3 +143,59 @@ def test_cli_outputs_only_annotation_metadata(tmp_path: Path):
     assert '"speech_singing_speech_files": 1' in dest.read_text()
     with pytest.raises(MAVCAnnotationError, match="already exists"):
         main(["--labels", str(tmp_path / "labels"), "--output", str(dest)])
+
+
+def test_published_trailing_whitespace_marker_preserves_original_annotation_hash():
+    source = raw(("2s ", "00.000"), ("2e", "01.000"), ("3s", "01.001"), ("3e", "01.020"))
+    clip = parse_mavc_csv(source, filename="Singer_9.csv")
+    assert [(event.kind, event.start_ms) for event in clip.events] == [
+        ("singing", 0), ("silence", 1001),
+    ]
+    assert clip.annotation_sha256 == hashlib.sha256(source).hexdigest()
+
+
+def test_explicit_selected_clip_ids_preserve_requested_order(tmp_path: Path):
+    example = raw(
+        ("1s", "00.000"), ("1e", "01.000"),
+        ("2s", "01.001"), ("2e", "02.000"),
+        ("1s", "02.001"), ("1e", "03.000"),
+    )
+    for name in ("English_A_3.csv", "English_B_4.csv", "English_C_5.csv"):
+        (tmp_path / name).write_bytes(example)
+    result = audit_mavc_directory(
+        tmp_path,
+        limit=2,
+        selected_clip_ids=("English_C_5", "English_A_3"),
+    )
+    assert [item["clip_id"] for item in result["selected"]] == ["English_C_5", "English_A_3"]
+
+
+def test_explicit_select_rejects_source_leakage(tmp_path: Path):
+    fixture = raw(
+        ("1s", "00.000"), ("1e", "01.000"),
+        ("2s", "01.001"), ("2e", "02.000"),
+        ("1s", "02.001"), ("1e", "03.000"),
+    )
+    (tmp_path / "Artist_Song_1.csv").write_bytes(fixture)
+    (tmp_path / "Artist_Song_2.csv").write_bytes(fixture)
+    with pytest.raises(MAVCAnnotationError, match="reuse"):
+        audit_mavc_directory(
+            tmp_path, limit=2,
+            selected_clip_ids=("Artist_Song_1", "Artist_Song_2"),
+        )
+
+
+@pytest.mark.parametrize("requested", [
+    ("Unknown_0",),
+    ("A_0", "A_0"),
+    (),
+    ("A_0", 4),
+])
+def test_invalid_explicit_selection_is_rejected(tmp_path: Path, requested):
+    (tmp_path / "A_0.csv").write_bytes(raw(
+        ("1s", "00.000"), ("1e", "01.000"),
+        ("2s", "01.001"), ("2e", "02.000"),
+        ("1s", "02.001"), ("1e", "03.000"),
+    ))
+    with pytest.raises(MAVCAnnotationError):
+        audit_mavc_directory(tmp_path, limit=2, selected_clip_ids=requested)

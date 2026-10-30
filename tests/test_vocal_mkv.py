@@ -10,7 +10,6 @@ import pytest
 
 from app.vocal_mkv import build_master, inspect_master
 
-
 HAS_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
 

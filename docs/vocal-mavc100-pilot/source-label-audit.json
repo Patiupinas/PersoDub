@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "source": "MAVC100: published audio-stream timestamp annotations",
+  "total_label_files": 200,
+  "valid_label_files": 199,
+  "invalid_label_files": [
+    {
+      "file": "xiaoxiami_chuangtianya_5.csv",
+      "reason": "xiaoxiami_chuangtianya_5.csv:7: unmatched end for silence"
+    }
+  ],
+  "mixed_speech_singing_files": 65,
+  "mixed_min_duration_files": 58,
+  "speech_singing_speech_files": 8,
+  "selected": [
+    {
+      "clip_id": "Jessie_J_performs_Bang_Bang_5",
+      "source_id": "Jessie_J_performs_Bang_Bang",
+      "annotation_sha256": "c0ddf6bdcf5292be61d33cef02fea8a9ff6ffcfe7a8e118e818b0e771128f615",
+      "speech_singing_speech_patterns": 3,
+      "event_counts": {
+        "speech": 5,
+        "singing": 7,
+        "silence": 1
+      },
+      "event_duration_ms": {
+        "speech": 7566,
+        "singing": 19309,
+        "silence": 53
+      },
+      "example_pattern_ms": [
+        {
+          "label": "speech",
+          "start_ms": 2340,
+          "end_ms": 4147
+        },
+        {
+          "label": "singing",
+          "start_ms": 4351,
+          "end_ms": 5149
+        },
+        {
+          "label": "speech",
+          "start_ms": 5531,
+          "end_ms": 7357
+        }
+      ]
+    },
+    {
+      "clip_id": "Ellie_Goulding_performs_Burn_3",
+      "source_id": "Ellie_Goulding_performs_Burn",
+      "annotation_sha256": "937441d61159a7ff069af5e7c89d89f3362d957a337dd65f1cbbbe4d003099a9",
+      "speech_singing_speech_patterns": 1,
+      "event_counts": {
+        "speech": 11,
+        "singing": 2,
+        "silence": 1
+      },
+      "event_duration_ms": {
+        "speech": 11440,
+        "singing": 3113,
+        "silence": 53
+      },
+      "example_pattern_ms": [
+        {
+          "label": "speech",
+          "start_ms": 7921,
+          "end_ms": 9008
+        },
+        {
+          "label": "singing",
+          "start_ms": 11157,
+          "end_ms": 12035
+        },
+        {
+          "label": "speech",
+          "start_ms": 12515,
+          "end_ms": 13808
+        }
+      ]
+    },
+    {
+      "clip_id": "Jess_Glynne_performs_123_4",
+      "source_id": "Jess_Glynne_performs_123",
+      "annotation_sha256": "ab8917ac896bd42b3e5906129069722c1c5113873428fef4d0af7232f73d5209",
+      "speech_singing_speech_patterns": 1,
+      "event_counts": {
+        "speech": 3,
+        "singing": 4,
+        "silence": 1
+      },
+      "event_duration_ms": {
+        "speech": 2029,
+        "singing": 26844,
+        "silence": 53
+      },
+      "example_pattern_ms": [
+        {
+          "label": "speech",
+          "start_ms": 12476,
+          "end_ms": 12992
+        },
+        {
+          "label": "singing",
+          "start_ms": 13131,
+          "end_ms": 14988
+        },
+        {
+          "label": "speech",
+          "start_ms": 14989,
+          "end_ms": 15707
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "These labels describe musical performance, not teacher explanations.",
+    "Speech and singing event timestamps are observations, not source PCM frames.",
+    "No video, model, audio signal, or rights to redistribute media are provided.",
+    "The selected candidates are source-disjoint, not an independently approved holdout."
+  ]
+}

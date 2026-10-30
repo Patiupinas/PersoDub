@@ -9,7 +9,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-
 _SOURCE_LANGUAGES = {"en": "eng", "de": "deu", "es": "spa", "mul": "mul"}
 
 

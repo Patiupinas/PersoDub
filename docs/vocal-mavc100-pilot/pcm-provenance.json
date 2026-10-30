@@ -1,0 +1,53 @@
+[
+  {
+    "clip_id": "Ellie_Goulding_performs_Burn_3",
+    "source_mp4_sha256": "09b51d7cbd4f113c68d5ad6d5ce1a0ef577a0bff0f13e1b83983b5e5d3ba92cb",
+    "label_csv_sha256": "937441d61159a7ff069af5e7c89d89f3362d957a337dd65f1cbbbe4d003099a9",
+    "audio_stream": {
+      "sample_rate": "44100",
+      "channels": 2,
+      "time_base": "1/44100",
+      "start_time": "0.000000",
+      "duration": "30.000000"
+    },
+    "decoded_pcm_48000_s16le_stereo_frames": 1440000,
+    "decoded_pcm_sha256": "a046c96d8b67867ef7ba794abcd1978ff6b8b8cb71fbd92376f3d06e353be769",
+    "decoded_duration_sec": 30,
+    "sample_ms_of_last_exemplary_event": 13808,
+    "byte_total": 5760000
+  },
+  {
+    "clip_id": "Jessie_J_performs_Bang_Bang_5",
+    "source_mp4_sha256": "e299a5db5bf72caee28e6c00d89decd92f60e0b22e6a86e35281cbd4b89f0a3c",
+    "label_csv_sha256": "c0ddf6bdcf5292be61d33cef02fea8a9ff6ffcfe7a8e118e818b0e771128f615",
+    "audio_stream": {
+      "sample_rate": "44100",
+      "channels": 2,
+      "time_base": "1/44100",
+      "start_time": "0.000000",
+      "duration": "30.000000"
+    },
+    "decoded_pcm_48000_s16le_stereo_frames": 1440000,
+    "decoded_pcm_sha256": "687de13bf10f2e5dc8928edf9c5ea3b6f3689864d88002509684c93a3f2051bd",
+    "decoded_duration_sec": 30,
+    "sample_ms_of_last_exemplary_event": 7357,
+    "byte_total": 5760000
+  },
+  {
+    "clip_id": "Jess_Glynne_performs_123_4",
+    "source_mp4_sha256": "dc11f5aedd32545861b268df12f2271439904134ca1a9eb99804f6895df5e056",
+    "label_csv_sha256": "ab8917ac896bd42b3e5906129069722c1c5113873428fef4d0af7232f73d5209",
+    "audio_stream": {
+      "sample_rate": "44100",
+      "channels": 2,
+      "time_base": "1/44100",
+      "start_time": "0.000000",
+      "duration": "30.000000"
+    },
+    "decoded_pcm_48000_s16le_stereo_frames": 1440000,
+    "decoded_pcm_sha256": "72c623dc5ac72154f0bd3a7fe0e5e521d17cf7df31713ef76d560744cf1563ff",
+    "decoded_duration_sec": 30,
+    "sample_ms_of_last_exemplary_event": 15707,
+    "byte_total": 5760000
+  }
+]

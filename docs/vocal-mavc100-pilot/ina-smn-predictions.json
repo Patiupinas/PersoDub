@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "model": "inaSpeechSegmenter:smn:detect_gender_false",
+  "model_version": "0.8.0",
+  "model_sha256": "f04b5e3c86fa2e81666d106b0867350fe7858c7bd006c2a74c27b5b45507e7d8",
+  "runtime_python": "3.11.16",
+  "device": "macOS Apple Silicon CPU",
+  "load_seconds": 0.239,
+  "clips": [
+    {
+      "clip_id": "Ellie_Goulding_performs_Burn_3",
+      "source_sha256": "09b51d7cbd4f113c68d5ad6d5ce1a0ef577a0bff0f13e1b83983b5e5d3ba92cb",
+      "runtime_seconds": 0.859,
+      "segments": [
+        {
+          "label": "speech",
+          "start_sec": 0,
+          "end_sec": 1.08
+        },
+        {
+          "label": "noEnergy",
+          "start_sec": 1.08,
+          "end_sec": 1.84
+        },
+        {
+          "label": "speech",
+          "start_sec": 1.84,
+          "end_sec": 3.56
+        },
+        {
+          "label": "noEnergy",
+          "start_sec": 3.56,
+          "end_sec": 4.26
+        },
+        {
+          "label": "speech",
+          "start_sec": 4.26,
+          "end_sec": 5.54
+        },
+        {
+          "label": "noEnergy",
+          "start_sec": 5.54,
+          "end_sec": 6.08
+        },
+        {
+          "label": "speech",
+          "start_sec": 6.08,
+          "end_sec": 9.06
+        },
+        {
+          "label": "noEnergy",
+          "start_sec": 9.06,
+          "end_sec": 9.46
+        },
+        {
+          "label": "noise",
+          "start_sec": 9.46,
+          "end_sec": 10.540000000000001
+        },
+        {
+          "label": "music",
+          "start_sec": 10.540000000000001,
+          "end_sec": 29.98
+        }
+      ]
+    },
+    {
+      "clip_id": "Jessie_J_performs_Bang_Bang_5",
+      "source_sha256": "e299a5db5bf72caee28e6c00d89decd92f60e0b22e6a86e35281cbd4b89f0a3c",
+      "runtime_seconds": 0.769,
+      "segments": [
+        {
+          "label": "music",
+          "start_sec": 0,
+          "end_sec": 18.02
+        },
+        {
+          "label": "noise",
+          "start_sec": 18.02,
+          "end_sec": 20.240000000000002
+        },
+        {
+          "label": "music",
+          "start_sec": 20.240000000000002,
+          "end_sec": 26.6
+        },
+        {
+          "label": "noEnergy",
+          "start_sec": 26.6,
+          "end_sec": 27.72
+        },
+        {
+          "label": "noise",
+          "start_sec": 27.72,
+          "end_sec": 29.98
+        }
+      ]
+    },
+    {
+      "clip_id": "Jess_Glynne_performs_123_4",
+      "source_sha256": "dc11f5aedd32545861b268df12f2271439904134ca1a9eb99804f6895df5e056",
+      "runtime_seconds": 0.637,
+      "segments": [
+        {
+          "label": "music",
+          "start_sec": 0,
+          "end_sec": 27.080000000000002
+        },
+        {
+          "label": "noEnergy",
+          "start_sec": 27.080000000000002,
+          "end_sec": 28.5
+        },
+        {
+          "label": "music",
+          "start_sec": 28.5,
+          "end_sec": 29.98
+        }
+      ]
+    }
+  ]
+}

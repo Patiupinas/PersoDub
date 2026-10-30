@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "model": "inaSpeechSegmenter:smn:detect_gender_false",
+  "model_version": "0.8.0",
+  "model_sha256": "f04b5e3c86fa2e81666d106b0867350fe7858c7bd006c2a74c27b5b45507e7d8",
+  "environment": "macOS Apple Silicon CPU",
+  "evaluation_note": "MAVC100 original speech/singing observations; NOT sample-exact human lesson-dubbing gold",
+  "results": [
+    {
+      "clip_id": "Ellie_Goulding_performs_Burn_3",
+      "source_id": "Ellie_Goulding_performs_Burn",
+      "label_sha256": "937441d61159a7ff069af5e7c89d89f3362d957a337dd65f1cbbbe4d003099a9",
+      "sample_rate": 48000,
+      "total_samples": 1440000,
+      "clipped_published_silence_tail_samples": 1440,
+      "gold_speech_samples": 549120,
+      "gold_singing_samples": 149424,
+      "singing_events": 2,
+      "singing_events_touched_by_predicted_speech": 0,
+      "gold_singing_predicted_speech_samples": 0,
+      "gold_speech_predicted_speech_samples": 300288,
+      "gold_speech_predicted_music_samples": 248016,
+      "gold_singing_predicted_music_samples": 149424,
+      "singing_predicted_speech_rate": 0,
+      "speech_detected_rate": 0.5468531,
+      "speech_predicted_music_rate": 0.4516608,
+      "singing_predicted_music_rate": 1,
+      "confusion": {
+        "speech": {
+          "unclassified": 0,
+          "speech": 300288,
+          "music": 248016,
+          "noise": 0,
+          "noEnergy": 816
+        },
+        "singing": {
+          "unclassified": 0,
+          "speech": 0,
+          "music": 149424,
+          "noise": 0,
+          "noEnergy": 0
+        }
+      }
+    },
+    {
+      "clip_id": "Jessie_J_performs_Bang_Bang_5",
+      "source_id": "Jessie_J_performs_Bang_Bang",
+      "label_sha256": "c0ddf6bdcf5292be61d33cef02fea8a9ff6ffcfe7a8e118e818b0e771128f615",
+      "sample_rate": 48000,
+      "total_samples": 1440000,
+      "clipped_published_silence_tail_samples": 1440,
+      "gold_speech_samples": 363168,
+      "gold_singing_samples": 926832,
+      "singing_events": 7,
+      "singing_events_touched_by_predicted_speech": 0,
+      "gold_singing_predicted_speech_samples": 0,
+      "gold_speech_predicted_speech_samples": 0,
+      "gold_speech_predicted_music_samples": 363168,
+      "gold_singing_predicted_music_samples": 706512,
+      "singing_predicted_speech_rate": 0,
+      "speech_detected_rate": 0,
+      "speech_predicted_music_rate": 1,
+      "singing_predicted_music_rate": 0.762287,
+      "confusion": {
+        "speech": {
+          "unclassified": 0,
+          "speech": 0,
+          "music": 363168,
+          "noise": 0,
+          "noEnergy": 0
+        },
+        "singing": {
+          "unclassified": 0,
+          "speech": 0,
+          "music": 706512,
+          "noise": 214896,
+          "noEnergy": 5424
+        }
+      }
+    },
+    {
+      "clip_id": "Jess_Glynne_performs_123_4",
+      "source_id": "Jess_Glynne_performs_123",
+      "label_sha256": "ab8917ac896bd42b3e5906129069722c1c5113873428fef4d0af7232f73d5209",
+      "sample_rate": 48000,
+      "total_samples": 1440000,
+      "clipped_published_silence_tail_samples": 1440,
+      "gold_speech_samples": 97392,
+      "gold_singing_samples": 1288512,
+      "singing_events": 4,
+      "singing_events_touched_by_predicted_speech": 0,
+      "gold_singing_predicted_speech_samples": 0,
+      "gold_speech_predicted_speech_samples": 0,
+      "gold_speech_predicted_music_samples": 97392,
+      "gold_singing_predicted_music_samples": 1220352,
+      "singing_predicted_speech_rate": 0,
+      "speech_detected_rate": 0,
+      "speech_predicted_music_rate": 1,
+      "singing_predicted_music_rate": 0.9471018,
+      "confusion": {
+        "speech": {
+          "unclassified": 0,
+          "speech": 0,
+          "music": 97392,
+          "noise": 0,
+          "noEnergy": 0
+        },
+        "singing": {
+          "unclassified": 0,
+          "speech": 0,
+          "music": 1220352,
+          "noise": 0,
+          "noEnergy": 68160
+        }
+      }
+    }
+  ],
+  "aggregate": {
+    "clips": 3,
+    "gold_speech_samples": 1009680,
+    "gold_singing_samples": 2364768,
+    "gold_singing_predicted_speech_samples": 0,
+    "gold_speech_predicted_speech_samples": 300288,
+    "gold_speech_predicted_music_samples": 708576,
+    "gold_singing_predicted_music_samples": 2076288,
+    "singing_events": 13,
+    "singing_events_touched_by_predicted_speech": 0,
+    "clipped_published_silence_tail_samples": 4320,
+    "singing_predicted_speech_rate": 0,
+    "speech_detected_rate": 0.2974091,
+    "speech_predicted_music_rate": 0.7017827,
+    "singing_predicted_music_rate": 0.8780092
+  }
+}

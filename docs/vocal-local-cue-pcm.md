@@ -38,12 +38,13 @@ Output is an ordered immutable tuple of `LocalCueObservation` with deterministic
 - `word_text_mismatch`: the literal joined words do not reconstruct the cue transcript after whitespace normalization. Both stay unchanged.
 - `estimated_word_timing`: explicit estimated word-span provenance. A model-supplied timestamp is not verified human ground truth, even when the `is_estimated` flag is false.
 - `overlapping_word_timestamps`: overlapping words within a cue.
+- `nonmonotonic_word_order`: source word list order disagrees with its source sample timestamps; the literal sequence is retained for human review.
 - `overlapping_asr_cues`: multiple original Whisper cues overlap; each affected cue is preserved and flagged.
 - `language_not_approved_for_v1_translation`: detected `es` (future input scope) or `und` (undetermined). Only `de` and `en` are currently supported by the original decision schema v1.
 
 Malformed, out-of-range, non-finite or unquantized timing, inconsistent cue/word intervals, missing text, unsupported fields and invalid sample provenance raise `LocalCueProjectionError`. Empty input produces an empty tuple, **not a classification of the source as silent**.
 
-**A3 observation != A4 permission to translate.** A2 acoustic observations, A4 speech votes, source-PMC protection, human override and A8 independent quality testing determine which portions may be synthesized. Even a "SPK0" label and complete word spans do not authorize TTS.
+**A3 observation != A4 permission to translate.** A2 acoustic observations, A4 speech votes, source-PCM protection, human override and A8 independent quality testing determine which portions may be synthesized. Even a "SPK0" label and complete word spans do not authorize TTS.
 
 ## Test evidence and remaining integration
 

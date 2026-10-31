@@ -54,7 +54,7 @@ def test_clear_speech_demonstration_speech_and_transition_review():
 
 def test_asr_lyrics_do_not_make_singing_safe_to_translate():
     smad, ina, words = fixture()
-    words = (*words, ob(5000, 7000, "sung_lyrics"))
+    words = (words[0], ob(5000, 7000, "sung_lyrics"), words[1])
     outcome = score(smad=smad, ina=ina, words=words)
     assert any(x.candidate == "vocal_demo_candidate" for x in outcome)
     assert not any(x.candidate == "speech_candidate"
@@ -141,3 +141,18 @@ def test_ina_unknown_label_fails():
     smad, _, words = fixture()
     with pytest.raises(PreannotationError):
         score(smad=smad, ina=[ob(0, 12000, "singing")], words=words)
+
+
+def test_overlapping_asr_words_are_observations_not_invalid_model_timelines():
+    smad, ina, _ = fixture()
+    words = (ob(0, 2800, "word"), ob(2000, 4000, "word"),
+             ob(8000, 12000, "word"))
+    outcome = score(smad=smad, ina=ina, words=words)
+    assert any(x.candidate == "vocal_demo_candidate" for x in outcome)
+
+
+def test_unsorted_word_intervals_are_rejected_without_reordering():
+    smad, ina, _ = fixture()
+    with pytest.raises(PreannotationError, match="unsorted"):
+        score(smad=smad, ina=ina, words=(ob(7000, 8000, "word"),
+                                        ob(2000, 3000, "word")))

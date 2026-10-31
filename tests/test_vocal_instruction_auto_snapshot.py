@@ -74,3 +74,50 @@ def test_machine_prelabels_are_not_accepted_gold_or_translation_permissions():
             "uncertain", "speech_candidate", "vocal_demo_candidate",
         }
     assert "source_text" not in PILOT.read_text(encoding="utf-8")
+
+
+
+def test_numeric_model_observations_exactly_regenerate_selected_lesson_proposals():
+    from app.vocal_annotation_candidates import (
+        EventObservation,
+        suggest_annotation_candidates,
+    )
+
+    evidence_path = PILOT.with_name("navy-observations-numeric.json")
+    input_data = json.loads(evidence_path.read_text(encoding="utf-8"))
+    expected = load()
+    assert input_data["artifact_kind"] == "machine_observation_inputs_without_content"
+    assert input_data["pcm_sha256"] == expected["decoded_pcm_sha256"]
+    assert input_data["smad_weights_sha256"] == expected["model_sources"][0]["weights_sha256"]
+    assert input_data["ina_weights_sha256"] == expected["model_sources"][1]["weights_sha256"]
+    assert input_data["whisper_weights_sha256"] == expected["model_sources"][2]["weights_sha256"]
+
+    def observations(items):
+        return tuple(EventObservation(**item) for item in items)
+
+    recomputed = suggest_annotation_candidates(
+        sample_rate=input_data["sample_rate"],
+        total_samples=input_data["total_samples"],
+        source_offset_samples=input_data["source_offset_samples"],
+        boundary_review_seconds=input_data["boundary_review_seconds"],
+        smad=observations(input_data["smad"]),
+        ina=observations(input_data["ina"]),
+        asr_words=observations(input_data["asr_words"]),
+    )
+    assert len(recomputed) == len(expected["candidate_events"])
+    for actual, archived in zip(recomputed, expected["candidate_events"]):
+        assert actual.start_sample == archived["start_sample"]
+        assert actual.end_sample == archived["end_sample"]
+        assert actual.candidate == archived["candidate"]
+        assert actual.evidence == tuple(archived["evidence"])
+
+
+def test_numeric_observation_bundle_contains_no_transcribed_words_or_audio():
+    data = json.loads(PILOT.with_name("navy-observations-numeric.json").read_text())
+    assert len(data["smad"]) == 60
+    assert len(data["ina"]) == 9
+    assert len(data["asr_words"]) == 92
+    assert set(data["asr_words"][0]) == {"start_sample", "end_sample", "label"}
+    assert set(x["label"] for x in data["asr_words"]) == {"asr_word"}
+    assert all(0 <= x["start_sample"] < x["end_sample"] <= data["total_samples"]
+               for x in data["asr_words"])

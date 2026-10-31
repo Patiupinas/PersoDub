@@ -319,3 +319,61 @@ def test_score_takes_hands_the_scorer_the_dub_language(monkeypatch, tmp_path):
     for language in ("Spanish", "Korean", "Klingon"):
         qsc.score_takes({"A": "/ref/a.wav"}, [], language, str(tmp_path))
     assert sent == ["es", "ko", None]
+
+
+def test_batch_whisper_worker_receives_resumable_checkpoint_paths(monkeypatch, tmp_path):
+    import subprocess
+
+    from app.scripts import qwen_score_takes as scorer
+
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        output = cmd[cmd.index("--output") + 1]
+        with open(output, "w") as file:
+            json.dump({"ok": True, "results": {
+                "/fake/voice.wav": {
+                    "ok": True, "language": "ru",
+                    "segments": [{"text": "произношение"}],
+                },
+            }}, file)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(scorer, "STT_PYTHON", "/valid/whisper")
+    monkeypatch.setattr(scorer.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(scorer.os, "access", lambda path, mode: True)
+    monkeypatch.setattr(scorer.subprocess, "run", run)
+    heard = scorer._transcribe_batch_local(
+        ["/fake/voice.wav"], "ru", timeout=40,
+        checkpoint=str(tmp_path / "checkpoint.json"),
+        progress=str(tmp_path / "progress.json"),
+    )
+    assert heard == {"/fake/voice.wav": "произношение"}
+    assert seen["cmd"][seen["cmd"].index("--checkpoint") + 1] == str(tmp_path / "checkpoint.json")
+    assert seen["cmd"][seen["cmd"].index("--progress") + 1] == str(tmp_path / "progress.json")
+
+
+def test_scoring_parent_clears_only_transient_progress_not_checkpoint(monkeypatch, tmp_path):
+    import sys
+
+    monkeypatch.setattr(qsc, "QWEN_SCORER_PYTHON", sys.executable)
+    monkeypatch.setattr(qsc, "SCRIPT_PATH", sys.executable)
+    temporary = tmp_path / "qwen_scorer_asr_progress.json"
+    preserved = tmp_path / "qwen_scorer_asr_checkpoint.sqlite3"
+    temporary.write_text("old progress")
+    preserved.write_text("cached ASR")
+
+    class R:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(*args, **kwargs):
+        temporary.write_text("active progress")
+        _write_output(str(tmp_path), {"ok": True, "lines": {}})
+        return R()
+
+    monkeypatch.setattr(qsc.subprocess, "run", fake_run)
+    assert qsc.score_takes({"A": "/ref.wav"}, [], "Russian", str(tmp_path)) == {}
+    assert not temporary.exists()
+    assert preserved.read_text() == "cached ASR"

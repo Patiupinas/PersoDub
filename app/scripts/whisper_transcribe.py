@@ -30,10 +30,14 @@ for the whole job. Writes {"ok": true, "results": {<path>: {"ok": true,
 one path failing doesn't stop the rest.
 """
 import argparse
+import hashlib
+import importlib.metadata
 import json
 import os
 import re
+import sqlite3
 import sys
+import time
 
 # Default location of the copied faster-whisper-large-v3 weights, relative to
 # the process working directory (see app/docs/INTEGRATION_SPEC.md for how this
@@ -129,6 +133,182 @@ def transcribe(audio_path, language, word_timestamps):
     return _transcribe_with(model, audio_path, language, word_timestamps)
 
 
+# Score-take ASR checkpoints are additive; source transcription remains the
+# original one-shot path unless the scorer explicitly requests a checkpoint.
+_BATCH_CACHE_VERSION = 1
+
+
+def _sha_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for piece in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(piece)
+    return digest.hexdigest()
+
+
+def _batch_context(language, word_timestamps):
+    """Bind cached text to the exact installed ASR model and decoder settings."""
+    model_dir = os.path.realpath(os.environ.get("WHISPER_MODEL_DIR", DEFAULT_MODEL_DIR))
+    weight = os.path.join(model_dir, "model.bin")
+    model_stat = os.stat(weight)
+    config_path = os.path.join(model_dir, "config.json")
+    if not os.path.isfile(config_path):
+        raise RuntimeError("Whisper model config.json is missing")
+    try:
+        version = importlib.metadata.version("faster-whisper")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return {
+        "model_path": model_dir,
+        "model_bytes": model_stat.st_size,
+        "model_mtime_ns": model_stat.st_mtime_ns,
+        "model_config_sha256": _sha_file(config_path),
+        "faster_whisper_version": version,
+        "language": language,
+        "word_timestamps": word_timestamps,
+        "prompt_retry": False,
+    }
+
+
+def _write_atomic_json(path, payload):
+    """Replace a complete checkpoint; an interrupted write cannot corrupt it."""
+    if not path:
+        return
+    pending = path + ".part"
+    with open(pending, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, separators=(",", ":"))
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(pending, path)
+
+
+def _open_batch_checkpoint(path, context):
+    """SQLite commits each take independently, so long jobs use O(N) writes."""
+    if not path:
+        return None
+    context_text = json.dumps(context, sort_keys=True, separators=(",", ":"))
+
+    def initialize():
+        db = sqlite3.connect(path, timeout=10)
+        try:
+            db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS takes ("
+                "path TEXT PRIMARY KEY, sha256 TEXT NOT NULL, result TEXT NOT NULL)"
+            )
+            current = db.execute(
+                "SELECT value FROM metadata WHERE key='context'"
+            ).fetchone()
+            if current is None or current[0] != context_text:
+                with db:
+                    db.execute("DELETE FROM takes")
+                    db.execute(
+                        "INSERT OR REPLACE INTO metadata (key,value) VALUES ('context',?)",
+                        (context_text,),
+                    )
+            return db
+        except Exception:
+            db.close()
+            raise
+
+    try:
+        return initialize()
+    except sqlite3.DatabaseError:
+        # A damaged cache is not the authority for speech. Preserve it for
+        # diagnosis and start a clean transaction log rather than use stale text.
+        os.replace(path, "%s.corrupt-%d" % (path, time.time_ns()))
+        return initialize()
+
+
+def _cached_take(db, path, fingerprint):
+    if db is None:
+        return None
+    row = db.execute(
+        "SELECT sha256,result FROM takes WHERE path=?", (path,),
+    ).fetchone()
+    if row is None or row[0] != fingerprint:
+        return None
+    try:
+        result = json.loads(row[1])
+    except (TypeError, ValueError):
+        return None
+    if (
+        type(result) is dict and result.get("ok") is True
+        and type(result.get("segments")) is list
+    ):
+        return result
+    return None
+
+
+def _save_take(db, path, fingerprint, result):
+    if db is None or result.get("ok") is not True:
+        return
+    with db:
+        db.execute(
+            "INSERT OR REPLACE INTO takes (path,sha256,result) VALUES (?,?,?)",
+            (path, fingerprint, json.dumps(result, ensure_ascii=False)),
+        )
+
+
+def _transcribe_batch_checkpointed(paths, language, word_timestamps, checkpoint, progress):
+    """Save each successful take after ASR, and reuse only matching audio bytes.
+
+    Failed files remain retryable. A restarted large batch loads its Whisper
+    model only when the first uncached take needs transcription.
+    """
+    if type(paths) is not list or any(type(path) is not str for path in paths):
+        raise ValueError("Expected a list of audio filenames")
+    if len(paths) != len(set(paths)):
+        raise ValueError("Duplicate filenames in score-take batch")
+    if checkpoint and os.path.realpath(checkpoint) == os.path.realpath(progress or ""):
+        raise ValueError("ASR progress and cache must use distinct files")
+
+    context = _batch_context(language, word_timestamps)
+    database = _open_batch_checkpoint(checkpoint, context)
+    results = {}
+    reused = 0
+    model = None
+
+    def show_progress():
+        _write_atomic_json(progress, {
+            "schema_version": _BATCH_CACHE_VERSION,
+            "phase": "asr",
+            "done": len(results),
+            "total": len(paths),
+            "reused": reused,
+            "updated_at": time.time(),
+        })
+
+    show_progress()
+    try:
+        for path in paths:
+            try:
+                if not os.path.isfile(path):
+                    raise RuntimeError("audio file not found: %s" % path)
+                fingerprint = _sha_file(path)
+                result = _cached_take(database, path, fingerprint)
+                if result is not None:
+                    reused += 1
+                else:
+                    if model is None:
+                        model = _load_model()
+                    cues, detected_language = _transcribe_with(
+                        model, path, language, word_timestamps, allow_split=False,
+                    )
+                    result = {
+                        "ok": True, "language": detected_language, "segments": cues,
+                    }
+                    _save_take(database, path, fingerprint, result)
+            except Exception as error:
+                result = {"ok": False, "error": str(error)[:300]}
+            results[path] = result
+            show_progress()
+    finally:
+        if database is not None:
+            database.close()
+    return results
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--audio")
@@ -137,26 +317,33 @@ def main():
     ap.add_argument("--output", required=True)
     ap.add_argument("--language", default=None)
     ap.add_argument("--word-timestamps", action="store_true")
+    ap.add_argument("--checkpoint", help="Persistent per-take ASR cache (batch only)")
+    ap.add_argument("--progress", help="Atomic compact progress counters (batch only)")
     a = ap.parse_args()
 
     if a.audio_list:
         try:
             with open(a.audio_list, encoding="utf-8") as f:
                 paths = json.load(f)
-            model = _load_model()
-            results = {}
-            for p in paths:
-                try:
-                    if not os.path.exists(p):
-                        raise RuntimeError("audio file not found: %s" % p)
-                    # Take scoring compares text only; the extra prompted pass
-                    # would just slow the batch down (see module docstring).
-                    cues, detected_language = _transcribe_with(
-                        model, p, a.language, a.word_timestamps, allow_split=False
-                    )
-                    results[p] = {"ok": True, "language": detected_language, "segments": cues}
-                except Exception as e:
-                    results[p] = {"ok": False, "error": str(e)[:300]}
+            if a.checkpoint or a.progress:
+                results = _transcribe_batch_checkpointed(
+                    paths, a.language, a.word_timestamps, a.checkpoint, a.progress,
+                )
+            else:
+                model = _load_model()
+                results = {}
+                for p in paths:
+                    try:
+                        if not os.path.exists(p):
+                            raise RuntimeError("audio file not found: %s" % p)
+                        # Take scoring compares text only; the extra prompted pass
+                        # would just slow the batch down (see module docstring).
+                        cues, detected_language = _transcribe_with(
+                            model, p, a.language, a.word_timestamps, allow_split=False
+                        )
+                        results[p] = {"ok": True, "language": detected_language, "segments": cues}
+                    except Exception as e:
+                        results[p] = {"ok": False, "error": str(e)[:300]}
             result = {"ok": True, "results": results}
         except Exception as e:
             result = {"ok": False, "error": str(e)[:500]}

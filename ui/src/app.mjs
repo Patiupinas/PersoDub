@@ -54,6 +54,7 @@ import { initLanguageRow } from "./languageRow.mjs";
 import { initConfirmDialogs } from "./confirmDialogs.mjs";
 import { initExportDialog } from "./exportDialog.mjs";
 import { initOverdubDialog } from "./overdubDialog.mjs";
+import { scorerProgressText } from "./scorerProgress.mjs";
 import { clearDraft, getDraft, keptSeconds, onDraftChange, setDraft, setRanges, setDraftRatio } from "./draft.mjs";
 import { readKept, keepDraft, dropKept, draftMark } from "./keptDrafts.mjs";
 import { initRatioUi } from "./ratio.mjs";
@@ -1252,6 +1253,8 @@ function jobStatusLine(job, progress) {
     const engines = engineChips(job, { voiceModels }).map((c) => c.label).join(" · ");
     return [t("Done"), trimLabel(job), engines].filter(Boolean).join(" · ");
   }
+  const scorer = scorerProgressText(job);
+  if (scorer) return scorer;
   // While it runs the top bar says exactly what the progress card says --
   // which stage, how far in. Never how long is left: the stages are too
   // uneven for a guess to be anything but a broken promise.
@@ -1308,7 +1311,10 @@ $("homeBtn").addEventListener("click", () => {
 // A failure's own text goes here when the screen showed only its plain
 // sentence (ui/src/format.mjs rawLogLines).
 function renderLog(job) {
-  $("logBox").textContent = rawLogLines(job.logs, job.status === "error" ? job.error : "").join("\n");
+  const lines = rawLogLines(job.logs, job.status === "error" ? job.error : "");
+  const scorer = scorerProgressText(job);
+  if (scorer) lines.push(scorer);
+  $("logBox").textContent = lines.join("\n");
 }
 
 // ---------------- Running, inside the work screen ----------------

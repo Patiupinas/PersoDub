@@ -237,3 +237,47 @@ def test_overdub_download_rejects_symlink_outside_job(local_job, tmp_path):
     response = client.get("/api/dub/jobs/bench/overdub/files/finished-overdub-99.mp4")
     assert response.status_code == 404
     outside.unlink()
+
+
+def test_six_hour_source_budget_is_accepted_but_riff_overflow_is_rejected():
+    from app.api.overdub import _ast_timeout, _audio_size
+    from app.audio.overdub import OverdubError
+
+    assert _audio_size(6 * 3600) == 6 * 3600 * 48000 * 4
+    assert _ast_timeout(6 * 3600) > 900
+    assert _ast_timeout(100) == 900
+    with pytest.raises(OverdubError, match="single-WAV export"):
+        _audio_size(7 * 3600)
+    with pytest.raises(OverdubError, match="duration"):
+        _audio_size(float("nan"))
+
+
+def test_longform_preview_rejects_riff_overflow_before_audio_decode(local_job, monkeypatch):
+    import app.api.overdub as overdub_api
+
+    monkeypatch.setattr(overdub_api.media, "video_duration", lambda path: 7 * 3600)
+    monkeypatch.setattr(
+        overdub_api, "extract_original_pcm",
+        lambda *args, **kwargs: pytest.fail("Overflow preflight must run before decoding"),
+    )
+    result = client.post("/api/dub/jobs/bench/overdub/prepare", json={})
+    assert result.status_code == 422
+
+
+def test_longform_export_requires_room_for_all_audio_and_video_intermediates(local_job, monkeypatch):
+    from collections import namedtuple
+
+    import app.api.overdub as overdub_api
+
+    Usage = namedtuple("Usage", ["total", "used", "free"])
+    monkeypatch.setattr(overdub_api.shutil, "disk_usage", lambda path: Usage(0, 0, 100))
+    info = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
+    response = client.post("/api/dub/jobs/bench/overdub/export", json={
+        "source_wav_sha256": info["source_wav_sha256"],
+        "total_frames": info["total_frames"], "review_confirmed": True,
+        "events": [{
+            "start_frame": 0, "end_frame": info["total_frames"], "action": "REVIEW",
+        }],
+    })
+    assert response.status_code == 422
+    assert "free disk" in response.json()["detail"]

@@ -4,6 +4,7 @@ import { escapeHtml, errorText } from "./format.mjs";
 import { t } from "./i18n.mjs";
 
 export const OVERDUB_RATE = 48000;
+export const REVIEW_PAGE_SIZE = 100;
 export const ACTIONS = ["REVIEW", "TRANSLATE", "PRESERVE"];
 
 export function reviewedEvents(items) {
@@ -36,8 +37,9 @@ export function splitOverdubInterval(items, seconds) {
 
 function atTime(frames) { return (frames / OVERDUB_RATE).toFixed(2); }
 
-export function overDubRowsHtml(items) {
-  return items.map((entry, index) => {
+export function overDubRowsHtml(items, indexOffset = 0) {
+  return items.map((entry, localIndex) => {
+    const index = indexOffset + localIndex;
     const hint = entry.hint === "speech-cue" ? t("Speech cue") :
       entry.hint === "unknown" ? t("Unknown") : entry.hint;
     // AST group scores are not calibrated probabilities; never display them as confidence percentages.
@@ -66,6 +68,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args) }) 
   let events = [];
   let busy = false;
   let generation = 0;
+  let page = 0;
   const overlay = $("overdubOverlay");
   const status = $("overdubStatus");
   const list = $("overdubList");
@@ -75,12 +78,22 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args) }) 
   const useHints = $("overdubUseHints");
   const split = $("overdubSplit");
   const result = $("overdubResult");
+  const previousPage = $("overdubPagePrev");
+  const nextPage = $("overdubPageNext");
+  const pageLabel = $("overdubPageLabel");
 
   const allReview = () => events.every((row) => row.action === "REVIEW");
   function paint() {
     const scroll = list.scrollTop;
-    list.innerHTML = overDubRowsHtml(events);
+    const pages = Math.max(1, Math.ceil(events.length / REVIEW_PAGE_SIZE));
+    page = Math.max(0, Math.min(page, pages - 1));
+    const first = page * REVIEW_PAGE_SIZE;
+    const last = Math.min(first + REVIEW_PAGE_SIZE, events.length);
+    list.innerHTML = overDubRowsHtml(events.slice(first, last), first);
     list.scrollTop = scroll;
+    previousPage.disabled = busy || page <= 0;
+    nextPage.disabled = busy || page >= pages - 1;
+    pageLabel.textContent = events.length ? `${first + 1}-${last} / ${events.length}` : "0 / 0";
     const hasSource = !!preview;
     analyze.disabled = busy || !hasSource || !preview.ast_available;
     useHints.disabled = busy || !hasSource || !events.length;
@@ -122,6 +135,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args) }) 
       if (currentGen !== generation || currentJob !== jobId) return;
       preview = answer;
       events = answer.suggestions.map((row) => ({ ...row, action: "REVIEW" }));
+      page = 0;
       if (answer.analysis === "ast_observations") {
         message(t("AST event suggestions are ready. Review every interval before export."));
       } else if (answer.analysis === "model_failed") {
@@ -151,6 +165,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args) }) 
     jobId = jid;
     preview = null;
     events = [];
+    page = 0;
     confirm.checked = false;
     result.hidden = true;
     overlay.classList.add("open");
@@ -173,6 +188,18 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args) }) 
     }));
     confirm.checked = false;
     message(t("Suggestions applied. Check each interval and confirm your choices."));
+    paint();
+  });
+  previousPage.addEventListener("click", () => {
+    if (busy || page === 0) return;
+    page -= 1;
+    list.scrollTop = 0;
+    paint();
+  });
+  nextPage.addEventListener("click", () => {
+    if (busy || (page + 1) * REVIEW_PAGE_SIZE >= events.length) return;
+    page += 1;
+    list.scrollTop = 0;
     paint();
   });
   split.addEventListener("click", () => {

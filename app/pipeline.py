@@ -17,6 +17,7 @@ from typing import Callable, List, NoReturn, Optional
 
 from app import config, media, room
 from app.audio.onset import snap_starts
+from app.audio.overdub import extract_original_pcm, render_overdub, validate_overdub_plan
 from app.config import QWEN_N_TAKES
 from app.diar_campplus_client import diarize
 from app.engines.base import VoiceEngineDown
@@ -947,7 +948,7 @@ def _stage_translate(srt_path, source_cues, language, translate_engine, translat
 def _stage_synthesize(segments, ref_cues, work_dir, vocals_path, background_path,
                       language, n_takes, qwen_engine, on_notice, log, video_duration=None,
                       reuse_lines=False, cancel_check=None, translator=None,
-                      sample_cues=None):
+                      sample_cues=None, output_mode="replace"):
     """Stage 4/6 -- cloning & synthesis (Qwen3-TTS, the app's only TTS engine).
 
     Returns the path of the full-length dubbed audio.
@@ -978,18 +979,20 @@ def _stage_synthesize(segments, ref_cues, work_dir, vocals_path, background_path
                             **({"reuse_lines": True} if reuse_lines else {}),
                             **({"cancel_check": cancel_check} if cancel_check else {}),
                             **({"translator": translator} if translator else {}),
-                            **({"sample_cues": sample_cues} if sample_cues else {}))
+                            **({"sample_cues": sample_cues} if sample_cues else {}),
+                            **({"output_mode": output_mode} if output_mode != "replace" else {}))
     except VoiceEngineDown as e:
         # The one voice failure that is not one line's: nothing more will be
         # made this run, so the job stops here and the screen says why.
         raise_notice(e, log, on_notice)
 
 
-def _stage_finish(video_path, audio_wav, out_path, work_dir, log):
-    """Stage 6/6 -- mux the dub onto the video, then the length gate. -> None"""
+def _stage_finish(video_path, audio_wav, out_path, work_dir, log, output_mode="replace"):
+    """Stage 6/6 -- build one or two selectable audio tracks, then length check."""
     _log_stage(log, "build", "Building the finished file…")
     d_vid = _video_duration(video_path)
-    r = _mux(video_path, audio_wav, out_path, d_vid)
+    r = (media.mux_overdub(video_path, audio_wav, out_path, d_vid)
+         if output_mode == "overdub" else _mux(video_path, audio_wav, out_path, d_vid))
     if r.returncode != 0:
         # ffmpeg could not put the sound on the picture: not the voice
         # engine's failure, whichever engine made the voices. Only its last
@@ -997,7 +1000,10 @@ def _stage_finish(video_path, audio_wav, out_path, work_dir, log):
         paths = (video_path, audio_wav, out_path)
         what = both("Could not build the finished video")
         raise shown_error(media._failure(what[0], r.stderr, paths), media._failure(what[1], r.stderr, paths))
-    ensure_video_length(video_path, out_path, log)
+    if output_mode == "overdub":
+        media.ensure_video_length(video_path, out_path, log, preserve_overdub_tracks=True)
+    else:
+        ensure_video_length(video_path, out_path, log)
     # Final assembly + length gate passed -- only now drop the losing take
     # candidates that were kept for a possible reassembly pass (see
     # qwen_pipeline.synth_lines / cleanup_takes).
@@ -1212,6 +1218,8 @@ def run_dub(
     # The project's name, which a stage sent to Perso is named by on the
     # workspace (owner, 2026-10-22); without one Perso shows input.
     title: Optional[str] = None,
+    audio_mode: str = "replace",
+    overdub_event_plan_path: Optional[str] = None,
 ) -> dict:
     """Dub a single video and save it to out_path.
 
@@ -1255,6 +1263,23 @@ def run_dub(
 
     _check_cancel(cancel_check, log)
     video_duration = _duration_or_none(video_path)
+    if audio_mode not in ("replace", "overdub"):
+        raise ValueError("Unknown audio mode: expected replace or overdub")
+    overdub_source_pcm = None
+    overdub_plan = None
+    if audio_mode == "overdub":
+        # The source-bound A4 event plan must exist BEFORE TTS is started.
+        # Unreviewed model tags are never silently converted into dub actions.
+        overdub_plan = overdub_event_plan_path or os.path.join(work_dir, "overdub_events.json")
+        if not os.path.isfile(overdub_plan):
+            raise ValueError("Overdub requires a source-bound overdub_events.json plan")
+        extracted = os.path.join(work_dir, "overdub_original_48k.part.wav")
+        if os.path.exists(extracted):
+            os.remove(extracted)
+        extract_original_pcm(video_path, extracted, duration=video_duration)
+        overdub_source_pcm = os.path.join(work_dir, "overdub_original_48k.wav")
+        os.replace(extracted, overdub_source_pcm)
+        validate_overdub_plan(overdub_source_pcm, overdub_plan)
 
     def checkpoint():
         # Between two stages: stop if Cancel was pressed, or if the rest of
@@ -1328,7 +1353,8 @@ def run_dub(
             segments, ref_cues, work_dir, vocals_path, background_path,
             language, n_takes, qwen_engine, on_notice, log, video_duration=video_duration,
             reuse_lines=reuse_lines, cancel_check=cancel_check,
-            translator=pace_tr, sample_cues=sample_cues)
+            translator=pace_tr, sample_cues=sample_cues,
+            **({"output_mode": "overdub"} if audio_mode == "overdub" else {}))
 
     checkpoint()
 
@@ -1338,12 +1364,26 @@ def run_dub(
                                  os.path.join(work_dir, "nonverbal_manifest.json"),
                                  work_dir, log)
 
+    if audio_mode == "overdub":
+        overdub_wav = os.path.join(work_dir, "overdub_mixed_48k.wav")
+        if os.path.exists(overdub_wav):
+            os.remove(overdub_wav)
+        receipt = render_overdub(overdub_source_pcm, audio_wav, overdub_plan, overdub_wav)
+        _save_json(work_dir, "overdub_receipt.json", receipt)
+        audio_wav = overdub_wav
+
     _check_room(work_dir, video_path, video_duration)
     with _timed_stage(log, "build"):
-        _stage_finish(video_path, audio_wav, out_path, work_dir, log)
+        _stage_finish(video_path, audio_wav, out_path, work_dir, log, **(
+            {"output_mode": "overdub"} if audio_mode == "overdub" else {}
+        ))
     log("Done!")
-    return _result_of(job_id, out_path, video_path, work_dir, segments, auto_translated, detected_code,
-                      perso_client, sep_model)
+    result = _result_of(job_id, out_path, video_path, work_dir, segments, auto_translated, detected_code,
+                        perso_client, sep_model)
+    if audio_mode == "overdub":
+        result["audio_mode"] = "overdub"
+        result["audio_tracks"] = ["Overdub", "Original"]
+    return result
 
 
 _INTERMEDIATE = re.compile(

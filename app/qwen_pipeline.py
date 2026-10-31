@@ -44,6 +44,7 @@ from app.audio.lead_burst import (
     tidy_reference,
 )
 from app.audio.merge import group_merge_units, split_unit_audio
+from app.audio.overdub import write_silent_bed_like
 from app.config import QWEN_GATE_MODE, QWEN_KEEP_NONVERBAL, QWEN_VOICE_MODE
 from app.engines.base import (
     SynthesisCut,
@@ -1214,7 +1215,8 @@ def _placed_dub_spans(segments: List[dict], line_paths: List[Optional[str]], sta
 
 def _assemble(segments: List[dict], line_paths: List[Optional[str]], starts: List[float],
               gains: Optional[List[float]], ref_cues: List[dict], vocals_path: str, background_path: str,
-              work_dir: str, log: Callable[[str], None], video_duration: Optional[float]) -> str:
+              work_dir: str, log: Callable[[str], None], video_duration: Optional[float],
+              output_mode: str = "replace") -> str:
     """The dub audio, qwen_dub_48k.wav in work_dir: the lines laid over the
     background the way QWEN_GATE_MODE says, and clipped_lines.json beside
     it. Returns the wav's path."""
@@ -1225,8 +1227,19 @@ def _assemble(segments: List[dict], line_paths: List[Optional[str]], starts: Lis
     # it into the job's result data without place_lines' own return value
     # (out_wav, used elsewhere) having to change shape.
     clipped: List[dict] = []
+    if output_mode not in ("replace", "overdub"):
+        raise ValueError("Unknown audio output mode")
 
-    if QWEN_GATE_MODE == "safe":
+    if output_mode == "overdub":
+        # The alternate track's original bed is rendered only once from the
+        # source video, after synthesis. Here place TTS against SILENCE so
+        # the original soundtrack is never doubled in the final overdub.
+        silent_bed = os.path.join(work_dir, "overdub_silent_bed.wav")
+        if not os.path.isfile(silent_bed):
+            write_silent_bed_like(background_path, silent_bed)
+        place_lines(silent_bed, line_paths, starts, out_wav, gains=gains,
+                    log=log, clipped=clipped)
+    elif QWEN_GATE_MODE == "safe":
         # Default: the original vocals track never reaches place_lines, so
         # leaking the original actor's voice is structurally impossible --
         # background is the separated no_vocals stem only (see
@@ -1275,6 +1288,7 @@ def run_qwen_dub(
     video_duration: Optional[float] = None, reuse_lines: bool = False,
     cancel_check: Optional[Callable[[], bool]] = None, translator=None,
     sample_cues: Optional[List[dict]] = None,
+    output_mode: str = "replace",
 ) -> str:
     """Full Qwen3-TTS dub-audio path. Returns the path to the assembled 48kHz wav
     (background + our synthesized lines, each gained to match the original line's
@@ -1345,7 +1359,9 @@ def run_qwen_dub(
     # Written before assembly so a job that dies in the gates still leaves it behind.
     _write_lines_manifest(work_dir, language, segments, seg_speakers, starts, gains)
     return _assemble(segments, line_paths, starts, gains, ref_cues, vocals_path, background_path,
-                     work_dir, log, video_duration)
+                     work_dir, log, video_duration, **(
+                         {"output_mode": output_mode} if output_mode != "replace" else {}
+                     ))
 
 
 def resynth_one_line(work_dir, entry, text, language):

@@ -102,7 +102,7 @@ def test_malformed_pitch_tracks_fail_closed(frames, reason):
     {"stable_pitch_tolerance_semitones": -0.1},
 ])
 def test_bad_clock_or_tolerance_rejected(changes):
-    arguments = dict(sample_rate=1000, total_samples=10000, start_sample=0, end_sample=1000)
+    arguments = {"sample_rate": 1000, "total_samples": 10000, "start_sample": 0, "end_sample": 1000}
     arguments.update(changes)
     with pytest.raises(PitchEvidenceError):
         summarize_pitch_frames([PitchFrame(0, 1000, 440.0, 0.5)], **arguments)

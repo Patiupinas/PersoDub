@@ -149,6 +149,13 @@ def _as_the_pipeline_reads_it(kw, work):
     # Perso, which names the upload by it, so the rest have none.
     if out.get("title") is None:
         out.pop("title")
+    # Opt-in Overdub was added after the frozen baseline recordings. Keeping
+    # the default replacement mode and having no event plan are exactly the
+    # previous behavior, so they must not change historical API parity.
+    if out.get("audio_mode") == "replace":
+        out.pop("audio_mode")
+    if out.get("overdub_event_plan_path") is None:
+        out.pop("overdub_event_plan_path")
     return out
 
 

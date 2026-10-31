@@ -106,7 +106,45 @@ def mux(video: str, audio: str, out: str, dur: float) -> subprocess.CompletedPro
     )
 
 
-def ensure_video_length(original_video: str, out_path: str, log: Callable[[str], None]) -> None:
+
+def mux_overdub(video: str, overdub_audio: str, out: str, dur: float) -> subprocess.CompletedProcess:
+    """Export selectable audio tracks: dynamic overdub (default) plus original.
+
+    The input video's audio is not gain-modulated; only the alternate overdub
+    WAV contains the dynamic balance. Both audio streams follow the same video
+    timebase, and the original video bitstream is copied without transcoding.
+    """
+    return subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", video, "-i", overdub_audio,
+         "-map", "0:v:0", "-map", "1:a:0", "-map", "0:a:0",
+         "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
+         "-filter:a:0", "apad", "-filter:a:1", "apad",
+         "-disposition:a:0", "default", "-disposition:a:1", "0",
+         "-metadata:s:a:0", "handler_name=Overdub",
+         "-metadata:s:a:1", "handler_name=Original",
+         "-t", f"{dur:.3f}", out],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+
+
+def _remux_preserving_overdub_tracks(video: str, mixed_video: str, out: str,
+                                     dur: float) -> subprocess.CompletedProcess:
+    """Length correction that preserves BOTH the overdub and original streams."""
+    return subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", video, "-i", mixed_video,
+         "-map", "0:v:0", "-map", "1:a:0", "-map", "1:a:1",
+         "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
+         "-filter:a:0", "apad", "-filter:a:1", "apad",
+         "-disposition:a:0", "default", "-disposition:a:1", "0",
+         "-metadata:s:a:0", "handler_name=Overdub",
+         "-metadata:s:a:1", "handler_name=Original",
+         "-t", f"{dur:.3f}", out],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+
+
+def ensure_video_length(original_video: str, out_path: str, log: Callable[[str], None], *,
+                        preserve_overdub_tracks: bool = False) -> None:
     """🔒 Absolute guarantee: if the output video length differs from the original, rebuild using the original video untouched.
 
     The Qwen dub export can come out shorter than the video (audio ends first). In that
@@ -123,7 +161,8 @@ def ensure_video_length(original_video: str, out_path: str, log: Callable[[str],
         return
     log(f"   Video length correction: {d_out:.3f}s → {d_orig:.3f}s (lossless rebuild from original video)")
     tmp = out_path + ".fix.mp4"
-    r = mux(original_video, out_path, tmp, d_orig)
+    r = (_remux_preserving_overdub_tracks(original_video, out_path, tmp, d_orig)
+         if preserve_overdub_tracks else mux(original_video, out_path, tmp, d_orig))
     if r.returncode == 0 and os.path.exists(tmp):
         os.replace(tmp, out_path)
     else:

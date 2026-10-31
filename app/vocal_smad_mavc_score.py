@@ -65,7 +65,7 @@ def score_clip(clip, sample_rate):
     singing = sum(counts["singing"].values())
     if not speech or not singing:
         raise SMADScoringError("both independently annotated classes are required")
-    result = {
+    return {
         "gold_speech_samples": speech,
         "gold_singing_samples": singing,
         "gold_speech_predicted_speech_samples": sum(counts["speech"][v] for v in LABELS[:2]),
@@ -76,7 +76,6 @@ def score_clip(clip, sample_rate):
         "singing_events_touched_by_predicted_speech": touches,
         "clipped_published_silence_tail_samples": clipped,
     }
-    return result
 
 
 def score_snapshot(snapshot):

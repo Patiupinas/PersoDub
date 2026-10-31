@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "model": "openai/whisper-small",
+  "model_version": "20250625",
+  "model_checkpoint_sha256": "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794",
+  "model_checkpoint_bytes": 483617219,
+  "machine": "Apple Silicon macOS CPU / existing cached model / one original MP4 at a time",
+  "provenance": "MAVC100 audio-level Speech/Singing labels; source video SHA frozen",
+  "metric_definition": "Each ASR word counted ONCE PER label category when its interval has positive overlap with any original labeled event; word overlap seconds are summed over events. A word may intersect more than one category; no transcripts or lyrics included.",
+  "clips": [
+    {
+      "clip_id": "Ellie_Goulding_performs_Burn_3",
+      "source_sha256": "09b51d7cbd4f113c68d5ad6d5ce1a0ef577a0bff0f13e1b83983b5e5d3ba92cb",
+      "language": "en",
+      "segment_count": 6,
+      "word_intervals": 49,
+      "runtime_seconds": 6.3,
+      "overlap_with_MAVC100_labels": {
+        "speech": {
+          "word_intervals": 42,
+          "overlap_seconds": 11.25
+        },
+        "singing": {
+          "word_intervals": 5,
+          "overlap_seconds": 1.102
+        },
+        "silence": {
+          "word_intervals": 0,
+          "overlap_seconds": 0
+        }
+      }
+    },
+    {
+      "clip_id": "Jessie_J_performs_Bang_Bang_5",
+      "source_sha256": "e299a5db5bf72caee28e6c00d89decd92f60e0b22e6a86e35281cbd4b89f0a3c",
+      "language": "en",
+      "segment_count": 1,
+      "word_intervals": 157,
+      "runtime_seconds": 9.702,
+      "overlap_with_MAVC100_labels": {
+        "speech": {
+          "word_intervals": 22,
+          "overlap_seconds": 5.758
+        },
+        "singing": {
+          "word_intervals": 21,
+          "overlap_seconds": 5.942
+        },
+        "silence": {
+          "word_intervals": 0,
+          "overlap_seconds": 0
+        }
+      }
+    },
+    {
+      "clip_id": "Jess_Glynne_performs_123_4",
+      "source_sha256": "dc11f5aedd32545861b268df12f2271439904134ca1a9eb99804f6895df5e056",
+      "language": "en",
+      "segment_count": 12,
+      "word_intervals": 77,
+      "runtime_seconds": 6.64,
+      "overlap_with_MAVC100_labels": {
+        "speech": {
+          "word_intervals": 10,
+          "overlap_seconds": 1.809
+        },
+        "singing": {
+          "word_intervals": 67,
+          "overlap_seconds": 22.645
+        },
+        "silence": {
+          "word_intervals": 1,
+          "overlap_seconds": 0.003
+        }
+      }
+    }
+  ],
+  "aggregate": {
+    "clips": 3,
+    "word_intervals": 283,
+    "word_intervals_touching_singing": 93,
+    "overlapping_singing_seconds": 29.689,
+    "word_intervals_touching_speech": 74,
+    "overlapping_speech_seconds": 18.817
+  },
+  "interpretation": "A real ASR transcript overlapping singing is not ordinary explanatory speech; lyrics must not automatically be dubbed."
+}

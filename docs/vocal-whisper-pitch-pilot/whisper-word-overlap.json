@@ -4,9 +4,9 @@
   "model_version": "20250625",
   "model_checkpoint_sha256": "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794",
   "model_checkpoint_bytes": 483617219,
-  "machine": "Apple Silicon macOS CPU / cached model / one original video at a time",
-  "provenance": "MAVC100 audio-level Speech/Singing labels, original unchanged MP4 sources",
-  "metric_definition": "Word intervals with positive overlap against published labels; counts may overlap across label categories; no lyrics or transcript content included",
+  "machine": "Apple Silicon macOS CPU / existing cached model / one original MP4 at a time",
+  "provenance": "MAVC100 audio-level Speech/Singing labels; source video SHA frozen",
+  "metric_definition": "Each ASR word counted ONCE PER label category when its interval has positive overlap with any original labeled event; word overlap seconds are summed over events. A word may intersect more than one category; no transcripts or lyrics included.",
   "clips": [
     {
       "clip_id": "Ellie_Goulding_performs_Burn_3",
@@ -14,10 +14,10 @@
       "language": "en",
       "segment_count": 6,
       "word_intervals": 49,
-      "runtime_seconds": 7.09,
+      "runtime_seconds": 6.3,
       "overlap_with_MAVC100_labels": {
         "speech": {
-          "word_intervals": 48,
+          "word_intervals": 42,
           "overlap_seconds": 11.25
         },
         "singing": {
@@ -36,7 +36,7 @@
       "language": "en",
       "segment_count": 1,
       "word_intervals": 157,
-      "runtime_seconds": 9.586,
+      "runtime_seconds": 9.702,
       "overlap_with_MAVC100_labels": {
         "speech": {
           "word_intervals": 22,
@@ -58,7 +58,7 @@
       "language": "en",
       "segment_count": 12,
       "word_intervals": 77,
-      "runtime_seconds": 7.198,
+      "runtime_seconds": 6.64,
       "overlap_with_MAVC100_labels": {
         "speech": {
           "word_intervals": 10,
@@ -80,8 +80,8 @@
     "word_intervals": 283,
     "word_intervals_touching_singing": 93,
     "overlapping_singing_seconds": 29.689,
-    "word_intervals_touching_speech": 80,
+    "word_intervals_touching_speech": 74,
     "overlapping_speech_seconds": 18.817
   },
-  "interpretation": "A timed ASR transcript overlapping singing does not establish ordinary spoken explanation, song lyrics must not be automatically translated."
+  "interpretation": "A real ASR transcript overlapping singing is not ordinary explanatory speech; lyrics must not automatically be dubbed."
 }

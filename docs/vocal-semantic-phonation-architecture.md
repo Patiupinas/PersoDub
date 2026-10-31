@@ -44,6 +44,23 @@ Spoken cue: "Let's sing the vowel A on one note." A3 marks \`spoken_instruction\
 
 **Observed:** vocal separation materially changed the available voiced/F0 track in one difficult sung example and preserved the other. But a 0.7s voiced run is **not automatically singing**, and neither four hand-selected intervals nor their soundtrack-mixed ASR transcript can establish sensitivity/specificity for vocal lessons. Confirmed HTDemucs checkpoint loading and source hashes do not establish independently audited separation quality.
 
+## Actual local Whisper word-timestamp evidence (same three videos)
+
+Using **the Mac's already cached OpenAI Whisper Small** checkpoint (483,617,219 bytes, SHA256 \`9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794\`; Whisper package \`20250625\`, CPU) with \`word_timestamps=True\`, \`language="en"\`, \`condition_on_previous_text=False\` and \`temperature=0\`, we transcribed the same three SHA-frozen 30-second clips and projected word timestamps onto MAVC100's published Speech/Singing labels. **No new model weights or media were downloaded** and no lyrics/transcript strings were committed.
+
+| Original performance clip | ASR word intervals total | ASR word intervals overlapping original labeled singing | Positive time overlap with labeled singing |
+| --- | ---: | ---: | ---: |
+| Ellie Goulding | 49 | 5 | 1.102 s |
+| Jessie J | 157 | 21 | 5.942 s |
+| Jess Glynne | 77 | 67 | 22.645 s |
+| **Total** | **283** | **93** | **29.689 s** |
+
+Each ASR word interval is counted **once per published label category**, even if crossing multiple events of that category. **74** word intervals also overlap speech-labeled events (18.817 seconds). One word can span two distinct categories, so the counts are **not** a mutually exclusive confusion matrix or a word recognition accuracy measure.
+
+A metadata-only report (source SHA, cached checkpoint SHA, per-label word overlap counts, no source lyrics) is frozen in [\`docs/vocal-whisper-pitch-pilot/whisper-word-overlap.json\`](vocal-whisper-pitch-pilot/whisper-word-overlap.json), with local offline snapshot tests.
+
+**Demonstrated failure of text-only gating:** real word intervals coexist with significant gold singing duration. Reading a word transcript cannot prove "ordinary explanatory speech"; a text-semantic model must interpret surrounding instructional context **and** consult independent vocal-phonation evidence. The semantic classifier itself has **not been trained, run or qualified** on true teaching-session gold.
+
 ## New pure-data feature boundary
 
 \`app/vocal_pitch_features.py\` adds frozen \`PitchFrame\` and \`PitchSummary\` plus \`summarize_pitch_frames()\`. It consumes **already calculated F0 frames on the authoritative integer PCM clock** and returns:

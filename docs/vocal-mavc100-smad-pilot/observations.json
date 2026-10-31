@@ -1,0 +1,310 @@
+{
+  "schema_version": 1,
+  "source": "MAVC100 audio-stream annotations",
+  "model": "duclvQ/smad",
+  "model_revision": "157a6316366bcf8831baf23df742edb71f07eb47",
+  "model_sha256": "63818291e401ca27616cb29ba3a224b780296ac4af87e6d6b70edb9daa40f5bc",
+  "receptive_field_seconds": 4,
+  "grid_seconds": 1,
+  "sample_rate": 48000,
+  "clips": [
+    {
+      "clip_id": "Ellie_Goulding_performs_Burn_3",
+      "source_sha256": "09b51d7cbd4f113c68d5ad6d5ce1a0ef577a0bff0f13e1b83983b5e5d3ba92cb",
+      "label_sha256": "937441d61159a7ff069af5e7c89d89f3362d957a337dd65f1cbbbe4d003099a9",
+      "total_samples": 1440000,
+      "gold_events_ms": [
+        [
+          "speech",
+          111,
+          921
+        ],
+        [
+          "speech",
+          1823,
+          3535
+        ],
+        [
+          "speech",
+          4261,
+          5519
+        ],
+        [
+          "speech",
+          6080,
+          7486
+        ],
+        [
+          "speech",
+          7921,
+          9008
+        ],
+        [
+          "singing",
+          11157,
+          12035
+        ],
+        [
+          "speech",
+          12515,
+          13808
+        ],
+        [
+          "speech",
+          14141,
+          14914
+        ],
+        [
+          "speech",
+          15300,
+          15744
+        ],
+        [
+          "speech",
+          16163,
+          17275
+        ],
+        [
+          "speech",
+          18121,
+          18613
+        ],
+        [
+          "speech",
+          19536,
+          20589
+        ],
+        [
+          "singing",
+          27741,
+          29976
+        ],
+        [
+          "silence",
+          29977,
+          30030
+        ]
+      ],
+      "smad_cells": [
+        "speech_noise",
+        "speech_noise",
+        "speech_noise",
+        "speech_noise",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "singing_music",
+        "none",
+        "singing_music",
+        "none",
+        "none",
+        "none",
+        "singing_music",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music"
+      ],
+      "model_runtime_s": 16.3827
+    },
+    {
+      "clip_id": "Jessie_J_performs_Bang_Bang_5",
+      "source_sha256": "e299a5db5bf72caee28e6c00d89decd92f60e0b22e6a86e35281cbd4b89f0a3c",
+      "label_sha256": "c0ddf6bdcf5292be61d33cef02fea8a9ff6ffcfe7a8e118e818b0e771128f615",
+      "total_samples": 1440000,
+      "gold_events_ms": [
+        [
+          "singing",
+          0,
+          1092
+        ],
+        [
+          "speech",
+          1093,
+          1541
+        ],
+        [
+          "singing",
+          1542,
+          2339
+        ],
+        [
+          "speech",
+          2340,
+          4147
+        ],
+        [
+          "singing",
+          4351,
+          5149
+        ],
+        [
+          "speech",
+          5531,
+          7357
+        ],
+        [
+          "singing",
+          7556,
+          8333
+        ],
+        [
+          "speech",
+          8732,
+          10484
+        ],
+        [
+          "singing",
+          10745,
+          11568
+        ],
+        [
+          "speech",
+          11942,
+          13675
+        ],
+        [
+          "singing",
+          13948,
+          26624
+        ],
+        [
+          "singing",
+          27631,
+          29977
+        ],
+        [
+          "silence",
+          29977,
+          30030
+        ]
+      ],
+      "smad_cells": [
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "none",
+        "none",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "none",
+        "none",
+        "none",
+        "none"
+      ],
+      "model_runtime_s": 0.3512
+    },
+    {
+      "clip_id": "Jess_Glynne_performs_123_4",
+      "source_sha256": "dc11f5aedd32545861b268df12f2271439904134ca1a9eb99804f6895df5e056",
+      "label_sha256": "ab8917ac896bd42b3e5906129069722c1c5113873428fef4d0af7232f73d5209",
+      "total_samples": 1440000,
+      "gold_events_ms": [
+        [
+          "singing",
+          0,
+          10284
+        ],
+        [
+          "speech",
+          11245,
+          12040
+        ],
+        [
+          "singing",
+          12041,
+          12475
+        ],
+        [
+          "speech",
+          12476,
+          12992
+        ],
+        [
+          "singing",
+          13131,
+          14988
+        ],
+        [
+          "speech",
+          14989,
+          15707
+        ],
+        [
+          "singing",
+          15708,
+          29977
+        ],
+        [
+          "silence",
+          29977,
+          30030
+        ]
+      ],
+      "smad_cells": [
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "none",
+        "singing_music",
+        "none",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "none",
+        "none",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "singing_music",
+        "none",
+        "singing_music",
+        "singing_music",
+        "none",
+        "singing_music",
+        "singing_music",
+        "singing_music"
+      ],
+      "model_runtime_s": 0.3397
+    }
+  ]
+}

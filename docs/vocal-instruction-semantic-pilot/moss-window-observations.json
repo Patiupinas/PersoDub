@@ -1,0 +1,362 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "unreviewed_semantic_window_pilot",
+  "source_name": "US Navy Band Vocal Warm-Up public-domain 240p derivative, 1:00-2:00",
+  "source_wav_sha256": "d409c8994bf9aa05e05e1ba1ec6bfde9e19e000ad33de34224c9136bbc9afc43",
+  "source_raw_pcm_sha256": "4a9ace7fac700764c74cd3215f4b57c5db7fe2ca04bc5f33d68f9b9c80df9e36",
+  "sample_rate": 16000,
+  "source_offset_samples": 960000,
+  "total_samples": 960000,
+  "model": {
+    "name": "MOSS-Audio-4B-Instruct",
+    "gguf_repository": "cstr/MOSS-Audio-4B-Instruct-GGUF",
+    "gguf_revision": "d4bb0c6450f6931adeb6a0fe79bdee9857285e39",
+    "quantization": "Q4_K",
+    "weights_sha256": "7f2fd36c357a39c17a26937b5a726f86f55484c53bb819a7e0706c2f92e7cc90",
+    "weights_bytes": 4111365280,
+    "runtime": "CrispASR",
+    "runtime_version": "0.8.49",
+    "runtime_git": "d9426437",
+    "runtime_sha256": "08f5da2aee1868900296a7c4dd86cbfcfd0e16e885e096e779abd2770fb11c20",
+    "runtime_release_tar_sha256": "53fa0b1addeacaafd05f8b0cd10cad6e8f44cbe302be3bd07fdf7fce2eff27ec",
+    "hardware": "Apple M1 Max, 64 GiB, macOS/Metal, threads=4",
+    "decode_parameters": {
+      "max_new_tokens": 140,
+      "language": "en",
+      "temperature": 0,
+      "gpu_backend": "metal"
+    }
+  },
+  "prompts": {
+    "lesson": {
+      "text": "This recording comes from a vocal training lesson. Classify the audible human vocal activity, not background instrumental music. Respond with exactly ONE of these labels as the first line: EXPLANATION (ordinary spoken explanation or verbal instruction), VOCAL_DEMO (sustained humming, singing, pitch glides, vowel exercises), MIXED (both explanation and vocal demonstration occur), NON_TARGET (no human voice), or UNCERTAIN (insufficient evidence). On the second line explain the observed vocal sound briefly. Do not invent transcribed words, song lyrics, or timestamps.",
+      "sha256": "8ed73d25112e908cf12c47ad1b16f1b15f3d8b6d786d1441da51412288fadd31"
+    },
+    "neutral": {
+      "text": "Listen to this audio clip without assuming its purpose or setting. Classify the human vocal activity based only on what is audible. Reply with exactly ONE of these labels on the first line: SPEECH_ONLY (intelligible spoken words), VOCALIZATION_ONLY (sustained humming or singing, not intelligible speech), BOTH (speech and vocalization), NONE (no human voice), UNCERTAIN (not enough evidence). Second line: one short acoustic description. Do not transcribe.",
+      "sha256": "d8c9f5dcd0b3606274524865f0c6fa4083779968ce1196fcb6b4dbd532b8bad5"
+    },
+    "alt_context": {
+      "text": "The purpose of this recording is unknown. Classify the audible human vocal activity, not background instrumental music. Respond with exactly ONE of these labels as the first line: EXPLANATION (ordinary spoken explanation or verbal instruction), VOCAL_DEMO (sustained humming, singing, pitch glides, vowel exercises), MIXED (both explanation and vocal demonstration occur), NON_TARGET (no human voice), or UNCERTAIN (insufficient evidence). On the second line explain the observed vocal sound briefly. Do not invent transcribed words, song lyrics, or timestamps.",
+      "sha256": "92f0f21f2c4f5355b8f5f82586d394d77113cc0f0973c2180fa263e460092f49"
+    }
+  },
+  "windows": [
+    {
+      "window_id": "control_demo",
+      "tier": "control",
+      "start_sample": 1312000,
+      "end_sample": 1376000,
+      "previous_candidate": "vocal_demo_candidate",
+      "wav_sha256": "7f8d3a01acb5a060f4fa023785ac11be9e497dffba33c27c4aeed1b8921378b6",
+      "pcm_sha256": "110fc4c945576affe9759cefa5734369d74f87d076e01b5303aa2117ebac311c",
+      "outputs": {
+        "lesson": {
+          "raw_first_line": "VOCAL_DEMO",
+          "semantic_class": "vocal",
+          "stdout_sha256": "965986287d13a62dd90af024b42f377202d1ba2b597aca21f37f2b7c42cf6ec4",
+          "wall_seconds": 3.879,
+          "format_exact_first_line": true
+        },
+        "neutral": {
+          "raw_first_line": "VOCALIZATION_ONLY",
+          "semantic_class": "vocal",
+          "stdout_sha256": "0f6725bd2aa6a244a1418ecc93bca9ad46c51770e867d2c93b2a936c4ef88bc8",
+          "wall_seconds": 3.622,
+          "format_exact_first_line": true
+        },
+        "alt_context": {
+          "raw_first_line": "NON_TARGET (no human voice)",
+          "semantic_class": "non_target",
+          "stdout_sha256": "03acb6ea24beb53f6d7cba9956348c2f9536ce26b32b68eb03e141c6da18f7da",
+          "wall_seconds": 2.59,
+          "format_exact_first_line": false
+        }
+      }
+    },
+    {
+      "window_id": "control_speech",
+      "tier": "control",
+      "start_sample": 1728000,
+      "end_sample": 1904000,
+      "previous_candidate": "speech_candidate",
+      "wav_sha256": "1323c3f53757cc268d81a11d58f1f3c8524c4189dcad9abf62bc09e4308359ea",
+      "pcm_sha256": "7472708de921fa7539b2daa64cf8b7546921964ca0ec956a57d55f9a2e79b4de",
+      "outputs": {
+        "lesson": {
+          "raw_first_line": "EXPLANATION",
+          "semantic_class": "speech",
+          "stdout_sha256": "8a8ceef89de0a149f40cc1f934a7332f548d31877403f69000197d79c212848a",
+          "wall_seconds": 3.864,
+          "format_exact_first_line": true
+        },
+        "neutral": {
+          "raw_first_line": "SPEECH_ONLY",
+          "semantic_class": "speech",
+          "stdout_sha256": "6b185c0ded2ffc0adae07884e56ef818c22756673743a97d53124a02bdce4cd5",
+          "wall_seconds": 3.028,
+          "format_exact_first_line": true
+        },
+        "alt_context": {
+          "raw_first_line": "EXPLANATION",
+          "semantic_class": "speech",
+          "stdout_sha256": "9f12c74e7b2841d1869becb4879625981caa3731ef4bb0cf4b276f8359871f2e",
+          "wall_seconds": 4.012,
+          "format_exact_first_line": true
+        }
+      }
+    },
+    {
+      "window_id": "uncertain_one",
+      "tier": "coarse",
+      "start_sample": 1008000,
+      "end_sample": 1312000,
+      "previous_candidate": "uncertain",
+      "wav_sha256": "ece712c210cef1e5eb07310bd44c6e32ec4316665a4744dc59c6c442c69908b1",
+      "pcm_sha256": "8aef7a3313da1cc5076805b5fff0fecf001dc4498227ed05ee2a077f146e68fc",
+      "outputs": {
+        "lesson": {
+          "raw_first_line": "VOCAL_DEMO",
+          "semantic_class": "vocal",
+          "stdout_sha256": "4d9011944a1981c78e68675f0231817e5cb92dc6508ed7376d9a858c84fcf7eb",
+          "wall_seconds": 4.369,
+          "format_exact_first_line": true
+        },
+        "neutral": {
+          "raw_first_line": "SPEECH_ONLY",
+          "semantic_class": "speech",
+          "stdout_sha256": "5887b83d3eed3fb0e140d12fb2f0a59c7b2f022a131ef096617dd50b9ffb4943",
+          "wall_seconds": 2.887,
+          "format_exact_first_line": true
+        },
+        "alt_context": {
+          "raw_first_line": "VOCAL_DEMO",
+          "semantic_class": "vocal",
+          "stdout_sha256": "8a671608d0273a2c7e4bdb97bd4749956843077af153142f099388265aee936b",
+          "wall_seconds": 4.146,
+          "format_exact_first_line": true
+        }
+      }
+    },
+    {
+      "window_id": "uncertain_two",
+      "tier": "coarse",
+      "start_sample": 1376000,
+      "end_sample": 1616000,
+      "previous_candidate": "uncertain",
+      "wav_sha256": "2f549c2712c5466d9845860bfb5bc89516f178b084518f66b43ed2b9f4673dd7",
+      "pcm_sha256": "45d8375570d7e7743a524b63bfa076bd6d1e102e6d5356c53024fc4de7e89c6f",
+      "outputs": {
+        "lesson": {
+          "raw_first_line": "VOCAL_DEMO",
+          "semantic_class": "vocal",
+          "stdout_sha256": "64f06dd7a266aa0bebb730b9455666070766ea49c754effc1726dcbb132b5806",
+          "wall_seconds": 4.319,
+          "format_exact_first_line": true
+        },
+        "neutral": {
+          "raw_first_line": "VOCALIZATION_ONLY",
+          "semantic_class": "vocal",
+          "stdout_sha256": "97aba85f83ad45d6134bb44d3472c869410aea10a7a6e6122a01ccbbd52846ab",
+          "wall_seconds": 3.536,
+          "format_exact_first_line": true
+        }
+      }
+    },
+    {
+      "window_id": "uncertain_three",
+      "tier": "coarse",
+      "start_sample": 1632000,
+      "end_sample": 1728000,
+      "previous_candidate": "uncertain",
+      "wav_sha256": "94727c08398dcb790976af6afcfcfe42f3c71d7bff768cf7323299eb3846dc9c",
+      "pcm_sha256": "b135a9ce2b3e37764ee01301e2823f4ef7aa76bf0be6f1179e1523f71b91a860",
+      "outputs": {
+        "lesson": {
+          "raw_first_line": "VOCAL_DEMO",
+          "semantic_class": "vocal",
+          "stdout_sha256": "fd1a0b85c7569dbd16a17f654df5371091551debd7574448a19522ff9e8d23ed",
+          "wall_seconds": 4.252,
+          "format_exact_first_line": true
+        },
+        "neutral": {
+          "raw_first_line": "SPEECH_ONLY",
+          "semantic_class": "speech",
+          "stdout_sha256": "c75addc0e4fc3df60c993e5d39fa5577eb9eeb7bfe9a0a8548a2f660ed3d3c00",
+          "wall_seconds": 2.901,
+          "format_exact_first_line": true
+        },
+        "alt_context": {
+          "raw_first_line": "NON_TARGET",
+          "semantic_class": "non_target",
+          "stdout_sha256": "fd4d94a671c488039307366823050b08fe824f4e1fc41c6fd0360a21d58278f4",
+          "wall_seconds": 3.196,
+          "format_exact_first_line": true
+        }
+      }
+    },
+    {
+      "window_id": "early_speech_hint",
+      "tier": "targeted_probe",
+      "start_sample": 1008000,
+      "end_sample": 1056000,
+      "previous_candidate": "uncertain",
+      "wav_sha256": "00983046d332dc0b3ce810124da8b5596379b014320f11bb25dc25c1b19544a4",
+      "pcm_sha256": "ed62ad8745b952798e8aebddc147a54d65be4ea90d3e304f0a261b0eca846487",
+      "outputs": {
+        "lesson": {
+          "raw_first_line": "EXPLANATION",
+          "semantic_class": "speech",
+          "stdout_sha256": "f5eceeecfff4684224128f405aa5c4156052b6f111bc1ed7bd4de9368d3c2f86",
+          "wall_seconds": 4.115,
+          "format_exact_first_line": true
+        },
+        "neutral": {
+          "raw_first_line": "SPEECH_ONLY",
+          "semantic_class": "speech",
+          "stdout_sha256": "5887b83d3eed3fb0e140d12fb2f0a59c7b2f022a131ef096617dd50b9ffb4943",
+          "wall_seconds": 2.884,
+          "format_exact_first_line": true
+        }
+      }
+    },
+    {
+      "window_id": "explicit_instruction_hint",
+      "tier": "targeted_probe",
+      "start_sample": 1120000,
+      "end_sample": 1200000,
+      "previous_candidate": "uncertain",
+      "wav_sha256": "5fab9de8f82368bda3552e37ab9b2945b881a1bc66078deecdae1e475d9dd117",
+      "pcm_sha256": "273edd7d0a01fc2b0de65cd69657a98327a009add41a0b96afbba7b7892cd54c",
+      "outputs": {
+        "lesson": {
+          "raw_first_line": "VOCAL_DEMO",
+          "semantic_class": "vocal",
+          "stdout_sha256": "7ec6781838ca711cd2923aab093b9313b4485d8a7160a735e6b37b34582ca381",
+          "wall_seconds": 4.276,
+          "format_exact_first_line": true
+        },
+        "neutral": {
+          "raw_first_line": "SPEECH_ONLY",
+          "semantic_class": "speech",
+          "stdout_sha256": "5887b83d3eed3fb0e140d12fb2f0a59c7b2f022a131ef096617dd50b9ffb4943",
+          "wall_seconds": 2.87,
+          "format_exact_first_line": true
+        },
+        "alt_context": {
+          "raw_first_line": "EXPLANATION",
+          "semantic_class": "speech",
+          "stdout_sha256": "65afab651a7f27df876ce848cec3685d8d22259e3fe20db734ff15065caae6a9",
+          "wall_seconds": 4.002,
+          "format_exact_first_line": true
+        }
+      }
+    },
+    {
+      "window_id": "humming_hint",
+      "tier": "targeted_probe",
+      "start_sample": 1216000,
+      "end_sample": 1312000,
+      "previous_candidate": "uncertain",
+      "wav_sha256": "e8f5b48bbf7ef45fec184270b9bfd0cdfcbe10d0fae8b562c5ce895c1394cac4",
+      "pcm_sha256": "421e9a0761b90d477046501b758d5f7975a2674f23c00ed4d2a06fcf688daa0d",
+      "outputs": {
+        "lesson": {
+          "raw_first_line": "VOCAL_DEMO",
+          "semantic_class": "vocal",
+          "stdout_sha256": "85f39325d7690b6b9868b9e3060a22413bf16e0fa5700a4f5e9cbd0d8da982bb",
+          "wall_seconds": 3.677,
+          "format_exact_first_line": true
+        },
+        "neutral": {
+          "raw_first_line": "SPEECH_ONLY",
+          "semantic_class": "speech",
+          "stdout_sha256": "c75addc0e4fc3df60c993e5d39fa5577eb9eeb7bfe9a0a8548a2f660ed3d3c00",
+          "wall_seconds": 2.898,
+          "format_exact_first_line": true
+        },
+        "alt_context": {
+          "raw_first_line": "NON_TARGET (no human voice)",
+          "semantic_class": "non_target",
+          "stdout_sha256": "03acb6ea24beb53f6d7cba9956348c2f9536ce26b32b68eb03e141c6da18f7da",
+          "wall_seconds": 2.605,
+          "format_exact_first_line": false
+        }
+      }
+    },
+    {
+      "window_id": "middle_music_hint",
+      "tier": "targeted_probe",
+      "start_sample": 1408000,
+      "end_sample": 1520000,
+      "previous_candidate": "uncertain",
+      "wav_sha256": "19fe742420fcfdad33cd621764a6a0707e38afd892a6ea2fce2de8b189433df1",
+      "pcm_sha256": "ae8e0e6894a4f5e2796a14361ce7eb941b2cb48c09a38402d072783e554c48d4",
+      "outputs": {
+        "lesson": {
+          "raw_first_line": "VOCAL_DEMO",
+          "semantic_class": "vocal",
+          "stdout_sha256": "965986287d13a62dd90af024b42f377202d1ba2b597aca21f37f2b7c42cf6ec4",
+          "wall_seconds": 3.94,
+          "format_exact_first_line": true
+        },
+        "neutral": {
+          "raw_first_line": "VOCALIZATION_ONLY",
+          "semantic_class": "vocal",
+          "stdout_sha256": "752519c7a986d977e042847fb73b6999153a087e447d1d7a321da3eac5313e0f",
+          "wall_seconds": 3.376,
+          "format_exact_first_line": true
+        }
+      }
+    },
+    {
+      "window_id": "late_speech_hint",
+      "tier": "targeted_probe",
+      "start_sample": 1696000,
+      "end_sample": 1728000,
+      "previous_candidate": "uncertain",
+      "wav_sha256": "a8735998561c4a487f09b3c7838f7ce7f7e5220ba4d9bc48e26255aa048a037d",
+      "pcm_sha256": "be9908c5e54b1e59bbb4f42419ebe4ffa55d289c28862ad4236cb8fa1cc1e337",
+      "outputs": {
+        "lesson": {
+          "raw_first_line": "EXPLANATION",
+          "semantic_class": "speech",
+          "stdout_sha256": "be1cd97f51ff6fc34c9d98394ef6eeac97485481c2ade59f5a322e87f75d3d68",
+          "wall_seconds": 3.897,
+          "format_exact_first_line": true
+        },
+        "neutral": {
+          "raw_first_line": "SPEECH_ONLY",
+          "semantic_class": "speech",
+          "stdout_sha256": "c75addc0e4fc3df60c993e5d39fa5577eb9eeb7bfe9a0a8548a2f660ed3d3c00",
+          "wall_seconds": 2.888,
+          "format_exact_first_line": true
+        }
+      }
+    }
+  ],
+  "repeatability_checks": [
+    {
+      "window_id": "control_demo",
+      "prompt_id": "lesson",
+      "same_stdout": true,
+      "first_stdout_sha256": "965986287d13a62dd90af024b42f377202d1ba2b597aca21f37f2b7c42cf6ec4",
+      "repeat_stdout_sha256": "965986287d13a62dd90af024b42f377202d1ba2b597aca21f37f2b7c42cf6ec4"
+    },
+    {
+      "window_id": "control_demo",
+      "prompt_id": "alt_context",
+      "same_stdout": true,
+      "first_stdout_sha256": "03acb6ea24beb53f6d7cba9956348c2f9536ce26b32b68eb03e141c6da18f7da",
+      "repeat_stdout_sha256": "03acb6ea24beb53f6d7cba9956348c2f9536ce26b32b68eb03e141c6da18f7da"
+    },
+    {
+      "window_id": "humming_hint",
+      "prompt_id": "alt_context",
+      "same_stdout": true,
+      "first_stdout_sha256": "03acb6ea24beb53f6d7cba9956348c2f9536ce26b32b68eb03e141c6da18f7da",
+      "repeat_stdout_sha256": "03acb6ea24beb53f6d7cba9956348c2f9536ce26b32b68eb03e141c6da18f7da"
+    }
+  ],
+  "status": "Research-only unreviewed model output: neither A1 human gold nor A4 decisions"
+}

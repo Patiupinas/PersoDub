@@ -45,12 +45,14 @@ def _check_events(
     total_samples: int,
     allowed: frozenset[str] | None = None,
     require_full_coverage: bool = False,
+    allow_overlap: bool = False,
 ) -> tuple[EventObservation, ...]:
     if not isinstance(events, (list, tuple)):
         raise PreannotationError("expected sequence of EventObservation")
     if require_full_coverage and not events:
         raise PreannotationError("complete observation timeline is required")
     previous_end = 0
+    previous_start = -1
     for idx, event in enumerate(events):
         if not isinstance(event, EventObservation):
             raise PreannotationError(f"event[{idx}] is not EventObservation")
@@ -60,13 +62,14 @@ def _check_events(
             or not 0 <= event.start_sample < event.end_sample <= total_samples
         ):
             raise PreannotationError(f"event[{idx}]: invalid source PCM interval")
-        if event.start_sample < previous_end or (
-            require_full_coverage and event.start_sample != previous_end
-        ):
-            raise PreannotationError(f"event[{idx}]: overlap or uncovered source PCM")
+        if event.start_sample < previous_start or (
+            not allow_overlap and event.start_sample < previous_end
+        ) or (require_full_coverage and event.start_sample != previous_end):
+            raise PreannotationError(f"event[{idx}]: overlap, unsorted or uncovered source PCM")
         if allowed is not None and event.label not in allowed:
             raise PreannotationError(f"event[{idx}]: unknown model label")
-        previous_end = event.end_sample
+        previous_start = event.start_sample
+        previous_end = max(previous_end, event.end_sample)
     if require_full_coverage and previous_end != total_samples:
         raise PreannotationError("observations do not cover source PCM tail")
     return tuple(events)
@@ -105,7 +108,7 @@ def suggest_annotation_candidates(
         smad, total_samples=total, allowed=SMAD_LABELS, require_full_coverage=True
     )
     ina_events = _check_events(ina, total_samples=total, allowed=INA_LABELS)
-    words = _check_events(asr_words, total_samples=total)
+    words = _check_events(asr_words, total_samples=total, allow_overlap=True)
     for index, event in enumerate(smad_events):
         if (
             event.start_sample != index * rate

@@ -19,9 +19,11 @@ Output JSON the scorer writes back:
                                   "usable", "spk", "emb"}, ...]}}
   or {"ok": false, "error": "..."} on failure.
 """
+import contextlib
 import json
 import os
 import subprocess
+import time
 from typing import Callable, Dict, List, Optional
 
 from app.config import LANGUAGE_NAMES, QWEN_SCORER_PYTHON
@@ -39,6 +41,36 @@ def _scorer_asr_timeout_per_take() -> float:
         return float(os.environ.get("PERSODUB_SCORER_ASR_TIMEOUT", "15"))
     except (TypeError, ValueError):
         return 15.0
+
+
+def read_asr_progress(work_dir, now=None):
+    """Return bounded counters for the active CPU Whisper scorer, never filenames.
+
+    This is advisory job progress, not a persistent job-state owner. The
+    separate source-bound ASR checkpoint survives failures; this small status
+    file is deleted when the scorer returns and expires if a process vanishes.
+    """
+    path = os.path.join(work_dir, "qwen_scorer_asr_progress.json")
+    try:
+        if os.path.getsize(path) > 4096:
+            return None
+        with open(path, encoding="utf-8") as file:
+            value = json.load(file)
+        clock = time.time() if now is None else now
+        done, total, reused = (value.get(key) for key in ("done", "total", "reused"))
+        stamp = value.get("updated_at")
+        if (
+            type(value) is not dict
+            or value.get("schema_version") != 1 or value.get("phase") != "asr"
+            or any(type(n) is not int for n in (done, total, reused))
+            or not 0 <= reused <= done <= total <= 1000000
+            or type(stamp) not in (int, float)
+            or not 0 <= clock - stamp <= 180
+        ):
+            return None
+        return {"phase": "asr", "done": done, "total": total, "reused": reused}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
 
 
 def whisper_code(language) -> Optional[str]:
@@ -84,6 +116,11 @@ def score_takes(
     payload = {"language": whisper_code(language), "speakers": speaker_ref_paths, "lines": lines_payload}
     in_path = os.path.join(work_dir, "qwen_scorer_input.json")
     out_path = os.path.join(work_dir, "qwen_scorer_output.json")
+    progress_path = os.path.join(work_dir, "qwen_scorer_asr_progress.json")
+    # Never carry the visible progress from a previous attempt into this run.
+    # The durable checkpoint is distinct and intentionally survives retries.
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(progress_path)
     with open(in_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
 
@@ -95,6 +132,11 @@ def score_takes(
     except Exception as e:
         log("   Warning: take scorer failed to run (%s) -- skipping take selection" % str(e)[:120])
         return None
+    finally:
+        # A completed/failed scorer no longer owns the live progress indicator.
+        # Its source-bound ASR checkpoint remains available for Resume.
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(progress_path)
 
     if r.returncode != 0 or not os.path.exists(out_path):
         log("   Warning: take scorer exited with an error (%s) -- skipping take selection"

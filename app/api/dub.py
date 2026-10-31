@@ -68,6 +68,7 @@ from app.dub_script import EDITED_NAME, script_path
 from app.i18n import english, t
 from app.jobs import JobKind, JobStatus, kind_of
 from app.pipeline import run_dub
+from app.qwen_scoring import read_asr_progress
 from app.source_fetch import fetch as fetch_source
 from app.text.naming import project_name, safe_name
 from app.translate import translator_model
@@ -379,6 +380,13 @@ def dub_job(jid: str):
     j = state.job_store.get(jid)
     if j is None:
         raise HTTPException(status_code=404, detail=t("Unknown job: {jid}", jid=jid))
+    # Whisper's take-scoring batch can be much longer than the source video.
+    # The worker publishes atomic counters; no transcript or local paths are
+    # copied into the public job response, and the saved job stays unchanged.
+    if j.get("status") == JobStatus.RUNNING and kind_of(j) == JobKind.DUB:
+        progress = read_asr_progress(work_dir_of(j))
+        if progress:
+            return {**j, "scorer_progress": progress}
     return j
 
 

@@ -150,7 +150,7 @@ def speech_dur(path, sf, np):
     return max((off + 1 - on) * hop / sr, 0.01)
 
 
-def _transcribe_batch_local(paths, language, timeout=600):
+def _transcribe_batch_local(paths, language, timeout=600, checkpoint=None, progress=None):
     """Batch ASR for take scoring: ONE subprocess call transcribes every take,
     loading the local Whisper model once instead of once per take.
 
@@ -177,6 +177,10 @@ def _transcribe_batch_local(paths, language, timeout=600):
         cmd = [STT_PYTHON, WHISPER_TRANSCRIBE_SCRIPT, "--audio-list", list_path, "--output", out_path]
         if language:
             cmd += ["--language", language]
+        if checkpoint:
+            cmd += ["--checkpoint", checkpoint]
+        if progress:
+            cmd += ["--progress", progress]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         except Exception:
@@ -216,8 +220,12 @@ def score(payload, tmp_dir):
     # Batch-transcribe every take up front (one Whisper model load) instead of
     # once per take -- see _transcribe_batch_local's docstring.
     all_take_paths = [t["path"] for line in payload.get("lines") or [] for t in line.get("takes") or []]
-    heard_by_path = _transcribe_batch_local(all_take_paths, language,
-                                            timeout=_asr_batch_timeout(len(all_take_paths)))
+    heard_by_path = _transcribe_batch_local(
+        all_take_paths, language,
+        timeout=_asr_batch_timeout(len(all_take_paths)),
+        checkpoint=os.path.join(tmp_dir, "qwen_scorer_asr_checkpoint.sqlite3"),
+        progress=os.path.join(tmp_dir, "qwen_scorer_asr_progress.json"),
+    )
     if all_take_paths and not heard_by_path:
         # Not fatal (sim/dur still score), but say so loudly in stderr: with no
         # transcripts every asr is 0 and per-line selection degenerates.

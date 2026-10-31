@@ -82,6 +82,7 @@
   "Check your Perso key": "Perso 키 확인",
   "Check your internet connection, then open {app} again.": "인터넷 연결을 확인한 뒤 다시 열어 주세요.",
   "Checking progress": "진행 상황 확인 중",
+  "Checking pronunciation: {done}/{total}": "발음 검사: {done}/{total}",
   "Checking the timing": "시간 확인 중",
   "Checking what is running": "진행 중인 작업 확인 중",
   "Checking…": "확인 중…",

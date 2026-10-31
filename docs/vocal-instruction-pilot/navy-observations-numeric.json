@@ -1,0 +1,825 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "machine_observation_inputs_without_content",
+  "source": "US Navy Band Vocal Warm-Up / Wikimedia Commons / 240p derivative minute 1-2",
+  "source_offset_samples": 960000,
+  "sample_rate": 16000,
+  "total_samples": 960000,
+  "pcm_sha256": "4a9ace7fac700764c74cd3215f4b57c5db7fe2ca04bc5f33d68f9b9c80df9e36",
+  "smad_weights_sha256": "63818291e401ca27616cb29ba3a224b780296ac4af87e6d6b70edb9daa40f5bc",
+  "whisper_weights_sha256": "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794",
+  "ina_weights_sha256": "f04b5e3c86fa2e81666d106b0867350fe7858c7bd006c2a74c27b5b45507e7d8",
+  "boundary_review_seconds": 2,
+  "smad": [
+    {
+      "start_sample": 0,
+      "end_sample": 16000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 16000,
+      "end_sample": 32000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 32000,
+      "end_sample": 48000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 48000,
+      "end_sample": 64000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 64000,
+      "end_sample": 80000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 80000,
+      "end_sample": 96000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 96000,
+      "end_sample": 112000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 112000,
+      "end_sample": 128000,
+      "label": "none"
+    },
+    {
+      "start_sample": 128000,
+      "end_sample": 144000,
+      "label": "none"
+    },
+    {
+      "start_sample": 144000,
+      "end_sample": 160000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 160000,
+      "end_sample": 176000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 176000,
+      "end_sample": 192000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 192000,
+      "end_sample": 208000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 208000,
+      "end_sample": 224000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 224000,
+      "end_sample": 240000,
+      "label": "speech_music"
+    },
+    {
+      "start_sample": 240000,
+      "end_sample": 256000,
+      "label": "speech_music"
+    },
+    {
+      "start_sample": 256000,
+      "end_sample": 272000,
+      "label": "speech_music"
+    },
+    {
+      "start_sample": 272000,
+      "end_sample": 288000,
+      "label": "speech_music"
+    },
+    {
+      "start_sample": 288000,
+      "end_sample": 304000,
+      "label": "speech_music"
+    },
+    {
+      "start_sample": 304000,
+      "end_sample": 320000,
+      "label": "speech_music"
+    },
+    {
+      "start_sample": 320000,
+      "end_sample": 336000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 336000,
+      "end_sample": 352000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 352000,
+      "end_sample": 368000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 368000,
+      "end_sample": 384000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 384000,
+      "end_sample": 400000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 400000,
+      "end_sample": 416000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 416000,
+      "end_sample": 432000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 432000,
+      "end_sample": 448000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 448000,
+      "end_sample": 464000,
+      "label": "none"
+    },
+    {
+      "start_sample": 464000,
+      "end_sample": 480000,
+      "label": "none"
+    },
+    {
+      "start_sample": 480000,
+      "end_sample": 496000,
+      "label": "none"
+    },
+    {
+      "start_sample": 496000,
+      "end_sample": 512000,
+      "label": "none"
+    },
+    {
+      "start_sample": 512000,
+      "end_sample": 528000,
+      "label": "none"
+    },
+    {
+      "start_sample": 528000,
+      "end_sample": 544000,
+      "label": "none"
+    },
+    {
+      "start_sample": 544000,
+      "end_sample": 560000,
+      "label": "none"
+    },
+    {
+      "start_sample": 560000,
+      "end_sample": 576000,
+      "label": "none"
+    },
+    {
+      "start_sample": 576000,
+      "end_sample": 592000,
+      "label": "none"
+    },
+    {
+      "start_sample": 592000,
+      "end_sample": 608000,
+      "label": "none"
+    },
+    {
+      "start_sample": 608000,
+      "end_sample": 624000,
+      "label": "none"
+    },
+    {
+      "start_sample": 624000,
+      "end_sample": 640000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 640000,
+      "end_sample": 656000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 656000,
+      "end_sample": 672000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 672000,
+      "end_sample": 688000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 688000,
+      "end_sample": 704000,
+      "label": "singing_music"
+    },
+    {
+      "start_sample": 704000,
+      "end_sample": 720000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 720000,
+      "end_sample": 736000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 736000,
+      "end_sample": 752000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 752000,
+      "end_sample": 768000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 768000,
+      "end_sample": 784000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 784000,
+      "end_sample": 800000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 800000,
+      "end_sample": 816000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 816000,
+      "end_sample": 832000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 832000,
+      "end_sample": 848000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 848000,
+      "end_sample": 864000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 864000,
+      "end_sample": 880000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 880000,
+      "end_sample": 896000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 896000,
+      "end_sample": 912000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 912000,
+      "end_sample": 928000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 928000,
+      "end_sample": 944000,
+      "label": "speech_noise"
+    },
+    {
+      "start_sample": 944000,
+      "end_sample": 960000,
+      "label": "speech_noise"
+    }
+  ],
+  "ina": [
+    {
+      "start_sample": 0,
+      "end_sample": 91200,
+      "label": "speech"
+    },
+    {
+      "start_sample": 91200,
+      "end_sample": 102400,
+      "label": "noEnergy"
+    },
+    {
+      "start_sample": 102400,
+      "end_sample": 109120,
+      "label": "noise"
+    },
+    {
+      "start_sample": 109120,
+      "end_sample": 131200,
+      "label": "noEnergy"
+    },
+    {
+      "start_sample": 131200,
+      "end_sample": 142400,
+      "label": "noise"
+    },
+    {
+      "start_sample": 142400,
+      "end_sample": 164480,
+      "label": "noEnergy"
+    },
+    {
+      "start_sample": 164480,
+      "end_sample": 238080,
+      "label": "speech"
+    },
+    {
+      "start_sample": 238080,
+      "end_sample": 733440,
+      "label": "music"
+    },
+    {
+      "start_sample": 733440,
+      "end_sample": 959680,
+      "label": "speech"
+    }
+  ],
+  "asr_words": [
+    {
+      "start_sample": 0,
+      "end_sample": 8320,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 8320,
+      "end_sample": 11520,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 11520,
+      "end_sample": 13440,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 13440,
+      "end_sample": 18240,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 18240,
+      "end_sample": 22080,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 22080,
+      "end_sample": 24000,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 24000,
+      "end_sample": 32000,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 32000,
+      "end_sample": 37440,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 37440,
+      "end_sample": 40960,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 40960,
+      "end_sample": 46400,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 52800,
+      "end_sample": 56000,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 56000,
+      "end_sample": 61440,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 61440,
+      "end_sample": 65600,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 65600,
+      "end_sample": 68800,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 71680,
+      "end_sample": 73920,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 73920,
+      "end_sample": 76160,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 76160,
+      "end_sample": 77440,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 77440,
+      "end_sample": 80640,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 80640,
+      "end_sample": 85760,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 85760,
+      "end_sample": 94080,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 160640,
+      "end_sample": 168960,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 168960,
+      "end_sample": 177280,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 177280,
+      "end_sample": 180160,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 180160,
+      "end_sample": 182080,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 182080,
+      "end_sample": 184640,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 184640,
+      "end_sample": 188480,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 188480,
+      "end_sample": 200320,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 200320,
+      "end_sample": 203840,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 203840,
+      "end_sample": 207040,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 207040,
+      "end_sample": 211520,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 211520,
+      "end_sample": 213120,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 213120,
+      "end_sample": 217920,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 217920,
+      "end_sample": 225920,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 225920,
+      "end_sample": 228800,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 228800,
+      "end_sample": 233920,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 233920,
+      "end_sample": 240000,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 276800,
+      "end_sample": 285120,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 285120,
+      "end_sample": 289280,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 289280,
+      "end_sample": 293120,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 293120,
+      "end_sample": 295040,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 295040,
+      "end_sample": 299520,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 299520,
+      "end_sample": 306560,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 306560,
+      "end_sample": 320960,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 725120,
+      "end_sample": 734080,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 738560,
+      "end_sample": 743040,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 743040,
+      "end_sample": 745280,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 745280,
+      "end_sample": 747520,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 747520,
+      "end_sample": 750400,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 750400,
+      "end_sample": 756160,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 756160,
+      "end_sample": 759680,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 759680,
+      "end_sample": 762880,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 762880,
+      "end_sample": 766080,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 766080,
+      "end_sample": 768960,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 768960,
+      "end_sample": 775360,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 784320,
+      "end_sample": 786240,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 786240,
+      "end_sample": 790720,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 790720,
+      "end_sample": 797440,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 797440,
+      "end_sample": 800000,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 800000,
+      "end_sample": 806400,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 810560,
+      "end_sample": 811520,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 811520,
+      "end_sample": 816000,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 816000,
+      "end_sample": 820480,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 820480,
+      "end_sample": 823040,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 823040,
+      "end_sample": 828800,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 828800,
+      "end_sample": 834240,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 834240,
+      "end_sample": 838720,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 841600,
+      "end_sample": 843840,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 843840,
+      "end_sample": 846080,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 846080,
+      "end_sample": 847680,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 847680,
+      "end_sample": 853440,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 853440,
+      "end_sample": 856320,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 856320,
+      "end_sample": 857600,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 857600,
+      "end_sample": 861440,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 861440,
+      "end_sample": 863360,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 863360,
+      "end_sample": 865280,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 865280,
+      "end_sample": 870400,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 876480,
+      "end_sample": 882880,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 882880,
+      "end_sample": 885440,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 885440,
+      "end_sample": 888320,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 888320,
+      "end_sample": 893120,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 895040,
+      "end_sample": 900800,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 900800,
+      "end_sample": 903360,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 903360,
+      "end_sample": 910080,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 910080,
+      "end_sample": 916480,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 916480,
+      "end_sample": 921280,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 921280,
+      "end_sample": 932800,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 932800,
+      "end_sample": 938880,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 938880,
+      "end_sample": 946240,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 946240,
+      "end_sample": 952960,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 952960,
+      "end_sample": 954880,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 954880,
+      "end_sample": 958080,
+      "label": "asr_word"
+    },
+    {
+      "start_sample": 958080,
+      "end_sample": 959680,
+      "label": "asr_word"
+    }
+  ],
+  "note": "Numeric machine observations only. No source text, no WAV/media, no human gold labels."
+}

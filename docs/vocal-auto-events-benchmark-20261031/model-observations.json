@@ -1,0 +1,2273 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "frozen_real_automatic_audio_annotation_pilot",
+  "source_manifest_canonical_sha256": "a218024bed90c5714c335ed5f7602889daff7206e6e3855dbd0cb22919888019",
+  "model_provenance": {
+    "ast": {
+      "id": "MIT/ast-finetuned-audioset-12-12-0.447",
+      "revision": "820128982ca1044325d77662565c4dc77411f709",
+      "weights_sha256": "d87987744d05c134a9f4294568888832b94ad3a9a2d62a3e3a8de5d793eb1918",
+      "runtime": {
+        "python": "3.11",
+        "torch": "2.6.0",
+        "transformers": "4.57.3",
+        "librosa": "0.11.0",
+        "device": "mps"
+      },
+      "ontology": {
+        "speech": [
+          "Speech",
+          "Male speech, man speaking",
+          "Female speech, woman speaking",
+          "Conversation",
+          "Narration, monologue",
+          "Whispering"
+        ],
+        "singing": [
+          "Singing",
+          "Male singing",
+          "Female singing",
+          "Child singing",
+          "Humming",
+          "Chant",
+          "Yodeling",
+          "Rapping"
+        ],
+        "laughing": [
+          "Laughter",
+          "Baby laughter",
+          "Giggle",
+          "Snicker",
+          "Belly laugh",
+          "Chuckle, chortle"
+        ],
+        "crying_baby": [
+          "Baby cry, infant cry",
+          "Crying, sobbing",
+          "Whimper",
+          "Wail, moan"
+        ],
+        "coughing": [
+          "Cough",
+          "Throat clearing"
+        ],
+        "sneezing": [
+          "Sneeze",
+          "Sniff"
+        ],
+        "breathing": [
+          "Breathing",
+          "Gasp",
+          "Pant",
+          "Wheeze",
+          "Sigh"
+        ]
+      },
+      "windowing": "single center crop, up to 10.0 seconds, 16 kHz mono; original ESC-50 clips padded inside AST extractor"
+    },
+    "sensevoice": {
+      "id": "cstr/sensevoice-small-GGUF",
+      "revision": "e1ad67de9d05137a6a0b02beba1fd66e28df6ae4",
+      "quantization": "Q4_K",
+      "weights_sha256": "8a41cfd32e6fd8f5ca330e2425e87bfbed128b42779b40dcc5d100040ec63cc9",
+      "runtime": "CrispASR 0.8.49 d9426437 macOS ARM64 Metal",
+      "event_tag_to_group": {
+        "Speech": "speech",
+        "Sing": "singing",
+        "Laughter": "laughing",
+        "Cry": "crying_baby",
+        "Sneeze": "sneezing",
+        "Breath": "breathing",
+        "Cough": "coughing"
+      },
+      "limitations": "CrispASR intentionally does not surface emotion prefix; event tags are clip-level, not ground-truth aligned; Sing is a coarse event, not a vocal-technique label"
+    },
+    "emotion": {
+      "id": "superb/wav2vec2-base-superb-er",
+      "revision": "441a7599c3b22107314dcbd9166621c5c83f2cc5",
+      "weights_sha256": "dac0f46128deec048751ce33eb1a9caecb570904d3d6cf732d6ec345cd6c2e1b",
+      "training_domain": "IEMOCAP 4-class emotion subset (source model card)",
+      "runtime": {
+        "torch": "2.6.0",
+        "librosa": "0.11.0",
+        "transformers": "4.57.3",
+        "device": "mps"
+      },
+      "ontology": [
+        "neutral",
+        "happy",
+        "angry",
+        "sad"
+      ]
+    }
+  },
+  "ast_predictions": [
+    {
+      "source_id": "ESC-50::audio/4-132803-A-26.wav",
+      "wav_sha256": "de5e596027c88e0e27334e4dfeb024238bc0b6028dba0f96c764017e534e8233",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "category_scores": {
+        "speech": 0.012371,
+        "singing": 0.000769,
+        "laughing": 0.651405,
+        "crying_baby": 0.015872,
+        "coughing": 0.001416,
+        "sneezing": 0.001531,
+        "breathing": 0.003391
+      },
+      "category_ranking": [
+        "laughing",
+        "crying_baby",
+        "speech",
+        "breathing",
+        "sneezing",
+        "coughing",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Giggle",
+          "score": 0.651405
+        },
+        {
+          "label": "Snicker",
+          "score": 0.465876
+        },
+        {
+          "label": "Laughter",
+          "score": 0.271
+        },
+        {
+          "label": "Chuckle, chortle",
+          "score": 0.237888
+        },
+        {
+          "label": "Belly laugh",
+          "score": 0.204942
+        }
+      ],
+      "inference_seconds": 0.248
+    },
+    {
+      "source_id": "ESC-50::audio/5-171118-A-26.wav",
+      "wav_sha256": "acf4fc669f782f4b85e601fb61cddef90599416c519741428e1e62ea6228e2c2",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "category_scores": {
+        "speech": 0.605426,
+        "singing": 0.000455,
+        "laughing": 0.206057,
+        "crying_baby": 0.007814,
+        "coughing": 0.000723,
+        "sneezing": 0.013182,
+        "breathing": 0.070511
+      },
+      "category_ranking": [
+        "speech",
+        "laughing",
+        "breathing",
+        "sneezing",
+        "crying_baby",
+        "coughing",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Speech",
+          "score": 0.605426
+        },
+        {
+          "label": "Snicker",
+          "score": 0.206057
+        },
+        {
+          "label": "Chuckle, chortle",
+          "score": 0.140976
+        },
+        {
+          "label": "Gasp",
+          "score": 0.070511
+        },
+        {
+          "label": "Chatter",
+          "score": 0.044105
+        }
+      ],
+      "inference_seconds": 0.061
+    },
+    {
+      "source_id": "ESC-50::audio/4-167077-A-20.wav",
+      "wav_sha256": "43a894a23a4a1bed053e2ca040f7029a5d9029269173d8bac1c650c52c03e937",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "category_scores": {
+        "speech": 0.011722,
+        "singing": 7.2e-05,
+        "laughing": 0.000836,
+        "crying_baby": 0.73774,
+        "coughing": 0.000653,
+        "sneezing": 0.000111,
+        "breathing": 0.003202
+      },
+      "category_ranking": [
+        "crying_baby",
+        "speech",
+        "breathing",
+        "laughing",
+        "coughing",
+        "sneezing",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Baby cry, infant cry",
+          "score": 0.73774
+        },
+        {
+          "label": "Crying, sobbing",
+          "score": 0.097205
+        },
+        {
+          "label": "Whimper",
+          "score": 0.087429
+        },
+        {
+          "label": "Speech",
+          "score": 0.011722
+        },
+        {
+          "label": "Snort",
+          "score": 0.00524
+        }
+      ],
+      "inference_seconds": 0.057
+    },
+    {
+      "source_id": "ESC-50::audio/5-151085-A-20.wav",
+      "wav_sha256": "e46d87b3673136a4d97b42f0ac6411ed299075bb2c88d61f7c456c0afe6804db",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "category_scores": {
+        "speech": 0.019986,
+        "singing": 5.3e-05,
+        "laughing": 0.000394,
+        "crying_baby": 0.853438,
+        "coughing": 0.00305,
+        "sneezing": 3.7e-05,
+        "breathing": 0.000756
+      },
+      "category_ranking": [
+        "crying_baby",
+        "speech",
+        "coughing",
+        "breathing",
+        "laughing",
+        "singing",
+        "sneezing"
+      ],
+      "top_labels": [
+        {
+          "label": "Baby cry, infant cry",
+          "score": 0.853438
+        },
+        {
+          "label": "Whimper",
+          "score": 0.31937
+        },
+        {
+          "label": "Crying, sobbing",
+          "score": 0.062943
+        },
+        {
+          "label": "Speech",
+          "score": 0.019986
+        },
+        {
+          "label": "Throat clearing",
+          "score": 0.00305
+        }
+      ],
+      "inference_seconds": 0.056
+    },
+    {
+      "source_id": "ESC-50::audio/4-152995-A-24.wav",
+      "wav_sha256": "ca9a065e5c3c2427954a9d4fb74dff3891ce63e9bda66878e19448237e194e71",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "category_scores": {
+        "speech": 0.003259,
+        "singing": 6.3e-05,
+        "laughing": 0.000359,
+        "crying_baby": 0.000187,
+        "coughing": 0.786894,
+        "sneezing": 0.000116,
+        "breathing": 0.000189
+      },
+      "category_ranking": [
+        "coughing",
+        "speech",
+        "laughing",
+        "breathing",
+        "crying_baby",
+        "sneezing",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Throat clearing",
+          "score": 0.786894
+        },
+        {
+          "label": "Cough",
+          "score": 0.059089
+        },
+        {
+          "label": "Sound effect",
+          "score": 0.006693
+        },
+        {
+          "label": "Speech",
+          "score": 0.003259
+        },
+        {
+          "label": "Male speech, man speaking",
+          "score": 0.002513
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "ESC-50::audio/5-178997-A-24.wav",
+      "wav_sha256": "c7aba9fe825d201275860a99588bf8ee1cf26c2d6232f9d89eb52e47cab19221",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "category_scores": {
+        "speech": 0.17273,
+        "singing": 0.000273,
+        "laughing": 0.000409,
+        "crying_baby": 0.000281,
+        "coughing": 0.461645,
+        "sneezing": 0.000688,
+        "breathing": 0.00023
+      },
+      "category_ranking": [
+        "coughing",
+        "speech",
+        "sneezing",
+        "laughing",
+        "crying_baby",
+        "singing",
+        "breathing"
+      ],
+      "top_labels": [
+        {
+          "label": "Cough",
+          "score": 0.461645
+        },
+        {
+          "label": "Throat clearing",
+          "score": 0.182472
+        },
+        {
+          "label": "Speech",
+          "score": 0.17273
+        },
+        {
+          "label": "Livestock, farm animals, working animals",
+          "score": 0.029813
+        },
+        {
+          "label": "Animal",
+          "score": 0.028752
+        }
+      ],
+      "inference_seconds": 0.055
+    },
+    {
+      "source_id": "ESC-50::audio/4-156843-A-21.wav",
+      "wav_sha256": "915d649c4fbc6df93b6b6a94f45732e02e4a15728531ac114f867c969e989cbd",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "category_scores": {
+        "speech": 0.013862,
+        "singing": 0.00014,
+        "laughing": 0.001139,
+        "crying_baby": 0.000178,
+        "coughing": 0.004482,
+        "sneezing": 0.139623,
+        "breathing": 0.007125
+      },
+      "category_ranking": [
+        "sneezing",
+        "speech",
+        "breathing",
+        "coughing",
+        "laughing",
+        "crying_baby",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Sneeze",
+          "score": 0.139623
+        },
+        {
+          "label": "Sound effect",
+          "score": 0.127122
+        },
+        {
+          "label": "Burst, pop",
+          "score": 0.014158
+        },
+        {
+          "label": "Speech",
+          "score": 0.013862
+        },
+        {
+          "label": "Slap, smack",
+          "score": 0.013558
+        }
+      ],
+      "inference_seconds": 0.056
+    },
+    {
+      "source_id": "ESC-50::audio/5-187979-A-21.wav",
+      "wav_sha256": "f9b1c8dcaebec0e9d7bba56142e831a6530ee06bd969e0b80c91bf7cd57e4b4f",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "category_scores": {
+        "speech": 0.034153,
+        "singing": 8.4e-05,
+        "laughing": 0.00033,
+        "crying_baby": 0.000913,
+        "coughing": 0.640093,
+        "sneezing": 0.553936,
+        "breathing": 0.000489
+      },
+      "category_ranking": [
+        "coughing",
+        "sneezing",
+        "speech",
+        "crying_baby",
+        "breathing",
+        "laughing",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Throat clearing",
+          "score": 0.640093
+        },
+        {
+          "label": "Sneeze",
+          "score": 0.553936
+        },
+        {
+          "label": "Speech",
+          "score": 0.034153
+        },
+        {
+          "label": "Cough",
+          "score": 0.032484
+        },
+        {
+          "label": "Sound effect",
+          "score": 0.008374
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "ESC-50::audio/4-171706-A-23.wav",
+      "wav_sha256": "ee25fd0604d283d805076c3a5a0bbe807a8db5754bf19d0ed48e5d036d9ef646",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "category_scores": {
+        "speech": 0.016666,
+        "singing": 0.000513,
+        "laughing": 0.003246,
+        "crying_baby": 0.006679,
+        "coughing": 0.000677,
+        "sneezing": 0.000652,
+        "breathing": 0.803936
+      },
+      "category_ranking": [
+        "breathing",
+        "speech",
+        "crying_baby",
+        "laughing",
+        "coughing",
+        "sneezing",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Gasp",
+          "score": 0.803936
+        },
+        {
+          "label": "Snort",
+          "score": 0.517476
+        },
+        {
+          "label": "Breathing",
+          "score": 0.433698
+        },
+        {
+          "label": "Sound effect",
+          "score": 0.097088
+        },
+        {
+          "label": "Sigh",
+          "score": 0.064482
+        }
+      ],
+      "inference_seconds": 0.055
+    },
+    {
+      "source_id": "ESC-50::audio/5-213293-A-23.wav",
+      "wav_sha256": "177356c127eb7793473cbcbc6ac86cb47c8aabafa6fce2a1ad222b4a040111ef",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "category_scores": {
+        "speech": 0.008203,
+        "singing": 0.000697,
+        "laughing": 0.004108,
+        "crying_baby": 0.015403,
+        "coughing": 0.002478,
+        "sneezing": 0.002523,
+        "breathing": 0.174271
+      },
+      "category_ranking": [
+        "breathing",
+        "crying_baby",
+        "speech",
+        "laughing",
+        "sneezing",
+        "coughing",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Breathing",
+          "score": 0.174271
+        },
+        {
+          "label": "Sound effect",
+          "score": 0.053179
+        },
+        {
+          "label": "Gasp",
+          "score": 0.041135
+        },
+        {
+          "label": "Scissors",
+          "score": 0.026394
+        },
+        {
+          "label": "Snort",
+          "score": 0.022798
+        }
+      ],
+      "inference_seconds": 0.055
+    },
+    {
+      "source_id": "NUS-48E::corpus/ADIZ/read/01.wav",
+      "wav_sha256": "693694f202f5afd869071897cea86be991dba59f8cd2d7c1ce804515d12959a6",
+      "crop_start_seconds": 5.232,
+      "crop_end_seconds": 15.232,
+      "category_scores": {
+        "speech": 0.921632,
+        "singing": 0.0008,
+        "laughing": 0.000718,
+        "crying_baby": 0.001318,
+        "coughing": 0.000112,
+        "sneezing": 0.000425,
+        "breathing": 0.087817
+      },
+      "category_ranking": [
+        "speech",
+        "breathing",
+        "crying_baby",
+        "singing",
+        "laughing",
+        "sneezing",
+        "coughing"
+      ],
+      "top_labels": [
+        {
+          "label": "Speech",
+          "score": 0.921632
+        },
+        {
+          "label": "Narration, monologue",
+          "score": 0.425558
+        },
+        {
+          "label": "Female speech, woman speaking",
+          "score": 0.333349
+        },
+        {
+          "label": "Sigh",
+          "score": 0.087817
+        },
+        {
+          "label": "Speech synthesizer",
+          "score": 0.03603
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "NUS-48E::corpus/ADIZ/sing/01.wav",
+      "wav_sha256": "0866ec94115a6b443ec58d5b52ff54c1e1822af6de4557148415313d9fb02c97",
+      "crop_start_seconds": 26.818,
+      "crop_end_seconds": 36.818,
+      "category_scores": {
+        "speech": 0.00111,
+        "singing": 0.122784,
+        "laughing": 9.9e-05,
+        "crying_baby": 0.000177,
+        "coughing": 6.8e-05,
+        "sneezing": 7e-05,
+        "breathing": 0.000363
+      },
+      "category_ranking": [
+        "singing",
+        "speech",
+        "breathing",
+        "crying_baby",
+        "laughing",
+        "sneezing",
+        "coughing"
+      ],
+      "top_labels": [
+        {
+          "label": "Lullaby",
+          "score": 0.566489
+        },
+        {
+          "label": "Music",
+          "score": 0.139106
+        },
+        {
+          "label": "A capella",
+          "score": 0.126035
+        },
+        {
+          "label": "Female singing",
+          "score": 0.122784
+        },
+        {
+          "label": "Vocal music",
+          "score": 0.053404
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "NUS-48E::corpus/SAMF/read/01.wav",
+      "wav_sha256": "ac8198d9ef453b96e18f5537fb422560a2b112614da857cecc112f2230a09db7",
+      "crop_start_seconds": 3.392,
+      "crop_end_seconds": 13.392,
+      "category_scores": {
+        "speech": 0.92542,
+        "singing": 0.000264,
+        "laughing": 0.000207,
+        "crying_baby": 2.9e-05,
+        "coughing": 0.000153,
+        "sneezing": 0.000286,
+        "breathing": 0.002154
+      },
+      "category_ranking": [
+        "speech",
+        "breathing",
+        "sneezing",
+        "singing",
+        "laughing",
+        "coughing",
+        "crying_baby"
+      ],
+      "top_labels": [
+        {
+          "label": "Speech",
+          "score": 0.92542
+        },
+        {
+          "label": "Speech synthesizer",
+          "score": 0.299863
+        },
+        {
+          "label": "Narration, monologue",
+          "score": 0.188871
+        },
+        {
+          "label": "Male speech, man speaking",
+          "score": 0.13928
+        },
+        {
+          "label": "Clicking",
+          "score": 0.015446
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "NUS-48E::corpus/SAMF/sing/01.wav",
+      "wav_sha256": "4a8a2f1f7d3f58b21fa180c66f114257f0ade3e94b54cb5422e458e072e4a79e",
+      "crop_start_seconds": 27.526,
+      "crop_end_seconds": 37.526,
+      "category_scores": {
+        "speech": 0.004967,
+        "singing": 0.114531,
+        "laughing": 0.000259,
+        "crying_baby": 0.000124,
+        "coughing": 4.2e-05,
+        "sneezing": 2.2e-05,
+        "breathing": 0.000215
+      },
+      "category_ranking": [
+        "singing",
+        "speech",
+        "laughing",
+        "breathing",
+        "crying_baby",
+        "coughing",
+        "sneezing"
+      ],
+      "top_labels": [
+        {
+          "label": "Mantra",
+          "score": 0.381075
+        },
+        {
+          "label": "Lullaby",
+          "score": 0.204926
+        },
+        {
+          "label": "Male singing",
+          "score": 0.114531
+        },
+        {
+          "label": "Chant",
+          "score": 0.108647
+        },
+        {
+          "label": "Music",
+          "score": 0.108165
+        }
+      ],
+      "inference_seconds": 0.055
+    },
+    {
+      "source_id": "VocalSet-subset::vocalset/F1 scale.wav",
+      "wav_sha256": "491ca7108f6ceeba1d38174af2582452eb2349efdf9e7498dfbe8c1f2fa4e18c",
+      "crop_start_seconds": 1.089,
+      "crop_end_seconds": 11.089,
+      "category_scores": {
+        "speech": 0.003247,
+        "singing": 0.052659,
+        "laughing": 0.000617,
+        "crying_baby": 0.002416,
+        "coughing": 5.1e-05,
+        "sneezing": 2.2e-05,
+        "breathing": 0.000278
+      },
+      "category_ranking": [
+        "singing",
+        "speech",
+        "crying_baby",
+        "laughing",
+        "breathing",
+        "coughing",
+        "sneezing"
+      ],
+      "top_labels": [
+        {
+          "label": "Humming",
+          "score": 0.052659
+        },
+        {
+          "label": "Music",
+          "score": 0.040228
+        },
+        {
+          "label": "Opera",
+          "score": 0.031667
+        },
+        {
+          "label": "Theremin",
+          "score": 0.030707
+        },
+        {
+          "label": "Chant",
+          "score": 0.022799
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "VocalSet-subset::vocalset/F1 passagio.wav",
+      "wav_sha256": "e132d60d49566556b8567eb79015119cb5fb6870b168cfef7662045b045c080b",
+      "crop_start_seconds": 1.073,
+      "crop_end_seconds": 11.073,
+      "category_scores": {
+        "speech": 0.008842,
+        "singing": 0.014703,
+        "laughing": 0.000847,
+        "crying_baby": 0.001327,
+        "coughing": 6.4e-05,
+        "sneezing": 2.4e-05,
+        "breathing": 0.000343
+      },
+      "category_ranking": [
+        "singing",
+        "speech",
+        "crying_baby",
+        "laughing",
+        "breathing",
+        "coughing",
+        "sneezing"
+      ],
+      "top_labels": [
+        {
+          "label": "Music",
+          "score": 0.192666
+        },
+        {
+          "label": "Theremin",
+          "score": 0.096222
+        },
+        {
+          "label": "Boing",
+          "score": 0.031793
+        },
+        {
+          "label": "Opera",
+          "score": 0.019829
+        },
+        {
+          "label": "Mosquito",
+          "score": 0.016946
+        }
+      ],
+      "inference_seconds": 0.053
+    },
+    {
+      "source_id": "VocalSet-subset::vocalset/M1 scale.wav",
+      "wav_sha256": "6194410893436242e0292a209229624ff54a2173e152f8ab688dfd5c8359369d",
+      "crop_start_seconds": 0.991,
+      "crop_end_seconds": 10.991,
+      "category_scores": {
+        "speech": 0.00728,
+        "singing": 0.033982,
+        "laughing": 0.000989,
+        "crying_baby": 0.001498,
+        "coughing": 0.00015,
+        "sneezing": 2.8e-05,
+        "breathing": 0.000182
+      },
+      "category_ranking": [
+        "singing",
+        "speech",
+        "crying_baby",
+        "laughing",
+        "breathing",
+        "coughing",
+        "sneezing"
+      ],
+      "top_labels": [
+        {
+          "label": "Music",
+          "score": 0.563097
+        },
+        {
+          "label": "Harmonic",
+          "score": 0.063422
+        },
+        {
+          "label": "Classical music",
+          "score": 0.049742
+        },
+        {
+          "label": "Chant",
+          "score": 0.033982
+        },
+        {
+          "label": "Musical instrument",
+          "score": 0.032183
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "VocalSet-subset::vocalset/M1 passagio.wav",
+      "wav_sha256": "73ab6275ffec559a64ec33fc577c6d7253dbbbca1abb32205475fa7f02942a93",
+      "crop_start_seconds": 3.702,
+      "crop_end_seconds": 13.702,
+      "category_scores": {
+        "speech": 0.003238,
+        "singing": 0.417467,
+        "laughing": 0.000592,
+        "crying_baby": 0.004417,
+        "coughing": 5.3e-05,
+        "sneezing": 3.5e-05,
+        "breathing": 0.000332
+      },
+      "category_ranking": [
+        "singing",
+        "crying_baby",
+        "speech",
+        "laughing",
+        "breathing",
+        "coughing",
+        "sneezing"
+      ],
+      "top_labels": [
+        {
+          "label": "Humming",
+          "score": 0.417467
+        },
+        {
+          "label": "Music",
+          "score": 0.117006
+        },
+        {
+          "label": "Theremin",
+          "score": 0.082549
+        },
+        {
+          "label": "Singing",
+          "score": 0.021533
+        },
+        {
+          "label": "Chant",
+          "score": 0.018595
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-01-01-01-01-01.wav",
+      "wav_sha256": "c467aad2ca80b089dbd4c2ba0dd16be508e4ce08230f46d36a208b859dc7fbac",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.303,
+      "category_scores": {
+        "speech": 0.760855,
+        "singing": 0.000459,
+        "laughing": 0.001331,
+        "crying_baby": 0.000514,
+        "coughing": 0.012517,
+        "sneezing": 0.000679,
+        "breathing": 0.025768
+      },
+      "category_ranking": [
+        "speech",
+        "breathing",
+        "coughing",
+        "laughing",
+        "sneezing",
+        "crying_baby",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Speech",
+          "score": 0.760855
+        },
+        {
+          "label": "Male speech, man speaking",
+          "score": 0.117907
+        },
+        {
+          "label": "Sound effect",
+          "score": 0.074302
+        },
+        {
+          "label": "Silence",
+          "score": 0.069651
+        },
+        {
+          "label": "Boing",
+          "score": 0.028557
+        }
+      ],
+      "inference_seconds": 0.061
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-03-01-01-01-02.wav",
+      "wav_sha256": "4654ca86da9f02b60a5ab11b69f1ed0dbc9cd1caae1a02455f8918c46bb7fd2e",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.604,
+      "category_scores": {
+        "speech": 0.588489,
+        "singing": 0.000321,
+        "laughing": 0.000873,
+        "crying_baby": 0.000523,
+        "coughing": 0.007263,
+        "sneezing": 0.001798,
+        "breathing": 0.012759
+      },
+      "category_ranking": [
+        "speech",
+        "breathing",
+        "coughing",
+        "sneezing",
+        "laughing",
+        "crying_baby",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Speech",
+          "score": 0.588489
+        },
+        {
+          "label": "Sound effect",
+          "score": 0.058597
+        },
+        {
+          "label": "Silence",
+          "score": 0.046788
+        },
+        {
+          "label": "Boing",
+          "score": 0.030811
+        },
+        {
+          "label": "Child speech, kid speaking",
+          "score": 0.025601
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-04-01-01-01-03.wav",
+      "wav_sha256": "36c9db23dc891df8a4eae9ecb9d9553a284e6e9b1c05db26ec4c56ad5a2096c8",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.604,
+      "category_scores": {
+        "speech": 0.584004,
+        "singing": 0.000293,
+        "laughing": 0.000545,
+        "crying_baby": 0.000821,
+        "coughing": 0.012385,
+        "sneezing": 0.002375,
+        "breathing": 0.053306
+      },
+      "category_ranking": [
+        "speech",
+        "breathing",
+        "coughing",
+        "sneezing",
+        "crying_baby",
+        "laughing",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Speech",
+          "score": 0.584004
+        },
+        {
+          "label": "Gasp",
+          "score": 0.053306
+        },
+        {
+          "label": "Male speech, man speaking",
+          "score": 0.041751
+        },
+        {
+          "label": "Sigh",
+          "score": 0.03805
+        },
+        {
+          "label": "Silence",
+          "score": 0.037746
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-05-01-01-01-04.wav",
+      "wav_sha256": "02c20d8c0bc3a3b21e3fcbbd91105eba1fb54c3951e3dcbac984a6153b4ae23c",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.704,
+      "category_scores": {
+        "speech": 0.724916,
+        "singing": 0.000988,
+        "laughing": 0.000694,
+        "crying_baby": 0.000669,
+        "coughing": 0.008323,
+        "sneezing": 0.001862,
+        "breathing": 0.008878
+      },
+      "category_ranking": [
+        "speech",
+        "breathing",
+        "coughing",
+        "sneezing",
+        "singing",
+        "laughing",
+        "crying_baby"
+      ],
+      "top_labels": [
+        {
+          "label": "Speech",
+          "score": 0.724916
+        },
+        {
+          "label": "Sound effect",
+          "score": 0.092126
+        },
+        {
+          "label": "Child speech, kid speaking",
+          "score": 0.062636
+        },
+        {
+          "label": "Slap, smack",
+          "score": 0.05929
+        },
+        {
+          "label": "Narration, monologue",
+          "score": 0.054555
+        }
+      ],
+      "inference_seconds": 0.054
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-06-01-01-01-05.wav",
+      "wav_sha256": "52b8343763a88ff8aeeb097b1d8a8797e2eb44a415bae61bbb840e6b36ac6284",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.136,
+      "category_scores": {
+        "speech": 0.547128,
+        "singing": 0.000427,
+        "laughing": 0.001959,
+        "crying_baby": 0.001026,
+        "coughing": 0.009455,
+        "sneezing": 0.002929,
+        "breathing": 0.085635
+      },
+      "category_ranking": [
+        "speech",
+        "breathing",
+        "coughing",
+        "sneezing",
+        "laughing",
+        "crying_baby",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Speech",
+          "score": 0.547128
+        },
+        {
+          "label": "Male speech, man speaking",
+          "score": 0.19825
+        },
+        {
+          "label": "Gasp",
+          "score": 0.085635
+        },
+        {
+          "label": "Sound effect",
+          "score": 0.067394
+        },
+        {
+          "label": "Sigh",
+          "score": 0.055269
+        }
+      ],
+      "inference_seconds": 0.055
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-08-01-01-01-06.wav",
+      "wav_sha256": "2594534bb6ecb6b354699e2039dfc025aa09900111c7c3b0e78705cb20b1679a",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.237,
+      "category_scores": {
+        "speech": 0.628317,
+        "singing": 0.000271,
+        "laughing": 0.002246,
+        "crying_baby": 0.00135,
+        "coughing": 0.010255,
+        "sneezing": 0.001889,
+        "breathing": 0.026379
+      },
+      "category_ranking": [
+        "speech",
+        "breathing",
+        "coughing",
+        "laughing",
+        "sneezing",
+        "crying_baby",
+        "singing"
+      ],
+      "top_labels": [
+        {
+          "label": "Speech",
+          "score": 0.628317
+        },
+        {
+          "label": "Silence",
+          "score": 0.103032
+        },
+        {
+          "label": "Sound effect",
+          "score": 0.072808
+        },
+        {
+          "label": "Boing",
+          "score": 0.062115
+        },
+        {
+          "label": "Male speech, man speaking",
+          "score": 0.038113
+        }
+      ],
+      "inference_seconds": 0.055
+    }
+  ],
+  "sensevoice_predictions": [
+    {
+      "source_id": "ESC-50::audio/4-132803-A-26.wav",
+      "wav_sha256": "de5e596027c88e0e27334e4dfeb024238bc0b6028dba0f96c764017e534e8233",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.31
+    },
+    {
+      "source_id": "ESC-50::audio/5-171118-A-26.wav",
+      "wav_sha256": "acf4fc669f782f4b85e601fb61cddef90599416c519741428e1e62ea6228e2c2",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.29
+    },
+    {
+      "source_id": "ESC-50::audio/4-167077-A-20.wav",
+      "wav_sha256": "43a894a23a4a1bed053e2ca040f7029a5d9029269173d8bac1c650c52c03e937",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "audio_event_tags": [
+        "Breath"
+      ],
+      "recognized_groups": [
+        "breathing"
+      ],
+      "inference_seconds": 0.284
+    },
+    {
+      "source_id": "ESC-50::audio/5-151085-A-20.wav",
+      "wav_sha256": "e46d87b3673136a4d97b42f0ac6411ed299075bb2c88d61f7c456c0afe6804db",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.277
+    },
+    {
+      "source_id": "ESC-50::audio/4-152995-A-24.wav",
+      "wav_sha256": "ca9a065e5c3c2427954a9d4fb74dff3891ce63e9bda66878e19448237e194e71",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "audio_event_tags": [
+        "Cough"
+      ],
+      "recognized_groups": [
+        "coughing"
+      ],
+      "inference_seconds": 0.326
+    },
+    {
+      "source_id": "ESC-50::audio/5-178997-A-24.wav",
+      "wav_sha256": "c7aba9fe825d201275860a99588bf8ee1cf26c2d6232f9d89eb52e47cab19221",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "audio_event_tags": [
+        "Cough"
+      ],
+      "recognized_groups": [
+        "coughing"
+      ],
+      "inference_seconds": 0.272
+    },
+    {
+      "source_id": "ESC-50::audio/4-156843-A-21.wav",
+      "wav_sha256": "915d649c4fbc6df93b6b6a94f45732e02e4a15728531ac114f867c969e989cbd",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.286
+    },
+    {
+      "source_id": "ESC-50::audio/5-187979-A-21.wav",
+      "wav_sha256": "f9b1c8dcaebec0e9d7bba56142e831a6530ee06bd969e0b80c91bf7cd57e4b4f",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "audio_event_tags": [
+        "Cough"
+      ],
+      "recognized_groups": [
+        "coughing"
+      ],
+      "inference_seconds": 0.279
+    },
+    {
+      "source_id": "ESC-50::audio/4-171706-A-23.wav",
+      "wav_sha256": "ee25fd0604d283d805076c3a5a0bbe807a8db5754bf19d0ed48e5d036d9ef646",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "audio_event_tags": [
+        "Breath"
+      ],
+      "recognized_groups": [
+        "breathing"
+      ],
+      "inference_seconds": 0.289
+    },
+    {
+      "source_id": "ESC-50::audio/5-213293-A-23.wav",
+      "wav_sha256": "177356c127eb7793473cbcbc6ac86cb47c8aabafa6fce2a1ad222b4a040111ef",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 5.0,
+      "audio_event_tags": [
+        "Breath"
+      ],
+      "recognized_groups": [
+        "breathing"
+      ],
+      "inference_seconds": 0.284
+    },
+    {
+      "source_id": "NUS-48E::corpus/ADIZ/read/01.wav",
+      "wav_sha256": "693694f202f5afd869071897cea86be991dba59f8cd2d7c1ce804515d12959a6",
+      "crop_start_seconds": 5.232,
+      "crop_end_seconds": 15.232,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.309
+    },
+    {
+      "source_id": "NUS-48E::corpus/ADIZ/sing/01.wav",
+      "wav_sha256": "0866ec94115a6b443ec58d5b52ff54c1e1822af6de4557148415313d9fb02c97",
+      "crop_start_seconds": 26.818,
+      "crop_end_seconds": 36.818,
+      "audio_event_tags": [
+        "Sing"
+      ],
+      "recognized_groups": [
+        "singing"
+      ],
+      "inference_seconds": 0.31
+    },
+    {
+      "source_id": "NUS-48E::corpus/SAMF/read/01.wav",
+      "wav_sha256": "ac8198d9ef453b96e18f5537fb422560a2b112614da857cecc112f2230a09db7",
+      "crop_start_seconds": 3.392,
+      "crop_end_seconds": 13.392,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.314
+    },
+    {
+      "source_id": "NUS-48E::corpus/SAMF/sing/01.wav",
+      "wav_sha256": "4a8a2f1f7d3f58b21fa180c66f114257f0ade3e94b54cb5422e458e072e4a79e",
+      "crop_start_seconds": 27.526,
+      "crop_end_seconds": 37.526,
+      "audio_event_tags": [
+        "Sing"
+      ],
+      "recognized_groups": [
+        "singing"
+      ],
+      "inference_seconds": 0.326
+    },
+    {
+      "source_id": "VocalSet-subset::vocalset/F1 scale.wav",
+      "wav_sha256": "491ca7108f6ceeba1d38174af2582452eb2349efdf9e7498dfbe8c1f2fa4e18c",
+      "crop_start_seconds": 1.089,
+      "crop_end_seconds": 11.089,
+      "audio_event_tags": [
+        "BGM"
+      ],
+      "recognized_groups": [],
+      "inference_seconds": 0.313
+    },
+    {
+      "source_id": "VocalSet-subset::vocalset/F1 passagio.wav",
+      "wav_sha256": "e132d60d49566556b8567eb79015119cb5fb6870b168cfef7662045b045c080b",
+      "crop_start_seconds": 1.073,
+      "crop_end_seconds": 11.073,
+      "audio_event_tags": [
+        "BGM"
+      ],
+      "recognized_groups": [],
+      "inference_seconds": 0.322
+    },
+    {
+      "source_id": "VocalSet-subset::vocalset/M1 scale.wav",
+      "wav_sha256": "6194410893436242e0292a209229624ff54a2173e152f8ab688dfd5c8359369d",
+      "crop_start_seconds": 0.991,
+      "crop_end_seconds": 10.991,
+      "audio_event_tags": [
+        "BGM"
+      ],
+      "recognized_groups": [],
+      "inference_seconds": 0.317
+    },
+    {
+      "source_id": "VocalSet-subset::vocalset/M1 passagio.wav",
+      "wav_sha256": "73ab6275ffec559a64ec33fc577c6d7253dbbbca1abb32205475fa7f02942a93",
+      "crop_start_seconds": 3.702,
+      "crop_end_seconds": 13.702,
+      "audio_event_tags": [
+        "Event_UNK"
+      ],
+      "recognized_groups": [],
+      "inference_seconds": 0.311
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-01-01-01-01-01.wav",
+      "wav_sha256": "c467aad2ca80b089dbd4c2ba0dd16be508e4ce08230f46d36a208b859dc7fbac",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.303,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.268
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-03-01-01-01-02.wav",
+      "wav_sha256": "4654ca86da9f02b60a5ab11b69f1ed0dbc9cd1caae1a02455f8918c46bb7fd2e",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.604,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.269
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-04-01-01-01-03.wav",
+      "wav_sha256": "36c9db23dc891df8a4eae9ecb9d9553a284e6e9b1c05db26ec4c56ad5a2096c8",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.604,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.269
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-05-01-01-01-04.wav",
+      "wav_sha256": "02c20d8c0bc3a3b21e3fcbbd91105eba1fb54c3951e3dcbac984a6153b4ae23c",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.704,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.279
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-06-01-01-01-05.wav",
+      "wav_sha256": "52b8343763a88ff8aeeb097b1d8a8797e2eb44a415bae61bbb840e6b36ac6284",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.136,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.271
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-08-01-01-01-06.wav",
+      "wav_sha256": "2594534bb6ecb6b354699e2039dfc025aa09900111c7c3b0e78705cb20b1679a",
+      "crop_start_seconds": 0.0,
+      "crop_end_seconds": 3.237,
+      "audio_event_tags": [
+        "Speech"
+      ],
+      "recognized_groups": [
+        "speech"
+      ],
+      "inference_seconds": 0.28
+    }
+  ],
+  "emotion_predictions": [
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-01-01-01-01-01.wav",
+      "wav_sha256": "c467aad2ca80b089dbd4c2ba0dd16be508e4ce08230f46d36a208b859dc7fbac",
+      "ground_truth_emotion": "neutral",
+      "predicted_emotion": "neutral",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.594138,
+        "happy": 0.361952,
+        "angry": 0.030494,
+        "sad": 0.013416
+      },
+      "inference_seconds": 1.305
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-03-01-01-01-02.wav",
+      "wav_sha256": "4654ca86da9f02b60a5ab11b69f1ed0dbc9cd1caae1a02455f8918c46bb7fd2e",
+      "ground_truth_emotion": "happy",
+      "predicted_emotion": "angry",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.10061,
+        "happy": 0.134982,
+        "angry": 0.76404,
+        "sad": 0.000367
+      },
+      "inference_seconds": 0.568
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-04-01-01-01-03.wav",
+      "wav_sha256": "36c9db23dc891df8a4eae9ecb9d9553a284e6e9b1c05db26ec4c56ad5a2096c8",
+      "ground_truth_emotion": "sad",
+      "predicted_emotion": "happy",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.160062,
+        "happy": 0.655416,
+        "angry": 0.070888,
+        "sad": 0.113634
+      },
+      "inference_seconds": 0.033
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-05-01-01-01-04.wav",
+      "wav_sha256": "02c20d8c0bc3a3b21e3fcbbd91105eba1fb54c3951e3dcbac984a6153b4ae23c",
+      "ground_truth_emotion": "angry",
+      "predicted_emotion": "angry",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.033471,
+        "happy": 0.003458,
+        "angry": 0.963063,
+        "sad": 9e-06
+      },
+      "inference_seconds": 0.439
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-06-01-01-01-05.wav",
+      "wav_sha256": "52b8343763a88ff8aeeb097b1d8a8797e2eb44a415bae61bbb840e6b36ac6284",
+      "ground_truth_emotion": "fearful",
+      "predicted_emotion": "happy",
+      "emotion_supported": false,
+      "emotion_probabilities": {
+        "neutral": 0.156349,
+        "happy": 0.658932,
+        "angry": 0.174161,
+        "sad": 0.010558
+      },
+      "inference_seconds": 0.538
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-08-01-01-01-06.wav",
+      "wav_sha256": "2594534bb6ecb6b354699e2039dfc025aa09900111c7c3b0e78705cb20b1679a",
+      "ground_truth_emotion": "surprised",
+      "predicted_emotion": "neutral",
+      "emotion_supported": false,
+      "emotion_probabilities": {
+        "neutral": 0.750742,
+        "happy": 0.013702,
+        "angry": 0.233839,
+        "sad": 0.001717
+      },
+      "inference_seconds": 0.446
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-01-01-01-01-07.wav",
+      "wav_sha256": "3ad7349f8ce03135bbfb4a20c9633b09d1687c81f54af23c3fc00deb2044653c",
+      "ground_truth_emotion": "neutral",
+      "predicted_emotion": "angry",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.072001,
+        "happy": 0.354054,
+        "angry": 0.536388,
+        "sad": 0.037556
+      },
+      "inference_seconds": 0.679
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-03-01-01-01-07.wav",
+      "wav_sha256": "e0c967a7ea69dfd999af0fa1629e646196e567f1200c171a5e536752f863a687",
+      "ground_truth_emotion": "happy",
+      "predicted_emotion": "happy",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.061937,
+        "happy": 0.466433,
+        "angry": 0.442948,
+        "sad": 0.028682
+      },
+      "inference_seconds": 0.515
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-04-01-01-01-07.wav",
+      "wav_sha256": "bfaecf085338c9c0a92b25c9b8cf00ce1c60d033e51a41e8a586378e34faa408",
+      "ground_truth_emotion": "sad",
+      "predicted_emotion": "sad",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.28974,
+        "happy": 0.218703,
+        "angry": 0.121228,
+        "sad": 0.370329
+      },
+      "inference_seconds": 0.674
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-05-01-01-01-07.wav",
+      "wav_sha256": "82797b22b4fd4d2a8c7aec798a7c499571bcadbb0e3ff874d592f8ec27376a9c",
+      "ground_truth_emotion": "angry",
+      "predicted_emotion": "angry",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.074518,
+        "happy": 0.015716,
+        "angry": 0.909391,
+        "sad": 0.000375
+      },
+      "inference_seconds": 0.467
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-01-01-01-01-08.wav",
+      "wav_sha256": "b8475c029ef3ea3c931ed23cb55863dfee0e763d6d43bb1d95d42b5f9941c93b",
+      "ground_truth_emotion": "neutral",
+      "predicted_emotion": "angry",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.207236,
+        "happy": 0.320222,
+        "angry": 0.421333,
+        "sad": 0.051209
+      },
+      "inference_seconds": 0.03
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-03-01-01-01-08.wav",
+      "wav_sha256": "05e03d90d279c552d090b3db74734fa5263123a860ee4707ac594991ca5db5f4",
+      "ground_truth_emotion": "happy",
+      "predicted_emotion": "angry",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.116837,
+        "happy": 0.389418,
+        "angry": 0.481385,
+        "sad": 0.01236
+      },
+      "inference_seconds": 0.031
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-04-01-01-01-08.wav",
+      "wav_sha256": "31080846da414245b35e793fc78f1ef7e8a1f13d01b0ff5e7c7b48b40270f587",
+      "ground_truth_emotion": "sad",
+      "predicted_emotion": "sad",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.117846,
+        "happy": 0.207183,
+        "angry": 0.065666,
+        "sad": 0.609305
+      },
+      "inference_seconds": 0.477
+    },
+    {
+      "source_id": "RAVDESS-speech::audios/03-01-05-01-01-01-08.wav",
+      "wav_sha256": "7b00d1a53421b911e7b5288c24363d1a69d3d2d327de9d34e88e936903c42c5f",
+      "ground_truth_emotion": "angry",
+      "predicted_emotion": "angry",
+      "emotion_supported": true,
+      "emotion_probabilities": {
+        "neutral": 0.005344,
+        "happy": 0.013497,
+        "angry": 0.980693,
+        "sad": 0.000466
+      },
+      "inference_seconds": 0.032
+    }
+  ],
+  "unreviewed_navy_timeline": {
+    "source_name": "US Navy Band Vocal Warm-Up / 240p derivative minute 1:00-2:00",
+    "source_wav_sha256": "d409c8994bf9aa05e05e1ba1ec6bfde9e19e000ad33de34224c9136bbc9afc43",
+    "source_offset_samples": 960000,
+    "sample_rate": 16000,
+    "total_samples": 960000,
+    "window_samples": 64000,
+    "stride_samples": 32000,
+    "status": "unreviewed observation only; overlapping windows have no ground-truth start/end and do not alter A4 decisions",
+    "windows": [
+      {
+        "start_sample": 960000,
+        "end_sample": 1024000,
+        "scores": {
+          "speech": 0.583308,
+          "singing": 0.000276,
+          "laughing": 0.00129,
+          "crying_baby": 0.000712,
+          "coughing": 0.025334,
+          "sneezing": 0.002562,
+          "breathing": 0.016424
+        },
+        "top_categories": [
+          "speech",
+          "coughing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 992000,
+        "end_sample": 1056000,
+        "scores": {
+          "speech": 0.551687,
+          "singing": 0.000153,
+          "laughing": 0.000949,
+          "crying_baby": 0.000597,
+          "coughing": 0.027176,
+          "sneezing": 0.003336,
+          "breathing": 0.011552
+        },
+        "top_categories": [
+          "speech",
+          "coughing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1024000,
+        "end_sample": 1088000,
+        "scores": {
+          "speech": 0.719614,
+          "singing": 0.000238,
+          "laughing": 0.001218,
+          "crying_baby": 0.002101,
+          "coughing": 0.003105,
+          "sneezing": 0.001963,
+          "breathing": 0.327031
+        },
+        "top_categories": [
+          "speech",
+          "breathing",
+          "coughing"
+        ]
+      },
+      {
+        "start_sample": 1056000,
+        "end_sample": 1120000,
+        "scores": {
+          "speech": 0.012738,
+          "singing": 0.000104,
+          "laughing": 0.00014,
+          "crying_baby": 0.000644,
+          "coughing": 8.3e-05,
+          "sneezing": 0.00034,
+          "breathing": 0.144852
+        },
+        "top_categories": [
+          "breathing",
+          "speech",
+          "crying_baby"
+        ]
+      },
+      {
+        "start_sample": 1088000,
+        "end_sample": 1152000,
+        "scores": {
+          "speech": 0.698546,
+          "singing": 0.000141,
+          "laughing": 0.000358,
+          "crying_baby": 0.000478,
+          "coughing": 0.000389,
+          "sneezing": 0.000535,
+          "breathing": 0.141734
+        },
+        "top_categories": [
+          "speech",
+          "breathing",
+          "sneezing"
+        ]
+      },
+      {
+        "start_sample": 1120000,
+        "end_sample": 1184000,
+        "scores": {
+          "speech": 0.659957,
+          "singing": 0.000172,
+          "laughing": 0.002223,
+          "crying_baby": 0.00241,
+          "coughing": 0.032849,
+          "sneezing": 0.006268,
+          "breathing": 0.018509
+        },
+        "top_categories": [
+          "speech",
+          "coughing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1152000,
+        "end_sample": 1216000,
+        "scores": {
+          "speech": 0.563383,
+          "singing": 0.001525,
+          "laughing": 0.000654,
+          "crying_baby": 0.000619,
+          "coughing": 0.001652,
+          "sneezing": 0.000916,
+          "breathing": 0.003851
+        },
+        "top_categories": [
+          "speech",
+          "breathing",
+          "coughing"
+        ]
+      },
+      {
+        "start_sample": 1184000,
+        "end_sample": 1248000,
+        "scores": {
+          "speech": 0.487468,
+          "singing": 0.000906,
+          "laughing": 0.00072,
+          "crying_baby": 0.000428,
+          "coughing": 0.001495,
+          "sneezing": 0.000763,
+          "breathing": 0.002099
+        },
+        "top_categories": [
+          "speech",
+          "breathing",
+          "coughing"
+        ]
+      },
+      {
+        "start_sample": 1216000,
+        "end_sample": 1280000,
+        "scores": {
+          "speech": 0.46234,
+          "singing": 0.001305,
+          "laughing": 0.000471,
+          "crying_baby": 0.000366,
+          "coughing": 0.003416,
+          "sneezing": 0.000658,
+          "breathing": 0.004688
+        },
+        "top_categories": [
+          "speech",
+          "breathing",
+          "coughing"
+        ]
+      },
+      {
+        "start_sample": 1248000,
+        "end_sample": 1312000,
+        "scores": {
+          "speech": 0.480823,
+          "singing": 0.001597,
+          "laughing": 0.000546,
+          "crying_baby": 0.001273,
+          "coughing": 0.003597,
+          "sneezing": 0.001445,
+          "breathing": 0.142414
+        },
+        "top_categories": [
+          "speech",
+          "breathing",
+          "coughing"
+        ]
+      },
+      {
+        "start_sample": 1280000,
+        "end_sample": 1344000,
+        "scores": {
+          "speech": 0.247888,
+          "singing": 0.01215,
+          "laughing": 0.000379,
+          "crying_baby": 0.000601,
+          "coughing": 0.002126,
+          "sneezing": 0.001306,
+          "breathing": 0.038761
+        },
+        "top_categories": [
+          "speech",
+          "breathing",
+          "singing"
+        ]
+      },
+      {
+        "start_sample": 1312000,
+        "end_sample": 1376000,
+        "scores": {
+          "speech": 0.059848,
+          "singing": 0.011995,
+          "laughing": 0.000433,
+          "crying_baby": 0.002485,
+          "coughing": 0.006255,
+          "sneezing": 0.000743,
+          "breathing": 0.015145
+        },
+        "top_categories": [
+          "speech",
+          "breathing",
+          "singing"
+        ]
+      },
+      {
+        "start_sample": 1344000,
+        "end_sample": 1408000,
+        "scores": {
+          "speech": 0.243408,
+          "singing": 0.018566,
+          "laughing": 0.001275,
+          "crying_baby": 0.003787,
+          "coughing": 0.002595,
+          "sneezing": 0.002923,
+          "breathing": 0.051745
+        },
+        "top_categories": [
+          "speech",
+          "breathing",
+          "singing"
+        ]
+      },
+      {
+        "start_sample": 1376000,
+        "end_sample": 1440000,
+        "scores": {
+          "speech": 0.153656,
+          "singing": 0.038472,
+          "laughing": 0.001706,
+          "crying_baby": 0.001844,
+          "coughing": 0.000735,
+          "sneezing": 0.003782,
+          "breathing": 0.444248
+        },
+        "top_categories": [
+          "breathing",
+          "speech",
+          "singing"
+        ]
+      },
+      {
+        "start_sample": 1408000,
+        "end_sample": 1472000,
+        "scores": {
+          "speech": 0.069773,
+          "singing": 0.015593,
+          "laughing": 0.000492,
+          "crying_baby": 0.001625,
+          "coughing": 0.00561,
+          "sneezing": 0.000599,
+          "breathing": 0.008019
+        },
+        "top_categories": [
+          "speech",
+          "singing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1440000,
+        "end_sample": 1504000,
+        "scores": {
+          "speech": 0.056231,
+          "singing": 0.045495,
+          "laughing": 0.000358,
+          "crying_baby": 0.001796,
+          "coughing": 0.004126,
+          "sneezing": 0.000385,
+          "breathing": 0.011325
+        },
+        "top_categories": [
+          "speech",
+          "singing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1472000,
+        "end_sample": 1536000,
+        "scores": {
+          "speech": 0.038082,
+          "singing": 0.091995,
+          "laughing": 0.000641,
+          "crying_baby": 0.00318,
+          "coughing": 0.002566,
+          "sneezing": 0.000348,
+          "breathing": 0.030919
+        },
+        "top_categories": [
+          "singing",
+          "speech",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1504000,
+        "end_sample": 1568000,
+        "scores": {
+          "speech": 0.063099,
+          "singing": 0.130892,
+          "laughing": 0.000465,
+          "crying_baby": 0.003923,
+          "coughing": 0.001419,
+          "sneezing": 0.000173,
+          "breathing": 0.003451
+        },
+        "top_categories": [
+          "singing",
+          "speech",
+          "crying_baby"
+        ]
+      },
+      {
+        "start_sample": 1536000,
+        "end_sample": 1600000,
+        "scores": {
+          "speech": 0.046437,
+          "singing": 0.035764,
+          "laughing": 0.000874,
+          "crying_baby": 0.007704,
+          "coughing": 0.004051,
+          "sneezing": 0.00022,
+          "breathing": 0.004396
+        },
+        "top_categories": [
+          "speech",
+          "singing",
+          "crying_baby"
+        ]
+      },
+      {
+        "start_sample": 1568000,
+        "end_sample": 1632000,
+        "scores": {
+          "speech": 0.014901,
+          "singing": 0.118169,
+          "laughing": 0.000552,
+          "crying_baby": 0.003825,
+          "coughing": 0.00175,
+          "sneezing": 0.000143,
+          "breathing": 0.004502
+        },
+        "top_categories": [
+          "singing",
+          "speech",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1600000,
+        "end_sample": 1664000,
+        "scores": {
+          "speech": 0.031553,
+          "singing": 0.040815,
+          "laughing": 0.000205,
+          "crying_baby": 0.000876,
+          "coughing": 0.003103,
+          "sneezing": 0.000267,
+          "breathing": 0.003336
+        },
+        "top_categories": [
+          "singing",
+          "speech",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1632000,
+        "end_sample": 1696000,
+        "scores": {
+          "speech": 0.272221,
+          "singing": 0.054592,
+          "laughing": 0.00057,
+          "crying_baby": 0.001107,
+          "coughing": 0.000711,
+          "sneezing": 0.000203,
+          "breathing": 0.003871
+        },
+        "top_categories": [
+          "speech",
+          "singing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1664000,
+        "end_sample": 1728000,
+        "scores": {
+          "speech": 0.656147,
+          "singing": 0.009413,
+          "laughing": 0.001934,
+          "crying_baby": 0.000679,
+          "coughing": 0.000663,
+          "sneezing": 0.000921,
+          "breathing": 0.002289
+        },
+        "top_categories": [
+          "speech",
+          "singing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1696000,
+        "end_sample": 1760000,
+        "scores": {
+          "speech": 0.611842,
+          "singing": 0.000462,
+          "laughing": 0.002811,
+          "crying_baby": 0.000722,
+          "coughing": 0.038011,
+          "sneezing": 0.002491,
+          "breathing": 0.006974
+        },
+        "top_categories": [
+          "speech",
+          "coughing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1728000,
+        "end_sample": 1792000,
+        "scores": {
+          "speech": 0.584874,
+          "singing": 0.000146,
+          "laughing": 0.000687,
+          "crying_baby": 0.000492,
+          "coughing": 0.021392,
+          "sneezing": 0.0051,
+          "breathing": 0.009475
+        },
+        "top_categories": [
+          "speech",
+          "coughing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1760000,
+        "end_sample": 1824000,
+        "scores": {
+          "speech": 0.632317,
+          "singing": 0.000232,
+          "laughing": 0.001389,
+          "crying_baby": 0.000855,
+          "coughing": 0.030837,
+          "sneezing": 0.001465,
+          "breathing": 0.011571
+        },
+        "top_categories": [
+          "speech",
+          "coughing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1792000,
+        "end_sample": 1856000,
+        "scores": {
+          "speech": 0.604656,
+          "singing": 0.000247,
+          "laughing": 0.001632,
+          "crying_baby": 0.00142,
+          "coughing": 0.050297,
+          "sneezing": 0.006103,
+          "breathing": 0.022906
+        },
+        "top_categories": [
+          "speech",
+          "coughing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1824000,
+        "end_sample": 1888000,
+        "scores": {
+          "speech": 0.653925,
+          "singing": 0.000676,
+          "laughing": 0.00194,
+          "crying_baby": 0.00218,
+          "coughing": 0.049791,
+          "sneezing": 0.004281,
+          "breathing": 0.044137
+        },
+        "top_categories": [
+          "speech",
+          "coughing",
+          "breathing"
+        ]
+      },
+      {
+        "start_sample": 1856000,
+        "end_sample": 1920000,
+        "scores": {
+          "speech": 0.671968,
+          "singing": 0.000298,
+          "laughing": 0.001782,
+          "crying_baby": 0.000853,
+          "coughing": 0.016625,
+          "sneezing": 0.004361,
+          "breathing": 0.030036
+        },
+        "top_categories": [
+          "speech",
+          "breathing",
+          "coughing"
+        ]
+      }
+    ]
+  },
+  "no_automatic_dubbing_actions": true
+}

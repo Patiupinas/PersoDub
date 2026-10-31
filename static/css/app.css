@@ -3057,3 +3057,8 @@
 .overdub-confirm { display: flex; align-items: flex-start; gap: 10px; margin: 13px 0; }
 .overdub-confirm input { margin-top: 3px; }
 @media (max-width: 550px) { .overdub-row { grid-template-columns: 1fr 1fr; gap: 6px; } .overdub-row select { grid-column: 1 / -1; } }
+
+
+/* Long videos keep only one bounded page of review controls in the DOM. */
+.overdub-pages { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 0; }
+.overdub-pages span { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }

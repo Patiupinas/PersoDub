@@ -132,6 +132,54 @@ pipeline and the Perso cloud path remain unchanged. All strings and controls
 are available in the desktop UI; new untranslated strings fall back to English
 under a non-English UI locale.
 
+## Long-form lessons (hours, not only short videos)
+
+The target use case includes **2-6-hour vocal lessons**, which can mix
+explanations, live examples, singing, humming, pauses and unrelated audio.
+
+The first scaling step in this branch:
+
+- AST consumes mono 16 kHz audio as a **stream from FFmpeg**, with a bounded
+  four-second window and two-second stride. The earlier hard-coded 30-minute
+  limit and full mono intermediate WAV are removed. The source PCM SHA and
+  original 48 kHz clock remain the authority.
+- Observation-to-suggestion matching is now indexed by sorted window centers
+  rather than searching the entire AST timeline for each two-second bin.
+  Transcript cue suggestions likewise use merged cue ranges and a sweep.
+  Synthetic 6-hour timelines exercise both paths.
+- The review UI renders a maximum of **100 editable intervals at a time**.
+  The full event partition, manual edits, and global sample indices remain
+  intact across pages and in the submitted export plan.
+- AST process timeouts scale with video duration instead of always stopping
+  at 900 seconds, capped at twelve hours. AST still runs in one HTTP operation;
+  this is a *pilot*, not a resumable long-running analysis scheduler.
+- Before export, the backend checks room for four 48 kHz stereo PCM copies,
+  two potential MP4 copies and a fixed scratch margin. It rejects sources
+  beyond the current single-WAV RIFF capacity *before extraction* instead of
+  allowing a truncated/corrupt WAV.
+
+**Not yet supported:** source audio requiring more than one standard RIFF WAV
+(roughly 6 hours 12 minutes at 48 kHz PCM16 stereo). Multi-chapter decoding,
+mixing, source-clock-preserving assembly, and checkpoints for AST analysis are
+needed to remove this limit. Synthetic long-clock tests are not equivalent
+to actually dubbing and exporting a six-hour recording.
+
+**Critical throughput work remaining:** the full local pipeline still uses
+Qwen's `Best of 4` on every translated utterance if that quality mode is
+selected. A multi-hour lesson may take far longer than the source duration.
+Before calling long-form production ready, classify protected vocal exercises
+**before TTS**, synthesize only the speech spans, reuse completed voice lines
+and select additional takes based on measured quality rather than routinely
+generating four versions. Benchmark `Fast` versus selective retries against
+source-voice similarity and completeness; changing the quality policy without
+measuring it is not part of this branch.
+
+Release acceptance still needs independent source-bound test videos of
+2, 4 and 6 hours, simulated interruptions at every stage, checks of
+resumability, peak RSS/disk use, sample-clock drift at section boundaries,
+two-track MP4 integrity, duration of synthesis, and translated speech vs.
+preserved vocal-exercise correctness.
+
 ### Local model replay evidence
 
 On 2026-10-31, the new AST adapter processed 60 s of the previously selected

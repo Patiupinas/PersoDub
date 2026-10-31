@@ -3,6 +3,7 @@
 Raw event inference is not an A4 decision. The suggested action is separate
 from the always-unapproved action field. All boundaries use original 48k PCM.
 """
+import bisect
 import hashlib
 import json
 import math
@@ -42,6 +43,7 @@ def _verify_observations(record, frames, sha):
     ):
         raise OverdubError("AST observations do not match this original audio")
     previous = -1
+    previous_center = -1.0
     for row in record["windows"]:
         if type(row) is not dict or set(row) != {"start_frame", "end_frame", "scores"}:
             raise OverdubError("Unexpected AST window fields")
@@ -52,8 +54,12 @@ def _verify_observations(record, frames, sha):
             end - start > WINDOW_FRAMES
         ):
             raise OverdubError("AST timestamps are not ordered source PCM frames")
+        center = (start + end) / 2
+        if center <= previous_center:
+            raise OverdubError("AST window centers are not in time order")
         _score_top(row["scores"])
         previous = start
+        previous_center = center
     return record["windows"]
 
 
@@ -73,13 +79,19 @@ def _compress(rows):
 def model_suggestions(frames, sha, observations):
     """Use closest 4-second AST observation for each 2-second review bin."""
     windows = _verify_observations(observations, frames, sha)
+    centers = [(row["start_frame"] + row["end_frame"]) / 2 for row in windows]
     rows = []
     for start in range(0, frames, BIN_FRAMES):
         end = min(start + BIN_FRAMES, frames)
         center = (start + end) / 2
-        sample = min(windows, key=lambda r: abs(
-            (r["start_frame"] + r["end_frame"]) / 2 - center
-        ))
+        at = bisect.bisect_left(centers, center)
+        # Resolve equal-distance ties toward the earlier observation, as in
+        # the original linear nearest-window search.
+        nearest = min(
+            (j for j in (at - 1, at) if 0 <= j < len(windows)),
+            key=lambda j: (abs(centers[j] - center), j),
+        )
+        sample = windows[nearest]
         kind, score = _score_top(sample["scores"])
         available = sample["start_frame"] <= center < sample["end_frame"]
         rows.append({
@@ -105,10 +117,22 @@ def transcript_suggestions(frames, spans):
             continue
         cues.append((start, end))
         edges.update((start, end))
+    # Merge speech cues once, then advance a cursor along their union. A
+    # multi-hour lesson can contain thousands of subtitle cues; scanning all
+    # cues for every interval becomes quadratic at that scale.
+    merged = []
+    for start, end in sorted(cues):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
     rows = []
     endpoints = sorted(edges)
+    cue_i = 0
     for start, end in zip(endpoints, endpoints[1:]):
-        matched = any(a < end and b > start for a, b in cues)
+        while cue_i < len(merged) and merged[cue_i][1] <= start:
+            cue_i += 1
+        matched = cue_i < len(merged) and merged[cue_i][0] < end
         rows.append({
             "start_frame": start, "end_frame": end, "action": "REVIEW",
             "suggested_action": "TRANSLATE" if matched else "REVIEW",

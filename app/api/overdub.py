@@ -6,7 +6,9 @@ are separately labelled observations; neither STT nor AST grants A4 permission.
 import hashlib
 import json
 import logging
+import math
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -34,6 +36,37 @@ router = APIRouter()
 logger = logging.getLogger("persodub.api.overdub")
 _EXPORT_LOCK = threading.Lock()
 _FILE_RE = re.compile(r"^finished-overdub(?:-[0-9]+)?\.mp4$")
+PCM_BYTES_PER_SECOND = 48000 * 2 * 2
+# Keep a margin for RIFF metadata (WAV length fields are 32-bit unsigned).
+MAX_RIFF_PCM_BYTES = (1 << 32) - (1 << 20)
+AST_MIN_TIMEOUT_SECONDS = 900.0
+AST_MAX_TIMEOUT_SECONDS = 12 * 3600.0
+
+
+def _audio_size(duration):
+    """Estimate a complete stereo source PCM allocation without decoding it."""
+    if type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0:
+        raise OverdubError("Cannot determine the original video duration")
+    required = math.ceil(duration * PCM_BYTES_PER_SECOND)
+    if required > MAX_RIFF_PCM_BYTES:
+        raise OverdubError(
+            "This recording exceeds the single-WAV export limit; "
+            "segmented long-form Overdub export is required"
+        )
+    return required
+
+
+def _check_export_room(source, work, duration):
+    """Budget for four decoded WAVs and two temporary video copies."""
+    pcm = _audio_size(duration)
+    needed = pcm * 4 + source.stat().st_size * 2 + 256 * 1024 * 1024
+    if shutil.disk_usage(work).free < needed:
+        raise OverdubError("Not enough free disk space for the Overdub export")
+
+
+def _ast_timeout(duration):
+    """Allow long-form analysis to scale beyond the former fixed 900s limit."""
+    return max(AST_MIN_TIMEOUT_SECONDS, min(AST_MAX_TIMEOUT_SECONDS, duration * 4))
 
 
 class PreviewRequest(BaseModel):
@@ -73,7 +106,9 @@ def _source_preview(source, work, analyze=False):
     """Decode the current cut from source each time; never trust stale plan WAV."""
     with tempfile.TemporaryDirectory(prefix="overdub-preview-", dir=str(work)) as scratch:
         wav = Path(scratch) / "source.wav"
-        extract_original_pcm(source, wav, duration=media.video_duration(str(source)))
+        duration = media.video_duration(str(source))
+        _audio_size(duration)
+        extract_original_pcm(source, wav, duration=duration)
         with wave.open(str(wav), "rb") as f:
             frames = f.getnframes()
         digest = hashlib.sha256()
@@ -96,7 +131,7 @@ def _source_preview(source, work, analyze=False):
                      "--original", str(wav), "--model-dir", model,
                      "--output", str(observed_path)],
                     cwd=str(Path(__file__).resolve().parents[2]),
-                    check=True, timeout=900, capture_output=True, text=True,
+                    check=True, timeout=_ast_timeout(duration), capture_output=True, text=True,
                 )
                 observed = json.loads(observed_path.read_text(encoding="utf-8"))
                 suggestions = model_suggestions(frames, source_sha, observed)
@@ -140,6 +175,9 @@ def overdub_export(jid: str, request: ExportRequest):
         profile = OverdubLevels(
             request.original_speech_db, request.dub_speech_db, request.fade_ms
         )
+        # Long-form jobs need room for several audio and container copies
+        # before the first potentially multi-hour decode begins.
+        _check_export_room(source, work, media.video_duration(str(source)))
         # Re-read the source exactly before allowing any new rendered artifact.
         current = _source_preview(source, work, analyze=False)
         if request.source_wav_sha256 != current["source_wav_sha256"] or (

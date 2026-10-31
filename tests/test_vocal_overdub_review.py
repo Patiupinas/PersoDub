@@ -116,3 +116,41 @@ def test_invalid_review_partition_refused():
             {"start_frame": 0, "end_frame": 3 * FRAME, "action": "TRANSLATE"},
             {"start_frame": 4 * FRAME, "end_frame": 8 * FRAME, "action": "PRESERVE"},
         ])
+
+
+def test_six_hour_ast_suggestions_and_transcript_cues_scale_without_quadratic_scans():
+    from app.vocal_overdub_review import model_suggestions, transcript_suggestions
+
+    duration = 6 * 3600
+    frames = duration * FRAME
+    speech = {kind: (0.95 if kind == "speech" else 0.05) for kind in KINDS}
+    singing = {kind: (0.95 if kind == "singing" else 0.05) for kind in KINDS}
+    observations = {
+        "schema_version": 1, "sample_rate": FRAME,
+        "total_frames": frames, "source_wav_sha256": SOURCE,
+        "model": "MIT/ast-finetuned-audioset-12-12-0.447",
+        "model_weights_sha256": MODEL_SHA,
+        "windows": [
+            {
+                "start_frame": start * FRAME,
+                "end_frame": min(frames, (start + 4) * FRAME),
+                "scores": speech if (start // 2) % 2 == 0 else singing,
+            }
+            for start in range(0, duration - 3, 2)
+        ],
+    }
+    rows = model_suggestions(frames, SOURCE, observations)
+    assert len(rows) > 10000
+    assert rows[0]["start_frame"] == 0
+    assert rows[-1]["end_frame"] == frames
+    assert all(row["action"] == "REVIEW" for row in rows)
+    assert all(a["end_frame"] == b["start_frame"] for a, b in zip(rows, rows[1:]))
+
+    # Thousands of cues with intentionally reversed input order are legal.
+    cues = [(float(start), float(start + 1)) for start in range(0, duration, 4)]
+    fallback = transcript_suggestions(frames, list(reversed(cues)))
+    assert fallback[0]["start_frame"] == 0
+    assert fallback[-1]["end_frame"] == frames
+    assert any(row["suggested_action"] == "TRANSLATE" for row in fallback)
+    assert any(row["suggested_action"] == "REVIEW" for row in fallback)
+    assert all(a["end_frame"] == b["start_frame"] for a, b in zip(fallback, fallback[1:]))

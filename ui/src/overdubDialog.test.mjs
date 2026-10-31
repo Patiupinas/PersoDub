@@ -166,3 +166,43 @@ test("dialog markup exposes Overdub only through the existing export screen", ()
     "overdubList", "overdubReviewed", "overdubExport", "overdubClose",
   ]) assert.match(page, new RegExp(`id="${id}"`));
 });
+
+test("multi-hour Overdub review keeps a bounded DOM page and stable global actions", async (t) => {
+  const segments = 6 * 3600 / 2;
+  const hints = Array.from({ length: segments }, (_, i) => ({
+    start_frame: i * 2 * FRAME, end_frame: (i + 1) * 2 * FRAME,
+    action: "REVIEW", suggested_action: i % 2 ? "PRESERVE" : "TRANSLATE",
+    hint: i % 2 ? "singing" : "speech", score: 0.9,
+  }));
+  const h = harness({
+    response: { ...preview, total_frames: segments * 2 * FRAME, suggestions: hints },
+  });
+  t.after(h.reset);
+  await h.modal.open("abc");
+  assert.equal(h.$("overdubPageLabel").textContent, "1-100 / 10800");
+  assert.equal(h.$("overdubPagePrev").disabled, true);
+  assert.equal(h.$("overdubPageNext").disabled, false);
+  assert.equal([...h.$("overdubList").innerHTML.matchAll(/data-od-index/g)].length, 100);
+  assert.doesNotMatch(h.$("overdubList").innerHTML, /data-od-index="101"/);
+  h.$("overdubList").listeners.change({
+    target: { closest: () => ({ dataset: { odIndex: "3" }, value: "PRESERVE" }) },
+  });
+  h.$("overdubPageNext").listeners.click();
+  assert.equal(h.$("overdubPageLabel").textContent, "101-200 / 10800");
+  assert.match(h.$("overdubList").innerHTML, /data-od-index="101"/);
+  h.$("overdubList").listeners.change({
+    target: { closest: () => ({ dataset: { odIndex: "102" }, value: "TRANSLATE" }) },
+  });
+  h.$("overdubPagePrev").listeners.click();
+  assert.match(h.$("overdubList").innerHTML, /data-od-index="3"/);
+  assert.match(h.$("overdubList").innerHTML, /<option value="PRESERVE" selected>/);
+  assert.equal([...h.$("overdubList").innerHTML.matchAll(/data-od-index/g)].length, 100);
+  // Every reviewed action remains in the full source-clock plan on export.
+  h.$("overdubReviewed").checked = true;
+  h.$("overdubReviewed").listeners.change();
+  await h.$("overdubExport").listeners.click();
+  assert.equal(h.calls[1].body.events.length, segments);
+  assert.equal(h.calls[1].body.events[3].action, "PRESERVE");
+  assert.equal(h.calls[1].body.events[102].action, "TRANSLATE");
+  assert.equal(h.calls[1].body.events.at(-1).end_frame, 6 * 3600 * FRAME);
+});

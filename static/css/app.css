@@ -3037,3 +3037,23 @@
   .acct-chip { font-size: 11px; white-space: nowrap; }
   /* The account row stands first once the key row above it hides: no line over it. */
   #persoKeyRow[hidden] + .set-row { border-top: none; }
+
+/* Opt-in Overdub editor stays separate from the regular download list. */
+.overdub-export-pick { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
+.overdub-export-pick[hidden] { display: none; }
+.overdub-export-pick span { font-size: 12px; color: var(--muted, #777); }
+.overdub-modal { width: min(820px, 94vw); max-height: 88vh; }
+.overdub-modal .modal-body { overflow-y: auto; }
+.overdub-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.overdub-controls input { width: 110px; padding: 6px; }
+.overdub-list { max-height: 33vh; overflow: auto; border: 1px solid var(--border, #ddd); border-radius: 6px; }
+.overdub-row { display: grid; grid-template-columns: 110px minmax(80px, 1fr) minmax(160px, 2fr); align-items: center; gap: 12px; padding: 7px 10px; border-bottom: 1px solid var(--border, #ddd); font-size: 13px; }
+.overdub-row:last-child { border-bottom: 0; }
+.overdub-row select { width: 100%; min-width: 0; }
+.overdub-clock { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.overdub-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overdub-levels { display: grid; grid-template-columns: minmax(140px, 1fr) 100px; gap: 9px 12px; align-items: center; margin: 12px 0; font-size: 13px; }
+.overdub-levels input { min-width: 0; padding: 6px; }
+.overdub-confirm { display: flex; align-items: flex-start; gap: 10px; margin: 13px 0; }
+.overdub-confirm input { margin-top: 3px; }
+@media (max-width: 550px) { .overdub-row { grid-template-columns: 1fr 1fr; gap: 6px; } .overdub-row select { grid-column: 1 / -1; } }

@@ -213,7 +213,7 @@ test("the first row is ticked until the user says otherwise, for each kind on it
 
 // ---- the dialog on a fake page ---------------------------------------------
 
-function harness({ ctx, stored = {}, shell = null, fetchFn = null } = {}) {
+function harness({ ctx, stored = {}, shell = null, fetchFn = null, onOverdub = null } = {}) {
   const steps = [];
   const els = {};
   const $ = (id) => (els[id] ||= {
@@ -229,7 +229,7 @@ function harness({ ctx, stored = {}, shell = null, fetchFn = null } = {}) {
   const asked = [];      // what was fetched first
   const followed = [];   // what was handed to the browser
   const api = initExportDialog({
-    $, getContext: async () => ctx, storage, shell,
+    $, getContext: async () => ctx, storage, shell, onOverdub,
     fetchFn: fetchFn || (async (href) => { asked.push(href); return { ok: true }; }),
     follow: (href, name) => followed.push([href, name]),
     record: (name, props) => steps.push([name, props]),
@@ -666,7 +666,7 @@ test("Change and Use default stand aside while files go out, and are not there w
 test("the dialog says what comes out under its title, and its two words are words that wrap together", async (t) => {
   const page = readFileSync(new URL("../../static/index.html", import.meta.url), "utf8");
   const dialog = page.slice(page.indexOf('<div class="modal-overlay" id="exportOverlay">'));
-  assert.match(dialog, /<div class="modal-inner">\s*(<!--[^]*?-->\s*)?<p class="export-headline" data-i18n>Each checked row becomes one file<\/p>\s*<div class="export-list" id="exportList"><\/div>/);
+  assert.match(dialog, /<div class="modal-inner">\s*(<!--[^]*?-->\s*)?<p class="export-headline" data-i18n>Each checked row becomes one file<\/p>\s*<div id="exportOverdubAction"[^>]*>[^]*?<\/div>\s*<div class="export-list" id="exportList"><\/div>/);
   assert.match(dialog, /<p class="export-where"><span id="exportWhere"><\/span><span id="exportFolder" hidden> · <span class="export-links"><button type="button" class="erase-link" id="exportFolderPick" data-i18n>Change<\/button><span id="exportFolderResetWrap" hidden> · <button type="button" class="erase-link" id="exportFolderReset" data-i18n>Use default<\/button><\/span><\/span><\/span><\/p>/);
   const css = readFileSync(new URL("../../static/css/app.css", import.meta.url), "utf8");
   assert.match(css, /\.export-where \.export-links \{ white-space: nowrap; \}/);
@@ -713,4 +713,29 @@ test("a download is a tool step: export from a dubbing, burn from a subtitles pr
   failing.tick("voice");
   await failing.go();
   assert.deepEqual(failing.steps.at(-1), ["tool_finished", { tool: "export", outcome: "failed", files: 1 }]);
+});
+
+
+test("Overdub choice appears only for finished local dubbings and opens review", async () => {
+  const opened = [];
+  const local = harness({
+    ctx: { ...STEMS, canOverdub: true },
+    onOverdub: (jid) => opened.push(jid),
+  });
+  await local.api.open();
+  assert.equal(local.$("exportOverdubAction").hidden, false);
+  local.$("exportOverdubBtn").listeners.click();
+  assert.deepEqual(opened, ["J1"]);
+  assert.equal(local.$("exportOverlay").classList.contains("open"), false);
+
+  for (const ctx of [
+    { ...STEMS, canOverdub: false },
+    { kind: "draft" },
+    { kind: "erase" },
+  ]) {
+    const other = harness({ ctx, onOverdub: (jid) => opened.push(jid) });
+    await other.api.open();
+    assert.equal(other.$("exportOverdubAction").hidden, true);
+  }
+  assert.deepEqual(opened, ["J1"]);
 });

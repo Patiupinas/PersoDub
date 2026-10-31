@@ -53,6 +53,7 @@ import { initDraftSetup } from "./draftSetup.mjs";
 import { initLanguageRow } from "./languageRow.mjs";
 import { initConfirmDialogs } from "./confirmDialogs.mjs";
 import { initExportDialog } from "./exportDialog.mjs";
+import { initOverdubDialog } from "./overdubDialog.mjs";
 import { clearDraft, getDraft, keptSeconds, onDraftChange, setDraft, setRanges, setDraftRatio } from "./draft.mjs";
 import { readKept, keepDraft, dropKept, draftMark } from "./keptDrafts.mjs";
 import { initRatioUi } from "./ratio.mjs";
@@ -2137,6 +2138,7 @@ async function exportContext() {
   const { preset: subPreset, query: posQ } = subtitles.exportParams();
   return {
     kind: "dub", jobId: job.id, target, mark, hasSrt, hasScript, stems, project: job.project, fromLink: !!job.from_link, ratio,
+    canOverdub: job.status === "done" && job.dub_mode !== "perso",
     // The script's file name: the project as the screens show it, and both languages.
     title: shownName(job), source: job.source_lang,
     // The same URL the player is on, remake mark and all: without it a download
@@ -2149,8 +2151,10 @@ async function exportContext() {
     where: whereDownloadsGo(job), day: job.day,
   };
 }
+const overdubDialog = initOverdubDialog({ $ });
 const exportDialog = initExportDialog({
   $, getContext: exportContext, storage: localStorage, shell: window.persodubShell || null,
+  onOverdub: (jid) => overdubDialog.open(jid),
 });
 $("exportBtn").addEventListener("click", () => exportDialog.open());
 // Why Export is dim, on its tip. Three places switch it on and off, so the tip

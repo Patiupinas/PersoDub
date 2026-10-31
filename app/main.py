@@ -34,6 +34,7 @@ from app.api import erase as erase_api
 from app.api import media as media_api
 from app.api import misc as misc_api
 from app.api import models as models_api
+from app.api import overdub as overdub_api
 from app.api import report as report_api
 from app.api import results as results_api
 from app.api import script as script_api
@@ -158,6 +159,7 @@ app.include_router(captions_api.router)
 app.include_router(media_api.router)
 app.include_router(misc_api.router)
 app.include_router(models_api.router)
+app.include_router(overdub_api.router)
 app.include_router(report_api.router)
 app.include_router(results_api.router)
 app.include_router(script_api.router)

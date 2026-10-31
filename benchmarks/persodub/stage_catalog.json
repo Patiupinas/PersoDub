@@ -1,0 +1,454 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "automatic_downloads": false,
+    "model_inference_on_import": false,
+    "benchmarks_require_independent_oracles": true,
+    "holdout_never_for_threshold_tuning": true,
+    "publish_audio_in_git": false,
+    "github_actions": false,
+    "source_clock": "48kHz PCM16 stereo for final Overdub",
+    "status_meanings": {
+      "PASS": "Measured property met frozen threshold only",
+      "FAIL": "Measured property violated threshold",
+      "OBSERVED": "Measured without independent validated threshold/semantic quality",
+      "NOT_RUN": "Optional evidence unavailable",
+      "ERROR": "Invalid input or execution failure"
+    }
+  },
+  "stages": [
+    {
+      "order": 0,
+      "id": "source",
+      "runner_stage": "export",
+      "metric": "source sha256 / stream/duration parity",
+      "gold": "immutable source media, no model output used as truth",
+      "automation": "implemented partial",
+      "dataset": "local source media"
+    },
+    {
+      "order": 1,
+      "id": "separation",
+      "runner_stage": "separation",
+      "metric": "SI-SDR (dB), speech/bed leakage, vocal exercise retention",
+      "gold": "independent isolated stems",
+      "automation": "SI-SDR implemented; leakage pending",
+      "dataset": "MUSDB18-HQ"
+    },
+    {
+      "order": 2,
+      "id": "vocal_events",
+      "runner_stage": "events",
+      "metric": "source-time speech F1; protected singing wrongly translated seconds; unreviewed seconds",
+      "gold": "independently time-stamped speech/singing/exercise intervals",
+      "automation": "implemented",
+      "dataset": "local human-gold mixed lesson; GTSinger + RAVDESS clip labels only"
+    },
+    {
+      "order": 3,
+      "id": "asr",
+      "runner_stage": "asr",
+      "metric": "WER/CER EN DE ES RU; timestamp boundaries separately",
+      "gold": "human/dataset transcript from different engine",
+      "automation": "implemented WER/CER, alignment pending",
+      "dataset": "FLEURS"
+    },
+    {
+      "order": 4,
+      "id": "diarization",
+      "runner_stage": null,
+      "metric": "DER/JER + false splits of a single speaker + miss/false-alarm/overlap",
+      "gold": "independent RTTM speaker intervals; mapping speaker IDs",
+      "automation": "planned",
+      "dataset": "VoxConverse / AMI"
+    },
+    {
+      "order": 5,
+      "id": "translation",
+      "runner_stage": "translation",
+      "metric": "reference chrF/COMET with independent human adequacy, glossary, meaning preservation",
+      "gold": "held-out EN->RU parallel reference plus human review",
+      "automation": "text presence observed; semantic scoring not implemented",
+      "dataset": "FLORES-200 or WMT25 English-Russian"
+    },
+    {
+      "order": 6,
+      "id": "speaker_reference",
+      "runner_stage": "job_audit",
+      "metric": "reference duration, transcript density, speaker purity, cross-lingual EER",
+      "gold": "source recording plus independently established identity",
+      "automation": "physical plausibility audited; EER planned",
+      "dataset": "VoxConverse and real reference sample"
+    },
+    {
+      "order": 7,
+      "id": "tts",
+      "runner_stage": "tts_readback",
+      "metric": "independent Russian ASR WER/CER, native accent MOS, speaker ABX, phoneme error",
+      "gold": "fixed target text, independent ASR, human-blind panel",
+      "automation": "lexical readback implemented; accent ABX pending",
+      "dataset": "fixed Russian phonetic sentences; source English voice references"
+    },
+    {
+      "order": 8,
+      "id": "timing",
+      "runner_stage": "timing",
+      "metric": "start/end MAE, lost pauses, overlapping lines; split by sentence",
+      "gold": "approved independent pause+word boundaries",
+      "automation": "implemented segment boundaries, intra-line pauses pending",
+      "dataset": "human aligned source/target"
+    },
+    {
+      "order": 9,
+      "id": "mixing",
+      "runner_stage": "mix",
+      "metric": "original source component dB, source preservation, fades/crossfade, relative bed LUFS",
+      "gold": "independent synthetic source + known isolated TTS; human music perception",
+      "automation": "source projection implemented for synthetic, not LUFS",
+      "dataset": "synthetic stereo source+voice fixture"
+    },
+    {
+      "order": 10,
+      "id": "export",
+      "runner_stage": "export",
+      "metric": "2 selectable audio streams, source duration drift, video stream, original channel",
+      "gold": "original media and requested replace/overdub",
+      "automation": "implemented structure and duration; acoustic verification pending",
+      "dataset": "tiny FFmpeg-created fixture and real media"
+    },
+    {
+      "order": 11,
+      "id": "longform",
+      "runner_stage": null,
+      "metric": "cold/warm RTF, peak RSS, disk, source clock drift, stage resume, 2/4/6h fidelity",
+      "gold": "whole source, exact hashes and checkpoints, interruption log",
+      "automation": "planned real end-to-end test",
+      "dataset": "2/4/6-hour representative consented lessons"
+    },
+    {
+      "order": 12,
+      "id": "blind_listening",
+      "runner_stage": "human_review",
+      "metric": "native Russian accent MOS, timbre likeness MOS, pause MOS, source-bed audibility MOS",
+      "gold": "3+ independent native-language raters, speaker/rater blinding",
+      "automation": "ratings ingestion implemented, randomized pack pending",
+      "dataset": "fixed 15-30s snippets from same oracle sources"
+    }
+  ],
+  "datasets": [
+    {
+      "id": "FLEURS",
+      "url": "https://huggingface.co/datasets/google/fleurs",
+      "languages": [
+        "en",
+        "de",
+        "es",
+        "ru"
+      ],
+      "oracles": [
+        "sentence transcription"
+      ],
+      "select": "up to 10 preselected test clips per language; speaker disjoint",
+      "data_license": "check release card before export",
+      "suitable_for": [
+        "asr"
+      ],
+      "not_suitable_for": [
+        "timestamp-level speaker overlaps",
+        "vocal exercise boundaries"
+      ]
+    },
+    {
+      "id": "FLORES-200",
+      "url": "https://github.com/facebookresearch/flores",
+      "languages": [
+        "en",
+        "de",
+        "es",
+        "ru"
+      ],
+      "oracles": [
+        "parallel multilingual text"
+      ],
+      "select": "20 held-out pairs; keep exact row IDs; source video context separate",
+      "data_license": "verify benchmark terms",
+      "suitable_for": [
+        "translation"
+      ],
+      "not_suitable_for": [
+        "speech timbre",
+        "audio pacing"
+      ]
+    },
+    {
+      "id": "CoVoST2",
+      "url": "https://github.com/facebookresearch/covost",
+      "languages": [
+        "en",
+        "de",
+        "es",
+        "ru"
+      ],
+      "oracles": [
+        "human transcript",
+        "translation"
+      ],
+      "select": "EN->DE and RU->EN subset if locally available",
+      "data_license": "CC0",
+      "suitable_for": [
+        "speech translation language pairs available"
+      ],
+      "not_suitable_for": [
+        "EN->RU: direction not present in CoVoST2"
+      ]
+    },
+    {
+      "id": "RAVDESS",
+      "url": "https://zenodo.org/records/1188976",
+      "languages": [
+        "en"
+      ],
+      "oracles": [
+        "per-clip speech vs song",
+        "emotion",
+        "actor ID"
+      ],
+      "select": "4 speech+4 sung clips by held-out actors",
+      "data_license": "CC BY-NC-SA 4.0",
+      "suitable_for": [
+        "event class",
+        "emotion",
+        "speaker identity"
+      ],
+      "not_suitable_for": [
+        "mixed continuous speech-to-singing boundary gold"
+      ]
+    },
+    {
+      "id": "VocalSet",
+      "url": "https://zenodo.org/records/1442513",
+      "languages": [
+        "vocal technique"
+      ],
+      "oracles": [
+        "technique label",
+        "singer ID"
+      ],
+      "select": "few short vocal technique excerpts only when rights and individual access confirmed",
+      "data_license": "see record; terms not established",
+      "suitable_for": [
+        "sung vowel protected event"
+      ],
+      "not_suitable_for": [
+        "mixed source speech timing"
+      ]
+    },
+    {
+      "id": "GTSinger",
+      "url": "https://huggingface.co/datasets/GTSinger/GTSinger",
+      "languages": [
+        "en",
+        "de",
+        "es",
+        "ru"
+      ],
+      "oracles": [
+        "phoneme level aligned singing",
+        "technique",
+        "paired speech"
+      ],
+      "select": "one paired speech/singing item per target language if release terms permit",
+      "data_license": "see dataset-specific terms",
+      "suitable_for": [
+        "speech-vs-song",
+        "pitch/exercise retention"
+      ],
+      "not_suitable_for": [
+        "spontaneous lecture timing"
+      ]
+    },
+    {
+      "id": "VoxConverse",
+      "url": "https://mm.kaist.ac.kr/datasets/voxconverse/",
+      "languages": [
+        "en"
+      ],
+      "oracles": [
+        "RTTM speaker boundaries"
+      ],
+      "select": "selected short dev audio with preexisting labels",
+      "data_license": "CC BY 4.0 for research",
+      "suitable_for": [
+        "diarization"
+      ],
+      "not_suitable_for": [
+        "Russian accent MOS"
+      ]
+    },
+    {
+      "id": "AMI",
+      "url": "https://groups.inf.ed.ac.uk/ami/download/",
+      "languages": [
+        "en"
+      ],
+      "oracles": [
+        "meeting transcription",
+        "speaker annotations"
+      ],
+      "select": "two manually annotated meeting segments",
+      "data_license": "manual annotation CC BY 4.0",
+      "suitable_for": [
+        "diarization",
+        "ASR"
+      ],
+      "not_suitable_for": [
+        "vocal exercise"
+      ]
+    },
+    {
+      "id": "MUSDB18-HQ",
+      "url": "https://zenodo.org/records/3338373",
+      "languages": [
+        "song"
+      ],
+      "oracles": [
+        "mixture",
+        "isolated 4 stems"
+      ],
+      "select": "one short test excerpt, not full corpus",
+      "data_license": "educational/research only",
+      "suitable_for": [
+        "separation SI-SDR"
+      ],
+      "not_suitable_for": [
+        "speech diarization"
+      ]
+    },
+    {
+      "id": "local_vocal_lesson",
+      "url": null,
+      "languages": [
+        "en",
+        "ru"
+      ],
+      "oracles": [
+        "source video",
+        "existing TTS lines",
+        "source cue timings are not independent human truth"
+      ],
+      "select": "local-only 234.7s owner test (no media copied to repository)",
+      "data_license": "private/local",
+      "suitable_for": [
+        "export",
+        "timing proxy",
+        "QA report"
+      ],
+      "not_suitable_for": [
+        "native-Russian accent pass without panel"
+      ]
+    }
+  ],
+  "comparative_code": [
+    {
+      "id": "VideoLingo",
+      "url": "https://github.com/Huanshere/VideoLingo",
+      "license": "Apache-2.0",
+      "read_files": [
+        "core/_10_gen_audio.py",
+        "core/_11_merge_audio.py",
+        "core/_12_dub_to_vid.py",
+        "core/tts_backend/estimate_duration.py"
+      ],
+      "adaptation": "Compare segment-duration fitting, inserted silence and separated soundtrack; do not import entire pipeline"
+    },
+    {
+      "id": "pyVideoTrans",
+      "url": "https://github.com/jianchang512/pyvideotrans",
+      "license": "GPL-3.0; source and model licenses separate",
+      "read_files": [
+        "videotrans/task/taskcfg.py"
+      ],
+      "adaptation": "Compare task state, manual stage corrections, multi-backend TTS contracts; source behavior only"
+    },
+    {
+      "id": "WhisperX",
+      "url": "https://github.com/m-bain/whisperX",
+      "license": "BSD-2-Clause",
+      "read_files": [
+        "whisperx/alignment.py"
+      ],
+      "adaptation": "Independent word timestamp alignment and failure fallbacks"
+    },
+    {
+      "id": "F5-TTS",
+      "url": "https://github.com/SWivid/F5-TTS",
+      "license": "code MIT; pretrained weights CC BY-NC",
+      "read_files": [
+        "src/f5_tts/infer/infer_cli.py"
+      ],
+      "adaptation": "Research short reference text alignment; compare inference only with separately approved weights"
+    },
+    {
+      "id": "Chatterbox",
+      "url": "https://github.com/resemble-ai/chatterbox",
+      "license": "MIT",
+      "read_files": [
+        "README.md"
+      ],
+      "adaptation": "Russian-aware cross-language candidate to compare pronunciation and timbre"
+    },
+    {
+      "id": "Demucs",
+      "url": "https://github.com/facebookresearch/demucs",
+      "license": "MIT (archived)",
+      "read_files": [
+        "demucs/separate.py"
+      ],
+      "adaptation": "Reference separation baseline; current PersoDub uses Demucs"
+    }
+  ],
+  "commercial_blackboxes": [
+    {
+      "id": "ElevenLabs Dubbing v2",
+      "url": "https://elevenlabs.io/docs/overview/capabilities/dubbing",
+      "variable": "cloning strength (0-10); stronger cloning may retain original accent",
+      "outputs": "dubbed video, background retained",
+      "experiment": "paired 20-30s en->ru clips; compare strength 3 vs 7 after current plan access"
+    },
+    {
+      "id": "Rask AI",
+      "url": "https://www.rask.ai/api/voice-cloning-api",
+      "variable": "speaker clone and segment edits",
+      "outputs": "voiceover WAV, mixed translated WAV, MP4, subtitle tracks (by plan)",
+      "experiment": "separate its voiceover from background, measure timing and vocals coverage"
+    },
+    {
+      "id": "HeyGen Video Translate",
+      "url": "https://help.heygen.com/en/articles/10029081-how-to-get-started-with-video-translation",
+      "variable": "dynamic duration up to +/-20%",
+      "outputs": "dubbed video, optional captions",
+      "experiment": "A/B with dynamic duration disabled vs enabled, inspect pause/source drift"
+    },
+    {
+      "id": "Deepdub eTTS",
+      "url": "https://github.com/deepdub-ai/deepdub-api",
+      "variable": "targetDuration and accentControl via API, voiceReference",
+      "outputs": "TTS audio via vendor API",
+      "experiment": "same Russian phrase/reference length with duration and accent controls"
+    },
+    {
+      "id": "Captions AI",
+      "url": "https://captions.ai/help/guides/multilingual/dub-video",
+      "variable": "segment volume and translation edits",
+      "outputs": "replacement video, original separate export",
+      "experiment": "short 1-speaker UX comparison, not dual-track standard"
+    },
+    {
+      "id": "RWS/Papercup",
+      "url": "https://www.rws.com/about/news/2025/rws-acquires-papercups-ip/",
+      "variable": "editorial human refinement and prosody in managed localization",
+      "outputs": "vendor process, not directly runnable from published algorithm",
+      "experiment": "research/enterprise-only reference"
+    }
+  ]
+}

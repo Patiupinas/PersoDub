@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "unreviewed_auto_preannotation_suggestions",
+  "source_name": "US Navy Band Vocal Warm-Up, derivative 240p VP9/Opus web video excerpt",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Vocal_Warm-Up_-_United_States_Navy_Band.webm",
+  "audio_derivative": "240p VP9/Opus transcode, 16 kHz mono PCM16 decode",
+  "source_offset_seconds": 60,
+  "sample_rate": 16000,
+  "total_samples": 960000,
+  "source_partial_file_sha256": "57cfb5325c68776ebe1edab6217837e7640a26b2d414fc2e1266e6d87e03445b",
+  "wav_sha256": "d409c8994bf9aa05e05e1ba1ec6bfde9e19e000ad33de34224c9136bbc9afc43",
+  "decoded_pcm_sha256": "4a9ace7fac700764c74cd3215f4b57c5db7fe2ca04bc5f33d68f9b9c80df9e36",
+  "model_sources": [
+    {
+      "role": "acoustic_singing_candidate",
+      "model": "SMAD CRNN",
+      "weights_sha256": "63818291e401ca27616cb29ba3a224b780296ac4af87e6d6b70edb9daa40f5bc",
+      "receptive_field_seconds": 4,
+      "projection_seconds": 1
+    },
+    {
+      "role": "independent_speech_music",
+      "model": "inaSpeechSegmenter v0.8.0 SMN",
+      "weights_sha256": "f04b5e3c86fa2e81666d106b0867350fe7858c7bd006c2a74c27b5b45507e7d8"
+    },
+    {
+      "role": "word_timing_only",
+      "model": "Whisper Small",
+      "weights_sha256": "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794"
+    }
+  ],
+  "asr_words_count": 92,
+  "candidate_events": [
+    {
+      "suggestion_id": "auto_001",
+      "start_sample": 960000,
+      "end_sample": 1008000,
+      "start_sec": 60,
+      "end_sec": 63,
+      "candidate": "speech_candidate",
+      "evidence": [
+        "asr:words",
+        "ina:speech",
+        "smad:speech_noise"
+      ]
+    },
+    {
+      "suggestion_id": "auto_002",
+      "start_sample": 1008000,
+      "end_sample": 1312000,
+      "start_sec": 63,
+      "end_sec": 82,
+      "candidate": "uncertain",
+      "evidence": [
+        "acoustic_boundary",
+        "asr:no_words",
+        "asr:words",
+        "ina:mixed_or_missing",
+        "ina:music",
+        "ina:noEnergy",
+        "ina:speech",
+        "smad:none",
+        "smad:singing_music",
+        "smad:speech_music",
+        "smad:speech_noise"
+      ]
+    },
+    {
+      "suggestion_id": "auto_003",
+      "start_sample": 1312000,
+      "end_sample": 1376000,
+      "start_sec": 82,
+      "end_sec": 86,
+      "candidate": "vocal_demo_candidate",
+      "evidence": [
+        "asr:no_words",
+        "ina:music",
+        "smad:singing_music"
+      ]
+    },
+    {
+      "suggestion_id": "auto_004",
+      "start_sample": 1376000,
+      "end_sample": 1616000,
+      "start_sec": 86,
+      "end_sec": 101,
+      "candidate": "uncertain",
+      "evidence": [
+        "acoustic_boundary",
+        "asr:no_words",
+        "ina:music",
+        "smad:none",
+        "smad:singing_music"
+      ]
+    },
+    {
+      "suggestion_id": "auto_005",
+      "start_sample": 1616000,
+      "end_sample": 1632000,
+      "start_sec": 101,
+      "end_sec": 102,
+      "candidate": "vocal_demo_candidate",
+      "evidence": [
+        "smad:singing_music",
+        "ina:music",
+        "asr:no_words"
+      ]
+    },
+    {
+      "suggestion_id": "auto_006",
+      "start_sample": 1632000,
+      "end_sample": 1728000,
+      "start_sec": 102,
+      "end_sec": 108,
+      "candidate": "uncertain",
+      "evidence": [
+        "acoustic_boundary",
+        "asr:no_words",
+        "asr:words",
+        "ina:mixed_or_missing",
+        "ina:music",
+        "ina:speech",
+        "smad:singing_music",
+        "smad:speech_noise"
+      ]
+    },
+    {
+      "suggestion_id": "auto_007",
+      "start_sample": 1728000,
+      "end_sample": 1904000,
+      "start_sec": 108,
+      "end_sec": 119,
+      "candidate": "speech_candidate",
+      "evidence": [
+        "asr:words",
+        "ina:speech",
+        "smad:speech_noise"
+      ]
+    },
+    {
+      "suggestion_id": "auto_008",
+      "start_sample": 1904000,
+      "end_sample": 1920000,
+      "start_sec": 119,
+      "end_sec": 120,
+      "candidate": "uncertain",
+      "evidence": [
+        "smad:speech_noise",
+        "ina:mixed_or_missing",
+        "asr:words"
+      ]
+    }
+  ],
+  "sample_totals_by_candidate": {
+    "speech_candidate": 224000,
+    "uncertain": 656000,
+    "vocal_demo_candidate": 80000
+  },
+  "note": "Machine prelabels on derivative 16k PCM, NOT independent A1 gold. Requires human review, original video PCM/PTS freeze and semantic explanation classification before A4."
+}

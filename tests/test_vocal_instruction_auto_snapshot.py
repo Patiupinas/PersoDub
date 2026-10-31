@@ -118,6 +118,6 @@ def test_numeric_observation_bundle_contains_no_transcribed_words_or_audio():
     assert len(data["ina"]) == 9
     assert len(data["asr_words"]) == 92
     assert set(data["asr_words"][0]) == {"start_sample", "end_sample", "label"}
-    assert set(x["label"] for x in data["asr_words"]) == {"asr_word"}
+    assert {x["label"] for x in data["asr_words"]} == {"asr_word"}
     assert all(0 <= x["start_sample"] < x["end_sample"] <= data["total_samples"]
                for x in data["asr_words"])

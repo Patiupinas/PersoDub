@@ -272,6 +272,7 @@ function followLink(href, name) {
  * @returns {{ open: (tick?: string[], only?: string[]) => Promise<void>, close: () => void }}
  */
 export function initExportDialog({ $, getContext, storage = null, shell = null,
+                                   onOverdub = null,
                                    fetchFn = (...a) => fetch(...a), follow = followLink, record = recordStep }) {
   const list = $("exportList");
   const where = $("exportWhere");
@@ -294,6 +295,8 @@ export function initExportDialog({ $, getContext, storage = null, shell = null,
   function paint() {
     list.innerHTML = rowsHtml(rows(), fmt, ticked, saved);
     go.disabled = saving || !ticked.length;
+    const overdub = $("exportOverdubAction");
+    if (overdub) overdub.hidden = !ctx || ctx.kind !== "dub" || !ctx.canOverdub || !onOverdub;
     $("exportCloseBtn").disabled = saving;
     // Change, and Use default once a folder is picked; not while files go out.
     $("exportFolder").hidden = saving || !folder;
@@ -406,6 +409,14 @@ export function initExportDialog({ $, getContext, storage = null, shell = null,
     if (a) { e.preventDefault(); toggle(a.dataset.row); }
   });
   go.addEventListener("click", exportTicked);
+  const overdubButton = $("exportOverdubBtn");
+  if (overdubButton) overdubButton.addEventListener("click", () => {
+    if (saving || !ctx || ctx.kind !== "dub" || !ctx.canOverdub || !onOverdub) return;
+    const jid = ctx.jobId;
+    close();
+    onOverdub(jid);
+  });
+
 
   // Change: the computer's own folder picker, through the shell, which keeps
   // the folder for this download and every one after it. Use default: back to

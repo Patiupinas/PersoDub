@@ -22,6 +22,7 @@
 export const WAYS_OUT = {
   projectOverlay: ["projectClose"],
   exportOverlay: ["exportCloseBtn"],
+  overdubOverlay: ["overdubClose"],
   whatsNewOverlay: ["wnOk"],
   helpOverlay: ["helpOk"],
   feedbackOverlay: ["feedbackClose"],

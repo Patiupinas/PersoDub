@@ -92,7 +92,55 @@ result = run_dub(
 
 The exact source PCM and plan are checked before separation, transcription, translation or synthesis. The mode uses the existing `place_lines` anti-overlap and loudness matching, but places TTS over silence. The final stage combines it with the decoded original soundtrack and muxes both selectable tracks. The existing `leakage_gate` remains between speech synthesis and original audio overlay.
 
-**UI:** The desktop New project form does not yet expose an Overdub toggle. This is intentionally an opt-in backend and post-export function until the A1/A4 source event classifier delivers independently verified actions. It does not affect cloud Perso dubbing or the default local export.
+## New review-and-export UI (separate draft PR)
+
+For a finished **local Qwen** project: open **Download**, choose
+**Overdub: original + translation**. This opens a dedicated review dialog:
+
+1. **Prepare** automatically decodes the actual source video to 48 kHz stereo,
+   hashes it and starts with candidate speech time ranges from the existing
+   source-language SRT. Every interval initially has the independent action
+   `REVIEW`, never `TRANSLATE`.
+2. **Suggest events with AST** is available only when the operator explicitly
+   configures a local isolated ML interpreter and the verified cached AST model:
+   `PERSODUB_AST_PYTHON=/path/to/audio-ml-python` and
+   `PERSODUB_AST_MODEL_DIR=/path/to/pinned/MIT-AST-snapshot`.
+   It launches `app.scripts.ast_overdub_observer` with `local_files_only=True`,
+   verifies model weights SHA, observes 4 s windows at a 2 s stride and maps them
+   to coarse suggestions. The source-original SHA and integer 48 kHz frame
+   positions must agree. It never downloads weights, installs new core
+   dependencies or changes the A4 action plan by itself.
+3. Examine each interval. Use **Apply suggestions** for an explicit first
+   pass, change per-row `REVIEW` / `TRANSLATE` / `PRESERVE`, and split
+   intervals at a manually chosen second. Applying suggestions does **not**
+   check the review confirmation or start any export.
+4. Check **I reviewed these intervals**, then export. The API rejects
+   unconfirmed actions, incomplete or overlapping intervals, unknown source
+   SHA, unsupported jobs, and invalid gain combinations. It writes a new
+   immutable approved plan and a separate `finished-overdub*.mp4`.
+   The existing dubbed video and original input stay unchanged.
+
+AST results represent **uncalibrated model clues**, not ground-truth event
+boundaries. Humming and singing may be misclassified as speech; "vocal exercise"
+is still a human-reviewed event decision. Unclassified intervals stay original.
+When AST is unavailable, the user can still manually review split and assign
+all actions with speech-cue suggestions.
+
+**Scope:** This is an opt-in re-export on the existing finished project's
+Download dialog, not a new-project setting. The default local replacement
+pipeline and the Perso cloud path remain unchanged. All strings and controls
+are available in the desktop UI; new untranslated strings fall back to English
+under a non-English UI locale.
+
+### Local model replay evidence
+
+On 2026-10-31, the new AST adapter processed 60 s of the previously selected
+US Navy Band lesson derivative as 29 four-second windows. It agreed on the
+top coarse category with the earlier independent AST implementation in 28/29
+windows (small resampling differences). That is **reproducibility**, not
+labelled boundary accuracy. The reviewer can inspect and override every model
+suggestion; unreviewed model predictions never become a dub decision.
+
 
 ## Verification
 

@@ -41,6 +41,7 @@ ROUTES = [
     ('GET', '/api/downloads/{did}/video'),
     ('GET', '/api/dub/jobs'),
     ('GET', '/api/dub/jobs/{jid}'),
+    ('GET', '/api/dub/jobs/{jid}/overdub/files/{name}'),
     ('GET', '/api/dub/jobs/{jid}/perso/edit'),
     ('GET', '/api/dub/jobs/{jid}/script'),
     ('GET', '/api/dub/jobs/{jid}/script.xlsx'),   # the script as Perso's spreadsheet (app/api/script.py)
@@ -103,6 +104,8 @@ ROUTES = [
     ('POST', '/api/downloads/{did}/save'),
     ('POST', '/api/dub/jobs/{jid}/again'),
     ('POST', '/api/dub/jobs/{jid}/cancel'),
+    ('POST', '/api/dub/jobs/{jid}/overdub/export'),
+    ('POST', '/api/dub/jobs/{jid}/overdub/prepare'),
     ('POST', '/api/dub/jobs/{jid}/perso/materialize'),
     ('POST', '/api/dub/jobs/{jid}/perso/proofread'),
     ('POST', '/api/dub/jobs/{jid}/perso/script/{line}/fit'),

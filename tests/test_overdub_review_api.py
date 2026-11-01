@@ -281,3 +281,26 @@ def test_longform_export_requires_room_for_all_audio_and_video_intermediates(loc
     })
     assert response.status_code == 422
     assert "free disk" in response.json()["detail"]
+
+
+def test_original_a4_source_stream_has_inline_byte_range(local_job):
+    from pathlib import Path
+
+    src = Path(local_job["work_dir"]) / "input.mp4"
+    original = src.read_bytes()
+    response = client.get("/api/dub/jobs/bench/overdub/source",
+                          headers={"Range": "bytes=0-63"})
+    assert response.status_code == 206
+    assert response.headers["content-type"] == "video/mp4"
+    assert response.headers["content-range"].startswith("bytes 0-63/")
+    assert "attachment" not in response.headers.get("content-disposition", "")
+    assert response.content == original[:64]
+    assert src.read_bytes() == original
+
+
+def test_a4_source_playback_respects_completed_local_job_scope(local_job, monkeypatch):
+    assert client.get("/api/dub/jobs/unknown/overdub/source").status_code == 404
+    monkeypatch.setattr(state.job_store, "get", lambda jid: {
+        "id": jid, "kind": "dub", "status": "running",
+    })
+    assert client.get("/api/dub/jobs/bench/overdub/source").status_code == 409

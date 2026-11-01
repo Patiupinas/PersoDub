@@ -25,7 +25,12 @@ function element(id) {
   const classes = new Set();
   return {
     id, value: "", checked: false, disabled: false, hidden: false,
-    textContent: "", listeners: {}, children: [],
+    textContent: "", listeners: {}, children: [], currentTime: 0, src: "",
+    playCalls: 0, pauseCalls: 0, loadCalls: 0,
+    play() { this.playCalls += 1; return Promise.resolve(); },
+    pause() { this.pauseCalls += 1; },
+    load() { this.loadCalls += 1; },
+    removeAttribute(name) { if (name === "src") this.src = ""; },
     classList: {
       add: (name) => classes.add(name),
       remove: (name) => classes.delete(name),
@@ -207,4 +212,49 @@ test("multi-hour Overdub review keeps a bounded DOM page and stable global actio
   assert.equal(h.calls[1].body.events[3].action, "PRESERVE");
   assert.equal(h.calls[1].body.events[102].action, "TRANSLATE");
   assert.equal(h.calls[1].body.events.at(-1).end_frame, 6 * 3600 * FRAME);
+});
+
+test("A4 review plays the original source at event boundaries without approving it", async (t) => {
+  const h = harness();
+  t.after(h.reset);
+  await h.modal.open("job with spaces");
+  const video = h.$("overdubSourcePlayer");
+  assert.equal(video.src, "/api/dub/jobs/job%20with%20spaces/overdub/source");
+  assert.match(h.$("overdubList").innerHTML, /data-od-play="1"/);
+
+  const playRow = (index) => h.$("overdubList").listeners.click({
+    target: { closest: () => ({ dataset: { odPlay: String(index) } }) },
+  });
+  playRow(1);
+  assert.equal(video.currentTime, 0.6);
+  assert.equal(video.playCalls, 1);
+  assert.equal(h.$("overdubReviewed").checked, false);
+  assert.equal(h.$("overdubExport").disabled, true);
+
+  video.currentTime = 1.9;
+  video.listeners.timeupdate();
+  const paused = video.pauseCalls;
+  video.currentTime = 2.0;
+  video.listeners.timeupdate();
+  assert.equal(video.pauseCalls, paused + 1);
+
+  h.modal.close();
+  assert.equal(video.src, "");
+  assert.equal(video.loadCalls, 1);
+  assert.equal(h.calls.length, 1);
+});
+
+test("A4 event seek remains source-clock accurate after splitting an interval", async (t) => {
+  const h = harness();
+  t.after(h.reset);
+  await h.modal.open("abc");
+  h.$("overdubSplitAt").value = "1.25";
+  h.$("overdubSplit").listeners.click();
+  assert.equal([...h.$("overdubList").innerHTML.matchAll(/data-od-play/g)].length, 3);
+  h.$("overdubList").listeners.click({
+    target: { closest: () => ({ dataset: { odPlay: "2" } }) },
+  });
+  assert.equal(h.$("overdubSourcePlayer").currentTime, 0.85);
+  assert.equal(h.$("overdubReviewed").checked, false);
+  assert.equal(h.$("overdubExport").disabled, true);
 });

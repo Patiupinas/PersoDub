@@ -1016,6 +1016,11 @@
           <button class="btn btn-outline btn-sm" id="overdubUseHints" type="button" data-i18n>Apply suggestions</button>
         </div>
         <p id="overdubStatus" class="settings-hint" aria-live="polite"></p>
+        <div class="overdub-source-player">
+          <p data-i18n>Listen to original video before choosing speech or vocal exercise</p>
+          <video id="overdubSourcePlayer" preload="metadata" controls playsinline
+            aria-label="Original video" data-i18n-aria-label></video>
+        </div>
         <div class="overdub-list" id="overdubList" role="group" aria-label="Reviewed audio intervals"></div>
         <div class="overdub-pages">
           <button class="btn btn-outline btn-sm" id="overdubPagePrev" type="button" data-i18n>Previous intervals</button>

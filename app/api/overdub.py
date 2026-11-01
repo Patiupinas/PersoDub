@@ -156,6 +156,20 @@ def _source_preview(source, work, analyze=False):
         }
 
 
+@router.get("/api/dub/jobs/{jid}/overdub/source")
+def overdub_original_source(jid: str):
+    """Stream only the exact original source video for manual A4 listening.
+
+    The existing results/download endpoint suggests an attachment filename;
+    explicit inline response lets the native video player seek to an event.
+    It never serves translated audio, a work-folder path, or generated media.
+    """
+    source, _ = _job(jid)
+    return FileResponse(
+        source, media_type="video/mp4", content_disposition_type="inline",
+    )
+
+
 @router.post("/api/dub/jobs/{jid}/overdub/prepare")
 def overdub_prepare(jid: str, request: PreviewRequest):
     source, work = _job(jid)

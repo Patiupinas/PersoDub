@@ -2,6 +2,7 @@
 // Classifier output is never permission to translate; every action begins REVIEW.
 import { escapeHtml, errorText } from "./format.mjs";
 import { t } from "./i18n.mjs";
+import { initS2stLab } from "./s2stLab.mjs";
 
 export const OVERDUB_RATE = 48000;
 export const REVIEW_PAGE_SIZE = 100;
@@ -69,6 +70,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args) }) 
   let busy = false;
   let generation = 0;
   let page = 0;
+  const s2stLab = initS2stLab({ $, fetchFn });
   const overlay = $("overdubOverlay");
   const status = $("overdubStatus");
   const list = $("overdubList");
@@ -158,6 +160,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args) }) 
     if (busy) return;
     ++generation;
     jobId = null;
+    s2stLab.close();
     overlay.classList.remove("open");
   }
   async function open(jid) {
@@ -169,6 +172,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args) }) 
     confirm.checked = false;
     result.hidden = true;
     overlay.classList.add("open");
+    s2stLab.open(jid);
     paint();
     await prepare(false);
   }

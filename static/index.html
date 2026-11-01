@@ -1027,6 +1027,24 @@
         <label class="overdub-confirm"><input type="checkbox" id="overdubReviewed">
           <span data-i18n>I reviewed these intervals and approve the selected actions.</span></label>
         <p id="overdubResult" class="settings-hint" hidden></p>
+        <!-- An independent experimental provider, never the default Overdub export. -->
+        <details class="s2st-lab" id="s2stLabPanel">
+          <summary>Experimental S2ST lab: source speech to Russian audio</summary>
+          <p class="settings-hint">Separate test output; Qwen remains unchanged. Select only intervals
+            you checked contain speech, not singing or vocal exercises. Up to 6 per run.</p>
+          <p id="s2stLabStatus" class="settings-hint" aria-live="polite"></p>
+          <div class="s2st-rows" id="s2stLabCandidates" role="group" aria-label="Source speech candidates"></div>
+          <div class="overdub-pages">
+            <button class="btn btn-outline btn-sm" id="s2stLabPrev" type="button">Previous</button>
+            <span id="s2stLabPage" aria-live="polite">0 / 0</span>
+            <button class="btn btn-outline btn-sm" id="s2stLabNext" type="button">Next</button>
+          </div>
+          <label class="overdub-confirm"><input type="checkbox" id="s2stLabReviewed" disabled>
+            <span>I checked the selected intervals contain speech only. No singing or vocal exercise.</span>
+          </label>
+          <button class="btn btn-outline btn-sm" type="button" id="s2stLabStart" disabled>Generate reviewed Russian speech</button>
+          <div id="s2stLabResults" class="s2st-results" aria-live="polite"></div>
+        </details>
       </div>
     </div>
     <div class="modal-foot">

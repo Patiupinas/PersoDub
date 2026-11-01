@@ -3062,3 +3062,29 @@
 /* Long videos keep only one bounded page of review controls in the DOM. */
 .overdub-pages { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 0; }
 .overdub-pages span { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* An opt-in research lab inside the existing Overdub dialog, not a second
+   workflow or an alternate owner for the approved source-clock event plan. */
+.s2st-lab { margin: 17px 0 7px; padding: 13px; border: 1px solid var(--border);
+  border-radius: 9px; }
+.s2st-lab summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.s2st-lab .settings-hint { margin: 9px 0; }
+.s2st-rows { max-height: 30vh; overflow-y: auto; border: 1px solid var(--border);
+  border-radius: 7px; }
+.s2st-row { display: grid; grid-template-columns: 18px 100px minmax(95px, 1fr) 140px auto;
+  gap: 9px; padding: 7px 9px; border-bottom: 1px solid var(--border);
+  align-items: center; font-size: 12px; }
+.s2st-row:last-child { border-bottom: 0; }
+.s2st-time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.s2st-row small { color: var(--muted); }
+.s2st-row audio { width: 140px; max-width: 100%; height: 29px; }
+.s2st-results { margin-top: 14px; }
+.s2st-result { display: grid; grid-template-columns: 88px minmax(150px,1fr);
+  gap: 3px 12px; align-items: start; border-top: 1px solid var(--border);
+  padding: 9px 1px; font-size: 12px; }
+.s2st-result small { grid-column: 1 / -1; color: var(--muted); overflow-wrap: anywhere; }
+.s2st-result-links { grid-column: 1 / -1; }
+.s2st-result-links a { margin-right: 9px; }
+@media(max-width:600px) { .s2st-row { grid-template-columns: 18px 1fr 1fr; }
+  .s2st-row audio { grid-column: 2 / -1; width: 100%; }
+  .s2st-row small { grid-column: 2 / -1; } }

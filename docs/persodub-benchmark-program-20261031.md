@@ -281,11 +281,22 @@ python -m benchmarks.persodub.blind_review \
 ```
 
 The reviewer pack contains neutrally encoded `A.wav`, `B.wav`,
-optional `source.wav`, and a CSV ratings template. The private key is
+optional `source.wav`, an **offline `index.html` with local audio playback,
+ratings and one-click CSV download**, and the CSV template. The private key is
 outside the pack. All clips are at most 45 seconds; no video / long file
-is copied. Need >=3 independent native-Russian raters, balanced A/B and
-per-clip source speaker cross-condition reuse; report within-speaker
-confidence intervals using paired bootstrap rather than only averages.
+is copied. Use `"rating_profile": "voice"` for dry voice-only clips, so
+original-bed audibility is explicitly `N/A`. Default `"overdub"` keeps
+that 1-5 category for true original-plus-Russian mixes.
+
+To score real completed ratings, run `python -m benchmarks.persodub.blind_review_score
+--private-key /private/assignments.json --ratings /path/rater1.csv /path/rater2.csv
+/path/rater3.csv --out /private/score.json`. It unmasks only with the private
+assignment key, checks all pair IDs and rating fields, groups paired MOS deltas,
+and distinguishes `NOT_RUN`, `INCOMPLETE_REVIEW_PANEL` and
+`OBSERVED_HUMAN_RATINGS`. Three self-declared native-Russian raters are only
+a minimum intake; they are not verified identities, and one real speaker
+does not support cross-speaker confidence intervals. An observed score is not
+an automatic quality PASS. See `docs/p1-voice-reference-blind-review-20261101.md` for real Mac evidence.
 
 ## 7. Baseline actually measured on the owner's video
 

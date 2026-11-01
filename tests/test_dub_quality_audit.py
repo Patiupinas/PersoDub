@@ -159,3 +159,35 @@ def test_mismatched_source_cues_are_not_silently_used(job):
     report = quality.audit_completed(job)
     assert report["timing_overruns"] == []
     assert any(item["code"] == "source_line_timing_unmatched" for item in report["issues"])
+
+
+def test_finished_quality_reports_collapsed_source_whisper_timestamps(job):
+    original = {
+        "cues": [{
+            "start": 145.64, "end": 146.72,
+            "text": " ".join(f"word{i}" for i in range(18)),
+            "words": [
+                {"start": 146.72, "end": 146.72, "word": f"word{i}"}
+                for i in range(16)
+            ] + [
+                {"start": 145.64, "end": 145.98, "word": "if"},
+                {"start": 145.98, "end": 146.72, "word": "you"},
+            ],
+        }]
+    }
+    (job / "transcript.json").write_text(json.dumps(original))
+    report = quality.audit_completed(job)
+    timing = next(x for x in report["issues"]
+                  if x["code"] == "source_transcript_timing_review")
+    assert timing["count"] == 1
+    assert timing["zero_duration_words"] == 16
+    assert report["source_transcript_timing"]["word_timestamps_total"] == 18
+    assert report["status"] == "review_required"
+    assert "word15" not in json.dumps(report)
+
+
+def test_finished_quality_does_not_invent_source_timing_pass(job):
+    report = quality.audit_completed(job)
+    assert report["source_transcript_timing"]["status"] == "not_measured"
+    assert all(x["code"] != "source_transcript_timing_review"
+               for x in report["issues"])

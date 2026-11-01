@@ -120,3 +120,17 @@ test("issue strings are escaped before DOM insertion", () => {
   assert.match(qualitySummary({ status: "not_perceptually_verified", issues: [] }), /not verified/);
   assert.equal(h.$("qualityAudit").hidden, false);
 });
+
+
+test("source Whisper word-time collapse is visible without a false quality PASS", () => {
+  const message = qualityIssueText({
+    code: "source_transcript_timing_review",
+    count: 3,
+    zero_duration_words: 16,
+  });
+  assert.match(message, /3/);
+  assert.match(message, /16/);
+  assert.match(qualitySummary({
+    status: "review_required", issues: [{ code: "source_transcript_timing_review" }],
+  }), /issue/);
+});

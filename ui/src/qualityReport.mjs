@@ -39,6 +39,10 @@ export function qualityIssueText(issue) {
       return t("Source and translated scripts contain different numbers of lines.");
     case "source_line_timing_unmatched":
       return t("Line {line} does not match the source timestamp.", { line: issue.line });
+    case "source_transcript_timing_review":
+      return t("{n} source transcript cue(s) have questionable word timings ({zero} zero-duration words).", {
+        n: countOf(issue), zero: issue.zero_duration_words,
+      });
     case "speaker_reference_missing":
       return t("Speaker {speaker} is missing a reference recording.", {
         speaker: issue.speaker,

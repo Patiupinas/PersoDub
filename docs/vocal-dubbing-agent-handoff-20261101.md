@@ -7,6 +7,8 @@
 **Docs-only continuation branch:** `docs/vocal-dubbing-agent-handoff-20261101`, based on the exact PR #32 head above. This document and root `AGENTS.md` are the only intended differences from that implementation snapshot.
 **Main at snapshot:** `6309632532f10bc74ae90e68b36c1537c1a34fee`. Do not assume later refs remain unchanged; query Git before acting.
 
+**P0 progress update, 2026-11-01:** See `docs/p0-overdub-real-export-20261101.md` on the P0 integration branch. Source-bound real-job baseline is reproduced (P0-A). PCM protected boundaries, Original stream-copy, source-audio tail duration and actual MP4 stream topology are fixed and verified on a 234.7-second all-REVIEW technical export (P0-B technical). Python 2,576 passed / 5 skipped, UI 1,138 passed, desktop 713 passed. This does **not** approve any translated vocal-lesson speech or resolve the reported Russian accent, 0.9-second SPK1 sample and truncated original Qwen job. The next task is to expose output-mode-specific QA in the finished-job UI and freeze independently reviewed speech/vocal boundaries.
+
 ## 1. Mission and observable end state
 
 Produce independently reviewable, natural Russian dubbing of local multi-hour vocal lessons, initially from English and German and later Spanish, with these independently verifiable properties:
@@ -191,7 +193,7 @@ python -m benchmarks.persodub.runner --manifest /new/bench-case/manifest.json --
 
 Use actual existing completed files; do not invent data or call an empty test directory an evaluated case. Keep individual outputs in unique local paths, never overwrite the original.
 
-6. Work on **P0-A**, then **P0-B** first. Do not move directly to another neural model before showing that ordinary user-selected Overdub exports correctly.
+6. Re-verify the P0-A real baseline and P0-B technical PASS from `docs/p0-overdub-real-export-20261101.md` against your **current commit and input hash**, then continue P0-B with finished-job output-mode QA and a genuinely reviewed TRANSLATE/PRESERVE export. Do not move directly to another neural model.
 7. Each new PR should record: base/head commit, exact source + weights/config SHAs, changed ownership boundary, focused and full checks actually run, baseline-vs-new metrics, real sample IDs and unresolved acceptance gaps. Keep a single current task/next action.
 
 ### Machine map as checked 2026-11-01
@@ -227,4 +229,4 @@ Provide an update in the applicable PR or a versioned experiment report:
 
 ### Ready-to-use successor prompt
 
-> Continue the vocal-lesson dubbing work in Patiupinas/PersoDub. Fetch the docs/vocal-dubbing-agent-handoff-20261101 branch, read AGENTS.md and docs/vocal-dubbing-agent-handoff-20261101.md, then inspect the current PR #32 stack and real repo instructions. Verify the current source tree and rerun appropriate tests; historical PASSES are not transferable. Start with P0-A/P0-B, specifically the four-minute job a45f8233 and the mismatch between requested Overdub and the original single-stream export. Use existing components before adding new models. Keep A4 the only translate/preserve authority, original singing untouched, no GitHub Actions, no bulk datasets and no changes to main without owner direction. Record exact measured results and a precise next action in the PR.
+> Continue the vocal-lesson dubbing work in Patiupinas/PersoDub. Fetch the latest P0 integration branch based on docs/vocal-dubbing-agent-handoff-20261101, read AGENTS.md, docs/vocal-dubbing-agent-handoff-20261101.md and docs/p0-overdub-real-export-20261101.md. Inspect the PR #32/33 stack and current source tree. Re-run relevant tests: historical PASSES are not transferable. P0-A and the technical stream-integrity part of P0-B were measured against the four-minute job a45f8233; continue P0-B with finished-job output-mode QA and independent human-reviewed TRANSLATE/PRESERVE event gold. Do not introduce more neural models before closing that gap. Keep A4 the sole decision authority, original singing untouched, no GitHub Actions, no bulk downloads and no changes to main without owner direction. Record exact measured results and one next action in the PR.

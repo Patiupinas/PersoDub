@@ -78,6 +78,7 @@ def test_real_existing_job_exports_original_plus_dynamic_overdub(tmp_path):
     movie = tmp_path / "overdub.mp4"
     result = exporter.export_existing(source, tmp_path, plan_path, movie)
     assert result["audio_tracks"] == ["Overdub", "Original"]
+    assert result["media_tracks_verified"] is True
     assert result["action_frames"]["PRESERVE"] == 48000
     assert result["source_wav_sha256"] == plan["source_wav_sha256"]
     assert result["output_mp4"] == movie.name
@@ -97,6 +98,21 @@ def test_real_existing_job_exports_original_plus_dynamic_overdub(tmp_path):
     ]
     with pytest.raises(ValueError, match="must be new"):
         exporter.export_existing(source, tmp_path, plan_path, movie)
+
+
+def test_single_stream_video_is_rejected_by_export_media_verifier(tmp_path):
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is required for a real single-stream fixture")
+    source = tmp_path / "single-audio.mp4"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+        "-i", "color=c=black:s=160x90:r=25:d=1",
+        "-f", "lavfi", "-i", "sine=frequency=500:duration=1",
+        "-map", "0:v:0", "-map", "1:a:0", "-c:v", "mpeg4",
+        "-c:a", "aac", str(source),
+    ], check=True, capture_output=True)
+    with pytest.raises(RuntimeError, match="two selectable audio tracks"):
+        exporter._verify_export_tracks(source)
 
 
 def test_invalid_output_parent_refused_before_media_processing(tmp_path):

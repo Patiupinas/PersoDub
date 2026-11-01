@@ -88,6 +88,7 @@ def test_source_bound_report_ranks_and_never_certifies(tmp_path):
     assert report["summary"]["mean_similarity"] == 0.525
     assert report["summary"]["unmatched_source_groups"] == 1
     assert report["status"] == "OBSERVED"
+    assert report["alignment"] == "bounded_monotone_time_dp_v1"
     assert report["semantic_quality_certified"] is False
     assert any("missing_translation" in group["review_flags"]
                for group in report["groups"])

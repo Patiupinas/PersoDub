@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "suite_id": "synthetic_vocal_en_ru_controls_v1",
+  "provenance": "Model-authored controlled examples; NOT independent human-reviewed gold; not calibrated on natural translation errors",
+  "pair_design": "Each EN premise has one faithful RU candidate and one deliberately altered RU candidate. Compare paired preference, not absolute quality.",
+  "cases": [
+    {
+      "id": "s01",
+      "kind": "negation",
+      "source": "Keep your shoulders relaxed while you breathe.",
+      "faithful": "Во время дыхания держите плечи расслабленными.",
+      "altered": "Во время дыхания напрягайте плечи."
+    },
+    {
+      "id": "s02",
+      "kind": "number_and_adverb",
+      "source": "Sing three notes slowly: do, re, mi.",
+      "faithful": "Медленно спойте три ноты: до, ре, ми.",
+      "altered": "Быстро спойте семь нот: до, ре, ми."
+    },
+    {
+      "id": "s03",
+      "kind": "negation",
+      "source": "Do not force the sound from your throat.",
+      "faithful": "Не выдавливайте звук горлом.",
+      "altered": "Выдавливайте звук горлом."
+    },
+    {
+      "id": "s04",
+      "kind": "duration",
+      "source": "Hold the note for four seconds, then release it.",
+      "faithful": "Тяните ноту четыре секунды, затем отпустите.",
+      "altered": "Тяните ноту десять секунд, затем отпустите."
+    },
+    {
+      "id": "s05",
+      "kind": "sequence",
+      "source": "Take a quiet breath before the next phrase.",
+      "faithful": "Перед следующей фразой спокойно вдохните.",
+      "altered": "После следующей фразы шумно выдохните."
+    },
+    {
+      "id": "s06",
+      "kind": "polarity",
+      "source": "A trill can help release tension in the jaw.",
+      "faithful": "Трель помогает снять напряжение в челюсти.",
+      "altered": "Трель помогает усилить напряжение в челюсти."
+    },
+    {
+      "id": "s07",
+      "kind": "frequency",
+      "source": "We will repeat the exercise twice.",
+      "faithful": "Повторим упражнение два раза.",
+      "altered": "Мы не будем повторять это упражнение."
+    },
+    {
+      "id": "s08",
+      "kind": "direction",
+      "source": "If the note feels too high, lower the pitch.",
+      "faithful": "Если нота слишком высока, пойте ниже.",
+      "altered": "Если нота слишком высока, пойте выше."
+    },
+    {
+      "id": "s09",
+      "kind": "restriction",
+      "source": "This exercise works even with a very soft voice.",
+      "faithful": "Это упражнение получается даже при очень тихом голосе.",
+      "altered": "Это упражнение подходит только для громкого голоса."
+    },
+    {
+      "id": "s10",
+      "kind": "order",
+      "source": "First hum, then open into a vowel.",
+      "faithful": "Сначала мычим с закрытым ртом, потом переходим к гласной.",
+      "altered": "Сначала поём гласную, затем закрываем рот и мычим."
+    },
+    {
+      "id": "s11",
+      "kind": "swapped_semantics",
+      "source": "The singer changed the rhythm but kept the melody.",
+      "faithful": "Певец поменял ритм, сохранив мелодию.",
+      "altered": "Певец поменял мелодию, сохранив ритм."
+    },
+    {
+      "id": "s12",
+      "kind": "musical_notation",
+      "source": "The coach played C major, not A minor.",
+      "faithful": "Преподаватель сыграл до мажор, а не ля минор.",
+      "altered": "Преподаватель сыграл ля минор, а не до мажор."
+    },
+    {
+      "id": "s13",
+      "kind": "speaker_roles",
+      "source": "The student inhales while the teacher demonstrates.",
+      "faithful": "Ученик вдыхает, пока преподаватель показывает.",
+      "altered": "Преподаватель вдыхает, пока ученик показывает."
+    },
+    {
+      "id": "s14",
+      "kind": "comparative",
+      "source": "The warmup should feel easier after the third attempt.",
+      "faithful": "После третьей попытки распевка должна ощущаться легче.",
+      "altered": "После третьей попытки распевка должна ощущаться труднее."
+    },
+    {
+      "id": "s15",
+      "kind": "negation",
+      "source": "Don't stop the airflow when the vowel changes.",
+      "faithful": "Не прерывайте поток воздуха, когда меняется гласная.",
+      "altered": "Прервите поток воздуха, когда меняется гласная."
+    },
+    {
+      "id": "s16",
+      "kind": "speaker_identity",
+      "source": "Only the second singer repeats the final phrase.",
+      "faithful": "Только второй певец повторяет последнюю фразу.",
+      "altered": "Только первый певец повторяет последнюю фразу."
+    },
+    {
+      "id": "s17",
+      "kind": "summary_fact",
+      "source": "The lesson ends with two gentle breathing exercises.",
+      "faithful": "Урок завершается двумя лёгкими дыхательными упражнениями.",
+      "altered": "Урок начинается четырьмя силовыми упражнениями."
+    },
+    {
+      "id": "s18",
+      "kind": "comparison",
+      "source": "Short repetitions are better than one long attempt.",
+      "faithful": "Короткие повторы лучше одной долгой попытки.",
+      "altered": "Одна долгая попытка лучше коротких повторов."
+    },
+    {
+      "id": "s19",
+      "kind": "omission",
+      "source": "Keep your chest lifted and release the air slowly.",
+      "faithful": "Сохраняйте грудь приподнятой и медленно выпускайте воздух.",
+      "altered": "Медленно выдыхайте."
+    },
+    {
+      "id": "s20",
+      "kind": "hallucination",
+      "source": "The instructor shows the exercise twice.",
+      "faithful": "Преподаватель дважды показывает упражнение.",
+      "altered": "Преподаватель дважды показывает упражнение, а затем обещает выдать сертификат."
+    }
+  ]
+}

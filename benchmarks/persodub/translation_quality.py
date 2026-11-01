@@ -194,7 +194,7 @@ def evaluate(source_file: Path, translation_file: Path,
             "source_cues": len(source),
             "translation_cues": len(translation),
         },
-        "alignment": "timestamp_overlap_connected_components_v1",
+        "alignment": "bounded_monotone_time_dp_v1",
         "model": metadata,
         "summary": {
             "groups": len(groups),

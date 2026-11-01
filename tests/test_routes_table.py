@@ -43,6 +43,10 @@ ROUTES = [
     ('GET', '/api/dub/jobs/{jid}'),
     ('GET', '/api/dub/jobs/{jid}/overdub/files/{name}'),
     ('GET', '/api/dub/jobs/{jid}/perso/edit'),
+    ('GET', '/api/dub/jobs/{jid}/s2st'),
+    ('GET', '/api/dub/jobs/{jid}/s2st/files/{run_id}/{name}'),
+    ('GET', '/api/dub/jobs/{jid}/s2st/source/{index}'),
+    ('GET', '/api/dub/jobs/{jid}/s2st/status'),
     ('GET', '/api/dub/jobs/{jid}/script'),
     ('GET', '/api/dub/jobs/{jid}/script.xlsx'),   # the script as Perso's spreadsheet (app/api/script.py)
     ('GET', '/api/dub/jobs/{jid}/script/stamp'),
@@ -116,6 +120,7 @@ ROUTES = [
     ('POST', '/api/dub/jobs/{jid}/resume'),
     ('POST', '/api/dub/jobs/{jid}/retranslate'),
     ('POST', '/api/dub/jobs/{jid}/retry'),
+    ('POST', '/api/dub/jobs/{jid}/s2st/start'),
     ('POST', '/api/dub/jobs/{jid}/script/{line}'),
     ('POST', '/api/dub/jobs/{jid}/script/{line}/revert'),
     ('POST', '/api/dub/jobs/{jid}/script/{line}/voice'),

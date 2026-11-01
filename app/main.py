@@ -37,6 +37,7 @@ from app.api import models as models_api
 from app.api import overdub as overdub_api
 from app.api import report as report_api
 from app.api import results as results_api
+from app.api import s2st_lab as s2st_lab_api
 from app.api import script as script_api
 from app.api import separate as separate_api
 from app.api import settings as settings_api
@@ -161,6 +162,7 @@ app.include_router(misc_api.router)
 app.include_router(models_api.router)
 app.include_router(overdub_api.router)
 app.include_router(report_api.router)
+app.include_router(s2st_lab_api.router)
 app.include_router(results_api.router)
 app.include_router(script_api.router)
 app.include_router(settings_api.router)

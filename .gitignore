@@ -26,6 +26,8 @@ env/
 
 # ---- Runtime / working data ----
 workspace/
+workspace
+/*.pid
 *.log
 logs/
 

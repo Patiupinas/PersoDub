@@ -15,7 +15,7 @@ import time
 import uuid
 from typing import Callable, List, NoReturn, Optional
 
-from app import config, media, room
+from app import config, media, room, settings_env
 from app.audio.onset import snap_starts
 from app.audio.overdub import extract_original_pcm, render_overdub, validate_overdub_plan
 from app.config import QWEN_N_TAKES
@@ -762,6 +762,14 @@ def _stage_transcribe_perso(video_path, perso_client, cancel_check, on_notice, l
         end_credit_watch(ws)   # a call that failed must not count as still running
 
 
+def _source_asr_mode(source_language_code):
+    """One opt-in setting owns the source decoder choice for this job."""
+    return ("bounded" if (
+        settings_env.current_value("PERSODUB_SOURCE_ASR_MODE") == "bounded"
+        and source_language_code in ("en", "de", "es")
+    ) else "default")
+
+
 def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, video_duration=None,
                             vocals_path=None, cancel_check=None):
     """Stage 2/6 -- local Whisper transcription (no container at all).
@@ -784,10 +792,20 @@ def _stage_transcribe_local(video_path, source_language_code, diar_engine, log, 
         # phonetic gibberish. Only the UI's explicit SOURCE pick
         # (source_language_code) may be given as a hint; None = auto-detect.
         # Word times, so a line can end where a sentence ends (split_at_sentence_ends).
+        # Experimental source-only mode. Explicit source selection is required
+        # so an auto-detected vocal exercise cannot lock the whole lesson to
+        # the wrong language. Normal source STT and TTS take scoring are unchanged.
+        requested_bounded = settings_env.current_value("PERSODUB_SOURCE_ASR_MODE") == "bounded"
+        bounded_source = _source_asr_mode(source_language_code) == "bounded"
+        if requested_bounded and not bounded_source:
+            log("   Bounded source ASR skipped: select an EN, DE or ES source language first")
+        if bounded_source:
+            log("   Experimental bounded source ASR: 34s windows, 5s overlap")
         src_cues = transcribe_local(
             video_path, language=source_language_code, word_timestamps=True, log=log,
             on_language=lambda c: detected.__setitem__("code", c),
             video_duration=video_duration, vocals_path=vocals_path, cancel_check=cancel_check,
+            **({"bounded_source": True} if bounded_source else {}),
         )
     except JobCancelled:
         raise  # a user cancel is not a failure of this stage
@@ -1113,6 +1131,18 @@ def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, s
     None. Returns (src_cues, perso_cues, detected_code, perso_client,
     reused)."""
     saved = _saved_transcript(work_dir) if reuse else None
+    intended_mode = _source_asr_mode(source_language_code) if stt_engine != "perso" else "perso"
+    if saved and (
+        (intended_mode == "bounded" and (
+            saved.get("source_asr_mode") != "bounded"
+            or saved.get("source_asr_language") != source_language_code
+        ))
+        or (intended_mode != "bounded" and saved.get("source_asr_mode") == "bounded")
+    ):
+        # Old source cues and their translated/TTS continuations belong to a
+        # different ASR clock; changing the decoder invalidates their reuse.
+        _log_stage(log, "transcribe", "Source ASR mode changed; rebuilding transcript")
+        saved = None
     if saved:
         _log_stage(log, "transcribe",
                    "Transcript from the earlier run, reused (%d lines)" % len(saved["cues"]))
@@ -1139,8 +1169,11 @@ def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, s
         log("   %d line start(s) moved to where the speech begins" % moved)
     _stage_diarize(diar_engine, vocals_path, src_cues, num_speakers, log, video_duration=video_duration,
                    on_notice=on_notice)
-    _save_json(work_dir, TRANSCRIPT_NAME,
-               {"cues": src_cues, "perso": perso_cues is not None, "detected": detected_code})
+    _save_json(work_dir, TRANSCRIPT_NAME, {
+        "cues": src_cues, "perso": perso_cues is not None, "detected": detected_code,
+        "source_asr_mode": intended_mode,
+        "source_asr_language": source_language_code if intended_mode == "bounded" else None,
+    })
     return src_cues, perso_cues, detected_code, perso_client, False
 
 

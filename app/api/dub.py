@@ -41,6 +41,8 @@ import logging
 import os
 import re
 import shutil
+import subprocess
+import wave
 from dataclasses import dataclass
 from typing import Optional
 
@@ -48,7 +50,18 @@ import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from app import dub_launch, engines_status, erase_launch, languages, media, room, runtime, separate_launch, state
+from app import (
+    dub_launch,
+    dub_quality_audit,
+    engines_status,
+    erase_launch,
+    languages,
+    media,
+    room,
+    runtime,
+    separate_launch,
+    state,
+)
 from app import models as model_store
 from app import setup as dub_setup
 from app.api import _launch as launch_api
@@ -372,6 +385,34 @@ def dub_jobs():
     few dozen jobs would be megabytes of JSON for a list nobody reads them in.
     """
     return {"jobs": state.job_store.all()}
+
+
+@router.get("/api/dub/jobs/{jid}/quality")
+def dub_job_quality(jid: str, file: Optional[str] = None):
+    """Audit actual completed media, including a named reviewed Overdub export.
+
+    This is a read-only snapshot, not a quality verdict from a speech model.
+    The UI asks once on open or explicitly after a file is remade/exported.
+    """
+    job = state.job_store.get(jid)
+    if job is None:
+        raise HTTPException(404, t("Unknown job: {jid}", jid=jid))
+    if kind_of(job) != JobKind.DUB or job.get("status") != JobStatus.DONE:
+        raise HTTPException(409, "Only completed dubbing projects can be audited")
+    if job.get("dub_mode") == "perso":
+        raise HTTPException(409, "The local voice quality audit is not available for Perso dubbing")
+    expected = "overdub" if file is not None else (
+        (job.get("result") or {}).get("audio_mode") or job.get("audio_mode") or "replace"
+    )
+    try:
+        return dub_quality_audit.audit_completed(
+            work_dir_of(job), expected_mode=expected, output_name=file
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(404, "Finished output is not available for quality review") from error
+    except (OSError, ValueError, RuntimeError, wave.Error, subprocess.SubprocessError) as error:
+        logger.info("Completed job quality audit could not run: %s", type(error).__name__)
+        raise HTTPException(422, "Could not analyze the finished output") from error
 
 
 @router.get("/api/dub/jobs/{jid}")

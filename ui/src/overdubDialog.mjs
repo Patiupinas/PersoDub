@@ -63,7 +63,7 @@ export function overDubRowsHtml(items, indexOffset = 0) {
  * Render a source-bound event review dialog for a *completed local* Qwen job.
  * No full replacement option is changed. Final download is a separate MP4.
  */
-export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args) }) {
+export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), onExport = () => {} }) {
   let jobId = null;
   let preview = null;
   let events = [];
@@ -244,6 +244,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args) }) 
       link.textContent = t("Download Overdub video");
       result.appendChild(link);
       message(t("Export complete. Overdub and Original are selectable audio tracks."));
+      onExport(jobId, answer.file);
     } catch (err) {
       message(errorText(err));
     } finally { busy = false; paint(); }

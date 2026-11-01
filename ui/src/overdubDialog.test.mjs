@@ -38,7 +38,7 @@ function element(id) {
   };
 }
 
-function harness({ response = preview } = {}) {
+function harness({ response = preview, onExport = () => {} } = {}) {
   const previousDocument = globalThis.document;
   globalThis.document = { createElement: element };
   const all = new Map();
@@ -60,7 +60,7 @@ function harness({ response = preview } = {}) {
           download_url: "/api/dub/jobs/abc/overdub/files/finished-overdub.mp4" },
     };
   };
-  const modal = initOverdubDialog({ $, fetchFn });
+  const modal = initOverdubDialog({ $, fetchFn, onExport });
   return {
     $, modal, calls, reset: () => { globalThis.document = previousDocument; },
   };
@@ -81,7 +81,8 @@ test("model hints only populate suggestions; all actions begin REVIEW", async (t
 });
 
 test("applying machine proposals requires separate confirmation before export", async (t) => {
-  const h = harness();
+  const emitted = [];
+  const h = harness({ onExport: (jobId, filename) => emitted.push([jobId, filename]) });
   t.after(h.reset);
   await h.modal.open("abc");
   h.$("overdubUseHints").listeners.click();
@@ -102,6 +103,7 @@ test("applying machine proposals requires separate confirmation before export", 
   assert.equal(submission.body.original_speech_db, -16);
   assert.equal(h.$("overdubResult").hidden, false);
   assert.match(h.$("overdubResult").children[0].href, /finished-overdub\.mp4/);
+  assert.deepEqual(emitted, [["abc", "finished-overdub.mp4"]]);
 });
 
 test("editing an event invalidates confirmation and does not edit neighboring boundaries", async (t) => {

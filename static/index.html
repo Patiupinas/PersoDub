@@ -390,6 +390,17 @@
               <!-- While changed lines wait for their voice: how many, and
                    what to press (scriptTable.mjs). -->
               <div class="sc-changed" id="scriptChanged" hidden></div>
+              <!-- A lazy, read-only check of the actual finished file. It is
+                   separate from perceptual quality and from the editable script. -->
+              <details class="sc-quality" id="qualityAudit" hidden>
+                <summary><strong data-i18n>Quality check</strong><span id="qualityAuditStatus"></span></summary>
+                <div class="sc-quality-details">
+                  <p id="qualityAuditScope"></p>
+                  <ul id="qualityAuditIssues"></ul>
+                  <p id="qualityAuditHuman"></p>
+                  <button type="button" class="btn btn-outline btn-sm" id="qualityAuditRefresh" data-i18n>Recheck</button>
+                </div>
+              </details>
               <!-- The same notice line the running screen carries, on the
                    screen that replaced it. Hidden unless there is one, and
                    moved into the failure block when the job failed. -->

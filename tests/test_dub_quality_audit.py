@@ -1,7 +1,9 @@
 """Acceptance audit tests: a successful MP4 mux is not an audible-quality PASS."""
 
 import json
+import shutil
 import struct
+import subprocess
 import wave
 
 import pytest
@@ -126,6 +128,28 @@ def test_unfinished_job_cannot_be_treated_as_completed(job):
     (job / "job.json").write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="completed"):
         quality.audit_completed(job)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="Real media tools are required")
+def test_real_ffprobe_exposes_overdub_original_names_and_default_stream(tmp_path):
+    output = tmp_path / "two-track.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error",
+        "-f", "lavfi", "-i", "color=c=black:s=160x90:r=25:d=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=660:duration=1",
+        "-map", "0:v:0", "-map", "1:a:0", "-map", "2:a:0",
+        "-c:v", "mpeg4", "-c:a", "aac",
+        "-metadata:s:a:0", "handler_name=Overdub",
+        "-metadata:s:a:1", "handler_name=Original",
+        "-disposition:a:0", "default", "-disposition:a:1", "0",
+        str(output),
+    ], check=True, capture_output=True)
+    audio = [s for s in quality._media_streams(output)
+             if s.get("codec_type") == "audio"]
+    assert [s["tags"]["handler_name"] for s in audio] == ["Overdub", "Original"]
+    assert [s["disposition"]["default"] for s in audio] == [1, 0]
 
 
 def test_mismatched_source_cues_are_not_silently_used(job):

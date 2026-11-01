@@ -7,6 +7,7 @@ mismatches visible without pretending to grade accent or naturalness.
 import argparse
 import json
 import math
+import re
 import subprocess
 import wave
 from pathlib import Path
@@ -30,7 +31,7 @@ def _load(path, default=None):
 def _media_streams(path):
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries",
-         "stream=index,codec_type:stream_tags=title,handler_name",
+         "stream=index,codec_type:stream_tags=title,handler_name:stream_disposition=default",
          "-of", "json", str(path)],
         capture_output=True, text=True, timeout=60, check=True,
     )
@@ -63,7 +64,7 @@ def _voiced_seconds(path):
     return max(0.0, end - start)
 
 
-def audit_completed(work_dir, expected_mode=None):
+def audit_completed(work_dir, expected_mode=None, output_name=None):
     root = Path(work_dir).resolve()
     job = _load(root / "job.json", {})
     if type(job) is not dict:
@@ -77,6 +78,12 @@ def audit_completed(work_dir, expected_mode=None):
     out_path = result.get("out_path")
     if out_path and Path(out_path).resolve().parent == root:
         video = Path(out_path).resolve()
+    if output_name is not None:
+        if not isinstance(output_name, str) or not re.fullmatch(
+            r"finished-overdub(?:-[0-9]+)?\.mp4", output_name
+        ):
+            raise ValueError("Invalid reviewed Overdub output name")
+        video = (root / output_name).resolve()
     if video.parent != root or not video.is_file():
         raise FileNotFoundError("Finished video missing from the project folder")
 
@@ -84,14 +91,23 @@ def audit_completed(work_dir, expected_mode=None):
     audio = [s for s in streams if s.get("codec_type") == "audio"]
     video_streams = [s for s in streams if s.get("codec_type") == "video"]
     declared_mode = result.get("audio_mode") or job.get("audio_mode") or "replace"
+    if output_name is not None:
+        # A separately reviewed export is not the original job's Replace file.
+        # Its actual streams and labels must agree with the Overdub contract.
+        declared_mode = "overdub"
     issues = []
     if not video_streams or not audio:
         issues.append({"code": "media_stream_missing"})
-    if expected_mode == "overdub" and len(audio) < 2:
+    if expected_mode == "overdub" and len(audio) != 2:
         issues.append({
             "code": "source_track_missing",
             "expected_audio_tracks": 2, "actual_audio_tracks": len(audio),
         })
+    if output_name is not None and len(audio) == 2:
+        names = [stream.get("tags", {}).get("handler_name") for stream in audio]
+        defaults = [stream.get("disposition", {}).get("default") for stream in audio]
+        if names != ["Overdub", "Original"] or defaults != [1, 0]:
+            issues.append({"code": "overdub_stream_metadata_mismatch"})
     if expected_mode and declared_mode != expected_mode:
         issues.append({
             "code": "output_mode_mismatch",
@@ -206,6 +222,7 @@ def audit_completed(work_dir, expected_mode=None):
         "schema_version": 1,
         "status": "review_required" if issues else "not_perceptually_verified",
         "job_id": job.get("id"),
+        "output_file": video.name,
         "actual_audio_streams": len(audio),
         "declared_audio_mode": declared_mode,
         "expected_audio_mode": expected_mode,

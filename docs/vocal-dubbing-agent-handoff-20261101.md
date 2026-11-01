@@ -9,6 +9,8 @@
 
 **P0 progress, 2026-11-01:** See `docs/p0-overdub-real-export-20261101.md` and `docs/p0-quality-report-and-mixed-validation-20261101.md`. Source-bound baseline reproduced (P0-A). Original audio/video stream integrity, protected fades and FFprobe topology verified on a real 234.7-second Overdub re-export (P0-B). The completed-job UI now has a read-only, output-mode-aware Quality check with Recheck and separate reviewed Overdub report. A real 8.55-second translated interval in a 234.7-second experimental mix preserves all 10,107 Original AAC and 7,039 video packets; the rest stays REVIEW, **not human-approved singing gold**. The existing Qwen job still shows the 0.9-second SPK1 sample, 5 overlong lines and 1.461-second truncation; none are solved by a good mux. **Next: independent human review of speech/vocal event boundaries and objective plus listening QA of the user-started redub.**
 
+**P1-B translation-QE update, 2026-11-01:** A separate local reference-free EN/RU similarity benchmark and time-aligned report were executed on both real job copies. See `docs/translation-quality-benchmark-20261101.md` for measured data, model SHA and reproduction. Both Russian subtitle file hashes are identical, so no translation improvement can be inferred from the redub. COMET and independent bilingual adequacy are still NOT_RUN; the new scores are OBSERVED only.
+
 ## 1. Mission and observable end state
 
 Produce independently reviewable, natural Russian dubbing of local multi-hour vocal lessons, initially from English and German and later Spanish, with these independently verifiable properties:

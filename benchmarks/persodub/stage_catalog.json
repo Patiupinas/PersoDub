@@ -68,7 +68,7 @@
       "runner_stage": "translation",
       "metric": "reference chrF/COMET with independent human adequacy, glossary, meaning preservation",
       "gold": "held-out EN->RU parallel reference plus human review",
-      "automation": "text presence observed; semantic scoring not implemented",
+      "automation": "reference-free local multilingual embedding scoring implemented as optional standalone CLI and source-bound QA report; COMET requires an existing licensed checkpoint; human adequacy remains unverified",
       "dataset": "FLORES-200 or WMT25 English-Russian"
     },
     {

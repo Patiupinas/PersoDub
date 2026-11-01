@@ -128,7 +128,16 @@ def _transcribe_with(model, audio_path, language, word_timestamps, allow_split=T
     return cues, info.language
 
 
-def transcribe(audio_path, language, word_timestamps):
+def transcribe(audio_path, language, word_timestamps, bounded_source=False):
+    if bounded_source:
+        if not word_timestamps or not language:
+            raise ValueError("Bounded source ASR needs word timestamps and a source language")
+        # This worker also runs as a file, outside the app package import root.
+        if __package__:
+            from .whisper_source_chunks import transcribe_bounded_source
+        else:
+            from whisper_source_chunks import transcribe_bounded_source
+        return transcribe_bounded_source(_load_model(), audio_path, language)
     model = _load_model()
     return _transcribe_with(model, audio_path, language, word_timestamps)
 
@@ -317,10 +326,14 @@ def main():
     ap.add_argument("--output", required=True)
     ap.add_argument("--language", default=None)
     ap.add_argument("--word-timestamps", action="store_true")
+    ap.add_argument("--bounded-source", action="store_true",
+                    help="Experimental 34s/5s-overlap source ASR; requires explicit language")
     ap.add_argument("--checkpoint", help="Persistent per-take ASR cache (batch only)")
     ap.add_argument("--progress", help="Atomic compact progress counters (batch only)")
     a = ap.parse_args()
 
+    if a.bounded_source and (a.audio_list or not a.word_timestamps or not a.language):
+        ap.error("--bounded-source needs --audio, --word-timestamps and --language")
     if a.audio_list:
         try:
             with open(a.audio_list, encoding="utf-8") as f:
@@ -362,7 +375,10 @@ def main():
     try:
         if not os.path.exists(a.audio):
             raise RuntimeError("audio file not found: %s" % a.audio)
-        cues, detected_language = transcribe(a.audio, a.language, a.word_timestamps)
+        cues, detected_language = transcribe(
+            a.audio, a.language, a.word_timestamps,
+            bounded_source=a.bounded_source,
+        )
         result = {"ok": True, "language": detected_language, "segments": cues}
     except Exception as e:
         result = {"ok": False, "error": str(e)[:500]}

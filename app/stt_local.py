@@ -124,6 +124,7 @@ def transcribe_local(
     video_duration: Optional[float] = None,
     vocals_path: Optional[str] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    bounded_source: bool = False,
 ) -> List[dict]:
     """Transcribe audio_path with local Whisper. Returns a list of cues in the
     same shape the pipeline expects everywhere else: [{"start": float,
@@ -144,6 +145,8 @@ def transcribe_local(
     source language is reported to `log` (if given) as one line -- otherwise
     it would just be discarded.
     """
+    if bounded_source and (not word_timestamps or not language):
+        raise ValueError("Bounded source STT requires word timestamps and an explicit source language")
     if not os.path.exists(audio_path):
         raise RuntimeError("audio file not found: %s" % audio_path)
     if not (os.path.exists(STT_PYTHON) and os.access(STT_PYTHON, os.X_OK)):
@@ -162,6 +165,8 @@ def transcribe_local(
             cmd += ["--language", language]
         if word_timestamps:
             cmd += ["--word-timestamps"]
+        if bounded_source:
+            cmd += ["--bounded-source"]
 
         try:
             r = _run(cmd, timeout=effective_timeout, cancel_check=cancel_check)

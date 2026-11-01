@@ -114,15 +114,18 @@ def mux_overdub(video: str, overdub_audio: str, out: str, dur: float) -> subproc
     WAV contains the dynamic balance. Both audio streams follow the same video
     timebase, and the original video bitstream is copied without transcoding.
     """
+    # The source audio can outlast the last video frame. Using only video
+    # duration with -t silently drops the last original AAC packets.
+    mux_duration = max(dur, stream_duration(video, "a:0"))
     return subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", video, "-i", overdub_audio,
          "-map", "0:v:0", "-map", "1:a:0", "-map", "0:a:0",
-         "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
-         "-filter:a:0", "apad", "-filter:a:1", "apad",
+         "-c:v", "copy", "-c:a:0", "aac", "-b:a:0", "256k",
+         "-c:a:1", "copy", "-filter:a:0", "apad",
          "-disposition:a:0", "default", "-disposition:a:1", "0",
          "-metadata:s:a:0", "handler_name=Overdub",
          "-metadata:s:a:1", "handler_name=Original",
-         "-t", f"{dur:.3f}", out],
+         "-t", f"{mux_duration:.6f}", out],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
@@ -130,15 +133,16 @@ def mux_overdub(video: str, overdub_audio: str, out: str, dur: float) -> subproc
 def _remux_preserving_overdub_tracks(video: str, mixed_video: str, out: str,
                                      dur: float) -> subprocess.CompletedProcess:
     """Length correction that preserves BOTH the overdub and original streams."""
+    mux_duration = max(dur, stream_duration(mixed_video, "a:1"))
     return subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", video, "-i", mixed_video,
          "-map", "0:v:0", "-map", "1:a:0", "-map", "1:a:1",
-         "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
-         "-filter:a:0", "apad", "-filter:a:1", "apad",
+         "-c:v", "copy", "-c:a:0", "aac", "-b:a:0", "256k",
+         "-c:a:1", "copy", "-filter:a:0", "apad",
          "-disposition:a:0", "default", "-disposition:a:1", "0",
          "-metadata:s:a:0", "handler_name=Overdub",
          "-metadata:s:a:1", "handler_name=Original",
-         "-t", f"{dur:.3f}", out],
+         "-t", f"{mux_duration:.6f}", out],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 

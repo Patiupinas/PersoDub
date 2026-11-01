@@ -78,7 +78,7 @@ def test_speech_original_is_audible_but_lower_than_overdub_voice(tmp_path):
         assert f.getnchannels() == 2
 
 
-def test_cosine_fade_is_smooth_and_preserve_boundary_is_not_hard_cut(tmp_path):
+def test_cosine_fade_is_smooth_and_fully_inside_translate_span(tmp_path):
     src = wav(tmp_path / "source.wav", amplitude=8000)
     dub = wav(tmp_path / "voice.wav", amplitude=16000)
     plan = make_plan(tmp_path, src, default_events())
@@ -87,13 +87,14 @@ def test_cosine_fade_is_smooth_and_preserve_boundary_is_not_hard_cut(tmp_path):
     settled_speech = sample(output, 0.5)
     settled_preserve = sample(output, 1.5)
     assert settled_speech > settled_preserve
-    at_early = sample(output, 0.81)
-    at_mid = sample(output, 1.0)
-    at_late = sample(output, 1.19)
-    assert settled_speech > at_early > at_mid > at_late > settled_preserve
+    at_early = sample(output, 0.70)
+    at_mid = sample(output, 0.83)
+    at_late = sample(output, 0.98)
+    assert settled_speech > at_early > at_mid > at_late >= settled_preserve
     assert abs(sample(output, 0.99998) - sample(output, 1.0)) <= 2
-    assert sample(output, 0.79) == settled_speech
-    assert sample(output, 1.21) == settled_preserve
+    assert sample(output, 0.60) == settled_speech
+    assert sample(output, 1.00) == settled_preserve
+    assert sample(output, 1.01) == settled_preserve
 
 
 def test_review_does_not_invent_automatic_translation(tmp_path):
@@ -246,3 +247,24 @@ def test_short_dub_tail_is_trimmed_without_changing_source_clock(tmp_path):
     assert result["dub_tail_trimmed_frames"] == 960
     with wave.open(str(out), "rb") as handle:
         assert handle.getnframes() == 96000
+
+
+@pytest.mark.parametrize("protected_action", ["PRESERVE", "REVIEW"])
+def test_protected_intervals_are_byte_identical_up_to_both_boundaries(
+    tmp_path, protected_action,
+):
+    source = wav(tmp_path / "source.wav", seconds=2.0, amplitude=-12000)
+    translated = wav(tmp_path / "translated.wav", seconds=2.0, amplitude=25000)
+    first, last = 24000, 36000
+    plan = make_plan(tmp_path, source, [
+        {"start_frame": 0, "end_frame": first, "action": "TRANSLATE"},
+        {"start_frame": first, "end_frame": last, "action": protected_action},
+        {"start_frame": last, "end_frame": 96000, "action": "TRANSLATE"},
+    ])
+    output = tmp_path / "mixed.wav"
+    render_overdub(source, translated, plan, output, levels=OverdubLevels(fade_ms=300))
+    with wave.open(str(source), "rb") as original, wave.open(str(output), "rb") as mixed:
+        original.setpos(first)
+        mixed.setpos(first)
+        count = last - first
+        assert mixed.readframes(count) == original.readframes(count)

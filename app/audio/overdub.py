@@ -133,12 +133,18 @@ class _Envelope:
         target = round(levels.fade_ms * SR / 1000.0)
         for j in range(1, len(spans)):
             left, right = spans[j - 1], spans[j]
-            if left.action == right.action:
+            if (left.action == "TRANSLATE") == (right.action == "TRANSLATE"):
                 continue
-            half = min(target // 2, (left.end - left.start) // 3,
-                       (right.end - right.start) // 3)
-            if half:
-                self.transitions[j] = (right.start - half, right.start + half)
+            # Keep every protected source frame at exactly (1.0, 0.0).
+            # Both fades live entirely inside the adjacent TRANSLATE span.
+            if right.action == "TRANSLATE":
+                length = min(target, (right.end - right.start) // 3)
+                if length:
+                    self.transitions[j] = (right.start, right.start + length)
+            else:
+                length = min(target, (left.end - left.start) // 3)
+                if length:
+                    self.transitions[j] = (right.start - length, right.start)
 
     def _gains(self, action):
         if action == "TRANSLATE":

@@ -7,6 +7,7 @@ import argparse
 import json
 import math
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -50,6 +51,26 @@ def _line_manifest(work_dir):
     if not any(paths):
         raise ValueError("No synthesized Qwen line WAVs remain in this job")
     return paths, starts, gains
+
+
+def _verify_export_tracks(path):
+    """Require the actual MP4 to contain the requested selectable streams."""
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries",
+            "stream=codec_type:stream_disposition=default:stream_tags=handler_name",
+            "-of", "json", str(path),
+        ],
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+    streams = json.loads(probe.stdout).get("streams", [])
+    video = [entry for entry in streams if entry.get("codec_type") == "video"]
+    audio = [entry for entry in streams if entry.get("codec_type") == "audio"]
+    names = [entry.get("tags", {}).get("handler_name") for entry in audio]
+    defaults = [entry.get("disposition", {}).get("default") for entry in audio]
+    if not video or len(audio) != 2 or names != ["Overdub", "Original"] or defaults != [1, 0]:
+        raise RuntimeError("Overdub export requires two selectable audio tracks: Overdub and Original")
+    return True
 
 
 def prepare_existing(video, work_dir, events_path):
@@ -96,8 +117,10 @@ def export_existing(video, work_dir, events_path, output_mp4, levels=None):
         media.ensure_video_length(
             str(video), str(staging), lambda msg: None, preserve_overdub_tracks=True
         )
+        _verify_export_tracks(staging)
         os.replace(staging, output)
     receipt.update({
+        "media_tracks_verified": True,
         "output_mp4": output.name,
         "audio_tracks": ["Overdub", "Original"],
         "source_video": video.name,

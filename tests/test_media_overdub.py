@@ -31,6 +31,15 @@ def _probe(path):
     return json.loads(proc.stdout)["streams"]
 
 
+def _audio_packet_hashes(path, audio_index):
+    process = subprocess.run([
+        "ffprobe", "-v", "error", "-select_streams", f"a:{audio_index}",
+        "-show_packets", "-show_data_hash", "sha256",
+        "-show_entries", "packet=data_hash", "-of", "csv=p=0", str(path),
+    ], capture_output=True, check=True, text=True)
+    return [line.split(",", 1)[0] for line in process.stdout.splitlines()]
+
+
 def test_mux_overdub_explicitly_maps_and_names_both_audio_streams(monkeypatch):
     calls = []
 
@@ -39,19 +48,21 @@ def test_mux_overdub_explicitly_maps_and_names_both_audio_streams(monkeypatch):
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(media.subprocess, "run", fake_run)
+    monkeypatch.setattr(media, "stream_duration", lambda path, stream: 8.2)
     r = media.mux_overdub("input.mp4", "mixed.wav", "output.mp4", 8.246)
     assert r.returncode == 0
     args = calls[0]
     streams = [args[i + 1] for i, value in enumerate(args[:-1]) if value == "-map"]
     assert streams == ["0:v:0", "1:a:0", "0:a:0"]
     assert args[args.index("-c:v") + 1] == "copy"
+    assert args[args.index("-c:a:1") + 1] == "copy"
     assert args[args.index("-disposition:a:0") + 1] == "default"
     assert args[args.index("-disposition:a:1") + 1] == "0"
     assert args[args.index("-filter:a:0") + 1] == "apad"
-    assert args[args.index("-filter:a:1") + 1] == "apad"
+    assert "-filter:a:1" not in args
     assert "handler_name=Overdub" in args
     assert "handler_name=Original" in args
-    assert args[args.index("-t") + 1] == "8.246"
+    assert float(args[args.index("-t") + 1]) == 8.246
 
 
 def test_length_repair_keeps_two_audio_tracks(monkeypatch, tmp_path):
@@ -67,6 +78,7 @@ def test_length_repair_keeps_two_audio_tracks(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(media.subprocess, "run", fake_run)
+    monkeypatch.setattr(media, "stream_duration", lambda path, stream: 2.8)
     monkeypatch.setattr(
         media, "video_duration",
         lambda path: 3.0 if path == original else 2.5,
@@ -74,6 +86,8 @@ def test_length_repair_keeps_two_audio_tracks(monkeypatch, tmp_path):
     media.ensure_video_length(original, mixed, lambda msg: None, preserve_overdub_tracks=True)
     refs = [args[0][i + 1] for i, item in enumerate(args[0][:-1]) if item == "-map"]
     assert refs == ["0:v:0", "1:a:0", "1:a:1"]
+    assert args[0][args[0].index("-c:a:1") + 1] == "copy"
+    assert "-filter:a:1" not in args[0]
     assert (tmp_path / "finished.mp4").read_bytes() == b"fixed"
 
 
@@ -130,6 +144,33 @@ def test_real_mp4_retains_original_and_selectable_overdub(tmp_path):
     # The secondary audio comes from the untouched source stream, not from
     # the dynamically attenuated primary WAV.
     assert original_pcm.read_bytes() != mixed.read_bytes()
+    # The Original track must retain the exact compressed audio packets.
+    original_packets = _audio_packet_hashes(source_video, 0)
+    assert original_packets
+    assert _audio_packet_hashes(output, 1) == original_packets
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+                    reason="ffmpeg unavailable")
+def test_original_audio_tail_survives_video_track_ending_first(tmp_path):
+    source_video = tmp_path / "source.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error",
+        "-f", "lavfi", "-i", "color=c=black:s=160x90:r=25:d=2",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=2.4",
+        "-map", "0:v:0", "-map", "1:a:0", "-c:v", "mpeg4", "-c:a", "aac",
+        str(source_video),
+    ], check=True, capture_output=True)
+    original_duration = media.video_duration(str(source_video))
+    assert original_duration < media.stream_duration(str(source_video), "a:0")
+    overdub = tmp_path / "overdub.wav"
+    _tone(overdub, int(original_duration * 48000), amplitude=5000)
+    output = tmp_path / "output.mp4"
+    result = media.mux_overdub(str(source_video), str(overdub), str(output), original_duration)
+    assert result.returncode == 0, result.stderr
+    original_packets = _audio_packet_hashes(source_video, 0)
+    assert original_packets
+    assert _audio_packet_hashes(output, 1) == original_packets
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"),

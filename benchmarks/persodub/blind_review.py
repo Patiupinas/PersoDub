@@ -17,6 +17,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from benchmarks.persodub.review_page import RATING_COLUMNS, make_page
+
 VALID_ID = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 MAX_CLIP_SECONDS = 45.0
 
@@ -76,6 +78,9 @@ def prepare(manifest_path: Path, review_dir: Path, key_path: Path,
             or not isinstance(input_obj.get("pairs"), list)
             or not input_obj["pairs"]):
         raise ValueError("Expected a nonempty pair manifest")
+    rating_profile = input_obj.get("rating_profile", "overdub")
+    if rating_profile not in ("overdub", "voice"):
+        raise ValueError("Unknown blind review rating_profile")
     root = manifest_path.parent
     ids = set()
     rows = []
@@ -94,7 +99,11 @@ def prepare(manifest_path: Path, review_dir: Path, key_path: Path,
             _duration(media)
         if _sha(baseline) == _sha(candidate):
             raise ValueError("Cannot blindly compare an audio file to itself")
-        rows.append((case_id, baseline, candidate, reference, entry.get("target_text", "")))
+        comparison = entry.get("comparison", "default")
+        if not isinstance(comparison, str) or not VALID_ID.fullmatch(comparison):
+            raise ValueError("Comparison groups must have stable IDs")
+        rows.append((case_id, baseline, candidate, reference,
+                     entry.get("target_text", ""), comparison))
 
     rng_seed = secrets.randbits(63) if seed is None else seed
     rng = random.Random(rng_seed)
@@ -104,19 +113,13 @@ def prepare(manifest_path: Path, review_dir: Path, key_path: Path,
     review_dir.mkdir(parents=True, exist_ok=False)
     key_path.parent.mkdir(parents=True, exist_ok=True)
     solution = {"schema_version": 1, "suite_id": input_obj.get("suite_id"),
+                "rating_profile": rating_profile,
                 "seed": rng_seed, "pairs": []}
     try:
         with (review_dir / "ratings_template.csv").open("x", encoding="utf-8", newline="") as f:
-            fields = [
-                "rater_id", "pair_id", "A_file", "B_file", "source_file",
-                "target_text", "A_accent_1to5", "B_accent_1to5",
-                "A_voice_1to5", "B_voice_1to5", "A_pauses_1to5",
-                "B_pauses_1to5", "A_original_audibility_1to5",
-                "B_original_audibility_1to5", "preference_A_B_tie", "notes",
-            ]
-            writer = csv.DictWriter(f, fieldnames=fields)
+            writer = csv.DictWriter(f, fieldnames=RATING_COLUMNS)
             writer.writeheader()
-            for (case_id, baseline, candidate, reference, target_text), switched in zip(
+            for (case_id, baseline, candidate, reference, target_text, comparison), switched in zip(
                 rows, assignment
             ):
                 folder = review_dir / case_id
@@ -131,6 +134,10 @@ def prepare(manifest_path: Path, review_dir: Path, key_path: Path,
                     "B_file": case_id + "/B.wav",
                     "source_file": case_id + "/source.wav" if reference else "",
                     "target_text": target_text,
+                    "A_original_audibility_1to5": (
+                        "N/A" if rating_profile == "voice" else ""),
+                    "B_original_audibility_1to5": (
+                        "N/A" if rating_profile == "voice" else ""),
                 })
                 solution["pairs"].append({
                     "id": case_id,
@@ -138,7 +145,16 @@ def prepare(manifest_path: Path, review_dir: Path, key_path: Path,
                     "B": "baseline" if switched else "candidate",
                     "baseline_sha256": _sha(baseline),
                     "candidate_sha256": _sha(candidate),
+                    "comparison": comparison,
                 })
+        # The offline player contains only opaque A/B paths and target text.
+        # It never contains the randomized answer key or makes network calls.
+        (review_dir / "index.html").write_text(
+            make_page(((case_id, reference is not None, target_text)
+                       for case_id, _, _, reference, target_text, _ in rows),
+                      voice_only=rating_profile == "voice"),
+            encoding="utf-8",
+        )
         # Keep the A/B mapping outside the reviewer package and readable only
         # by its owner so blind assessors cannot infer system assignments.
         fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

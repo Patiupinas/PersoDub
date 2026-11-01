@@ -108,13 +108,31 @@ catalogue, with rights to be reviewed at dataset level. Freeze exact source
 file hashes, actor IDs, reference sentence IDs and annotation protocol.
 Recommended experiment intake:
 
-- **FLEURS**: select ~10 transcript-audio utterances each for English,
-  German, Spanish and Russian. Score ASR per language; **not** speaker
-  diarization or vocal exercise timing.
+- **FLEURS**: score independent source ASR (EN/DE/ES/RU) on a small
+  repeatable set of official test utterances. The Mac already contains a
+  source SHA-bound eight-clip Russian test evaluation using cached Large-v3;
+  **WER 5/142, CER 5/876**, not general accent quality. Re-run with
+  `python -m benchmarks.persodub.fleurs_eval`; read
+  `docs/quality-benchmark-shortlist-20261102.md` for full private paths.
   https://huggingface.co/datasets/google/fleurs
-- **FLORES-200**: select ~20 held-out EN/RU parallel sentence pairs for
-  textual translation. It is not a speech/voice benchmark.
-  https://github.com/facebookresearch/flores
+- **FLORES+**: the maintained successor of FLORES-200; 20 held-out
+  EN/DE/ES->RU `split+id` parallel text pairs, benchmark-specific access
+  requires Hugging Face terms acceptance. Score reference chrF++ and
+  independently validated bilingual adequacy; **not** speech or voice.
+  https://huggingface.co/datasets/openlanguagedata/flores_plus
+- **CV3-Eval**: the most relevant new RU zero-shot / cross-language
+  voice-cloning benchmark. Compare same reference/target and seed for
+  Russian ASR WER/CER, speaker embeddings and acoustic quality, but retain
+  independent native-Russian listening for accent quality. Exact clip
+  provenance and rights must be checked separately from code licence.
+  https://github.com/QwenAudio/CV3-Eval
+- **MuST-C EN->RU**: TED speech with manual Russian translations for
+  realistic instruction-style speech translation, separate from text-only
+  FLORES+.
+  https://aclanthology.org/N19-1202/
+- **VocalSound**: original 6-class vocal non-speech event clips, CC BY-SA 4.0.
+  This is not singing or continuous A4 event-boundary gold.
+  https://github.com/YuanGongND/vocalsound
 - **CoVoST2**: use only available translation directions, e.g. RU->EN,
   EN->DE. **Not EN->RU**, which CoVoST2 does not provide.
   https://github.com/facebookresearch/covost

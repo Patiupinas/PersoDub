@@ -42,7 +42,7 @@
       "metric": "source-time speech F1; protected singing wrongly translated seconds; unreviewed seconds",
       "gold": "independently time-stamped speech/singing/exercise intervals",
       "automation": "implemented",
-      "dataset": "local human-gold mixed lesson; GTSinger + RAVDESS clip labels only"
+      "dataset": "local human-gold mixed lesson; GTSinger + RAVDESS speech/song + VocalSound clip labels (not source-bound event boundaries)"
     },
     {
       "order": 3,
@@ -50,7 +50,7 @@
       "runner_stage": "asr",
       "metric": "WER/CER EN DE ES RU; timestamp boundaries separately",
       "gold": "human/dataset transcript from different engine",
-      "automation": "implemented WER/CER, alignment pending",
+      "automation": "implemented WER/CER; offline FLEURS subset runner available; alignment pending",
       "dataset": "FLEURS"
     },
     {
@@ -69,7 +69,7 @@
       "metric": "reference chrF/COMET with independent human adequacy, glossary, meaning preservation",
       "gold": "held-out EN->RU parallel reference plus human review",
       "automation": "reference-free local multilingual embedding scoring implemented as optional standalone CLI and source-bound QA report; COMET requires an existing licensed checkpoint; human adequacy remains unverified",
-      "dataset": "FLORES-200 or WMT25 English-Russian"
+      "dataset": "FLORES+ (gated evaluation reference) and MuST-C EN->RU TED translations; independent human adequacy still needed"
     },
     {
       "order": 6,
@@ -87,7 +87,7 @@
       "metric": "independent Russian ASR WER/CER, native accent MOS, speaker ABX, phoneme error",
       "gold": "fixed target text, independent ASR, human-blind panel",
       "automation": "lexical readback implemented; accent ABX pending",
-      "dataset": "fixed Russian phonetic sentences; source English voice references"
+      "dataset": "CV3-Eval RU zero-shot/cross-lingual voice cloning, independent Russian text, plus private English reference speech"
     },
     {
       "order": 8,
@@ -131,7 +131,7 @@
       "runner_stage": "human_review",
       "metric": "native Russian accent MOS, timbre likeness MOS, pause MOS, source-bed audibility MOS",
       "gold": "3+ independent native-language raters, speaker/rater blinding",
-      "automation": "ratings ingestion implemented, randomized pack pending",
+      "automation": "offline randomized A/B/source WAV review pack, browser and CSV evaluator implemented; independent native-RU ratings NOT_RUN",
       "dataset": "fixed 15-30s snippets from same oracle sources"
     }
   ],
@@ -148,8 +148,8 @@
       "oracles": [
         "sentence transcription"
       ],
-      "select": "up to 10 preselected test clips per language; speaker disjoint",
-      "data_license": "check release card before export",
+      "select": "8-10 local test WAVs per EN/DE/ES/RU language; frozen IDs; existing 60 Russian test clips on Mac; source transcripts independent of PersoDub",
+      "data_license": "CC BY 4.0 (official google/fleurs card)",
       "suitable_for": [
         "asr"
       ],
@@ -170,8 +170,8 @@
       "oracles": [
         "parallel multilingual text"
       ],
-      "select": "20 held-out pairs; keep exact row IDs; source video context separate",
-      "data_license": "verify benchmark terms",
+      "select": "legacy FLORES-200; prefer maintained FLORES+ after accepting official terms; freeze split+id, keep data private",
+      "data_license": "CC BY-SA 4.0; official Hugging Face distribution gated for evaluation",
       "suitable_for": [
         "translation"
       ],
@@ -258,7 +258,7 @@
         "paired speech"
       ],
       "select": "one paired speech/singing item per target language if release terms permit",
-      "data_license": "see dataset-specific terms",
+      "data_license": "free-to-use under dataset-specific terms; do not infer audio rights from code repository license",
       "suitable_for": [
         "speech-vs-song",
         "pitch/exercise retention"
@@ -323,6 +323,56 @@
       "not_suitable_for": [
         "speech diarization"
       ]
+    },
+    {
+      "id": "CV3-Eval",
+      "url": "https://github.com/QwenAudio/CV3-Eval",
+      "languages": ["en", "de", "es", "ru"],
+      "oracles": ["fixed target text", "reference audio supplied for a voice-cloning similarity check"],
+      "select": "3-8 RU zero-shot voice cloning prompts with fixed target text; freeze audio SHA and model weights; preserve identical speaker references across systems",
+      "data_license": "evaluation code Apache-2.0; source audios combine Common Voice, FLEURS, EmoBox and web-derived recordings; assess selected audio separately",
+      "suitable_for": ["TTS WER/CER", "speaker embedding similarity diagnostic", "signal quality diagnostic"],
+      "not_suitable_for": ["automatic native-Russian accent PASS", "vocal singing boundaries", "independent human native-accent MOS"]
+    },
+    {
+      "id": "FLORES+",
+      "url": "https://huggingface.co/datasets/openlanguagedata/flores_plus",
+      "languages": ["en", "de", "es", "ru"],
+      "oracles": ["dev/devtest parallel human-translated text keyed by split+id"],
+      "select": "20 disjoint devtest ids each EN/DE/ES->RU; accept official HF terms before dataset access; do not expose test text in Git",
+      "data_license": "CC BY-SA 4.0; Hugging Face terms acceptance/token required; evaluation-only",
+      "suitable_for": ["reference chrF++", "COMET / MetricX with independent translated references"],
+      "not_suitable_for": ["speaker identity", "original music preservation", "direct native-Russian TTS pronunciation"]
+    },
+    {
+      "id": "MuST-C",
+      "url": "https://aclanthology.org/N19-1202/",
+      "languages": ["en", "ru"],
+      "oracles": ["TED talk source audio/transcripts with manual Russian translations"],
+      "select": "selected held-out EN->RU TED excerpt recordings; freeze source talk ID to prevent dev/holdout contamination; verify source media licensing",
+      "data_license": "available to researchers; confirm source TED content terms before selecting clips",
+      "suitable_for": ["EN->RU speech-to-text translation with aligned spoken source", "real lecture translation adequacy"],
+      "not_suitable_for": ["DE/ES->RU from this dataset", "vocal exercise protection", "natural Russian cloned voice"]
+    },
+    {
+      "id": "VocalSound",
+      "url": "https://github.com/YuanGongND/vocalsound",
+      "languages": ["human vocalizations"],
+      "oracles": ["independent clip class labels for cough, sneeze, laugh, cry, scream, throat-clear"],
+      "select": "6-12 original short labelled clips, source-disjoint by person where person IDs are provided; no full 1.7GB corpus download",
+      "data_license": "CC BY-SA 4.0",
+      "suitable_for": ["non-speech vocal event classification", "protected sound identification at clip level"],
+      "not_suitable_for": ["singing", "continuous speech/exercise boundary truth", "translation adequacy"]
+    },
+    {
+      "id": "RUSLAN",
+      "url": "https://ruslan-corpus.github.io/",
+      "languages": ["ru"],
+      "oracles": ["one native Russian voice with transcript"],
+      "select": "a few unseen Russian sentence prompts as natural-speech anchor if corpus terms permit",
+      "data_license": "open corpus; verify dataset-specific terms before storing derived clips",
+      "suitable_for": ["Russian pronunciation comparison anchor", "Russian ASR sanity test"],
+      "not_suitable_for": ["multiple speaker resemblance", "human accent MOS", "foreign-language source voice cloning"]
     },
     {
       "id": "local_vocal_lesson",

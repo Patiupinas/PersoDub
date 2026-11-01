@@ -54,6 +54,7 @@ import { initLanguageRow } from "./languageRow.mjs";
 import { initConfirmDialogs } from "./confirmDialogs.mjs";
 import { initExportDialog } from "./exportDialog.mjs";
 import { initOverdubDialog } from "./overdubDialog.mjs";
+import { initQualityReport } from "./qualityReport.mjs";
 import { scorerProgressText } from "./scorerProgress.mjs";
 import { clearDraft, getDraft, keptSeconds, onDraftChange, setDraft, setRanges, setDraftRatio } from "./draft.mjs";
 import { readKept, keepDraft, dropKept, draftMark } from "./keptDrafts.mjs";
@@ -1951,6 +1952,7 @@ async function renderDone(job) {
   timeline.fitLayout();   // the two panes have a width to measure only now they are on show
   donePlayer.sizeVideoPane();   // and only now can the row say whether the two fit side by side
   if (!finished) {
+    qualityReport.clear();
     // Cancelled and failed are two different stories, and neither has a screen
     // of its own: the back chevron in the top bar is the way out of both. The
     // reason itself is the notice line's job -- it is the copy that carries the
@@ -1990,6 +1992,7 @@ async function renderDone(job) {
   subtitles.loadSubStyle(job.id);
   ratioUi.refresh();
   await scriptTable.renderScript(job.id);
+  if (state.jobId === job.id) qualityReport.show(job);
 }
 
 // The failure card's one way forward: ask the server to start the same job
@@ -2089,6 +2092,7 @@ const donePlayer = initDonePlayer({
   // Reached for when called: the timeline is wired further down this file.
   timeline: { paintTimeline: (t, total, clock) => timeline.paintTimeline(t, total, clock) },
 });
+const qualityReport = initQualityReport({ $ });
 
 // ---------------- Export dialog ----------------
 // One Export button for everything a project can hand back: a draft's kept
@@ -2157,7 +2161,10 @@ async function exportContext() {
     where: whereDownloadsGo(job), day: job.day,
   };
 }
-const overdubDialog = initOverdubDialog({ $ });
+const overdubDialog = initOverdubDialog({
+  $,
+  onExport: (jobId, filename) => qualityReport.showOverdub(jobId, filename),
+});
 const exportDialog = initExportDialog({
   $, getContext: exportContext, storage: localStorage, shell: window.persodubShell || null,
   onOverdub: (jid) => overdubDialog.open(jid),
@@ -2221,7 +2228,10 @@ const scriptTable = initScriptTableUi({
   getVideo: () => doneVideo,
   showVideoSource: donePlayer.showVideoSource,
   playRange,
-  reloadVideo: donePlayer.reloadDoneVideo,
+  reloadVideo: () => {
+    donePlayer.reloadDoneVideo();
+    qualityReport.refresh();
+  },
   getJob: () => state.job,
   // ChatGPT stopped Translate again: the dubbing's own popup, whose
   // translator buttons translate those lines with the one picked.

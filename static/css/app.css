@@ -1455,6 +1455,19 @@
     color: var(--foreground); background: color-mix(in srgb, var(--primary) 16%, var(--background));
     border-bottom: 1px solid var(--head-line); }
   .sc-changed b { font-weight: 600; }
+  /* Compact, opt-in details under the script actions. No claim of listening PASS. */
+  .sc-quality { flex: 0 0 auto; max-height: 36%; overflow: auto;
+    border-bottom: 1px solid var(--border); font-size: var(--font-label); }
+  .sc-quality summary { cursor: pointer; display: flex; gap: 10px; align-items: baseline;
+    padding: 7px 16px; color: var(--foreground); }
+  .sc-quality summary::before { content: "▸"; color: var(--muted-foreground); }
+  .sc-quality[open] summary::before { content: "▾"; }
+  .sc-quality summary strong { flex: 0 0 auto; font-weight: 600; }
+  .sc-quality summary span { color: var(--muted-foreground); min-width: 0; }
+  .sc-quality-details { padding: 0 16px 12px; color: var(--muted-foreground); }
+  .sc-quality-details p { margin: 4px 0 8px; }
+  .sc-quality-details ul { margin: 6px 0 9px; padding-left: 17px; }
+  .sc-quality-details li { margin: 3px 0; color: var(--foreground); }
   .sc-time { color: var(--primary); font-size: var(--font-label); font-variant-numeric: tabular-nums;
     white-space: nowrap; }
   .sc-src { color: var(--muted-foreground); min-width: 0; overflow-wrap: anywhere;

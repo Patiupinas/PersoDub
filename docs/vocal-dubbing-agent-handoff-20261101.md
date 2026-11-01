@@ -7,7 +7,7 @@
 **Docs-only continuation branch:** `docs/vocal-dubbing-agent-handoff-20261101`, based on the exact PR #32 head above. This document and root `AGENTS.md` are the only intended differences from that implementation snapshot.
 **Main at snapshot:** `6309632532f10bc74ae90e68b36c1537c1a34fee`. Do not assume later refs remain unchanged; query Git before acting.
 
-**P0 progress update, 2026-11-01:** See `docs/p0-overdub-real-export-20261101.md` on the P0 integration branch. Source-bound real-job baseline is reproduced (P0-A). PCM protected boundaries, Original stream-copy, source-audio tail duration and actual MP4 stream topology are fixed and verified on a 234.7-second all-REVIEW technical export (P0-B technical). Python 2,576 passed / 5 skipped, UI 1,138 passed, desktop 713 passed. This does **not** approve any translated vocal-lesson speech or resolve the reported Russian accent, 0.9-second SPK1 sample and truncated original Qwen job. The next task is to expose output-mode-specific QA in the finished-job UI and freeze independently reviewed speech/vocal boundaries.
+**P0 progress, 2026-11-01:** See `docs/p0-overdub-real-export-20261101.md` and `docs/p0-quality-report-and-mixed-validation-20261101.md`. Source-bound baseline reproduced (P0-A). Original audio/video stream integrity, protected fades and FFprobe topology verified on a real 234.7-second Overdub re-export (P0-B). The completed-job UI now has a read-only, output-mode-aware Quality check with Recheck and separate reviewed Overdub report. A real 8.55-second translated interval in a 234.7-second experimental mix preserves all 10,107 Original AAC and 7,039 video packets; the rest stays REVIEW, **not human-approved singing gold**. The existing Qwen job still shows the 0.9-second SPK1 sample, 5 overlong lines and 1.461-second truncation; none are solved by a good mux. **Next: independent human review of speech/vocal event boundaries and objective plus listening QA of the user-started redub.**
 
 ## 1. Mission and observable end state
 
@@ -193,7 +193,7 @@ python -m benchmarks.persodub.runner --manifest /new/bench-case/manifest.json --
 
 Use actual existing completed files; do not invent data or call an empty test directory an evaluated case. Keep individual outputs in unique local paths, never overwrite the original.
 
-6. Re-verify the P0-A real baseline and P0-B technical PASS from `docs/p0-overdub-real-export-20261101.md` against your **current commit and input hash**, then continue P0-B with finished-job output-mode QA and a genuinely reviewed TRANSLATE/PRESERVE export. Do not move directly to another neural model.
+6. Re-verify the P0-A baseline and P0-B technical/export/UI evidence from both `docs/p0-overdub-real-export-20261101.md` and `docs/p0-quality-report-and-mixed-validation-20261101.md` against your **current commit and input hash**. Automated mode-specific QA now exists. Continue with a genuinely human-reviewed full TRANSLATE/PRESERVE event plan and independent listening benchmarks, not another neural model.
 7. Each new PR should record: base/head commit, exact source + weights/config SHAs, changed ownership boundary, focused and full checks actually run, baseline-vs-new metrics, real sample IDs and unresolved acceptance gaps. Keep a single current task/next action.
 
 ### Machine map as checked 2026-11-01

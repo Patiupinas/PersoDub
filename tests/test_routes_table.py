@@ -43,6 +43,7 @@ ROUTES = [
     ('GET', '/api/dub/jobs/{jid}'),
     ('GET', '/api/dub/jobs/{jid}/overdub/files/{name}'),
     ('GET', '/api/dub/jobs/{jid}/perso/edit'),
+    ('GET', '/api/dub/jobs/{jid}/quality'),
     ('GET', '/api/dub/jobs/{jid}/s2st'),
     ('GET', '/api/dub/jobs/{jid}/s2st/files/{run_id}/{name}'),
     ('GET', '/api/dub/jobs/{jid}/s2st/source/{index}'),

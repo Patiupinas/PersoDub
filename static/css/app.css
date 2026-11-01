@@ -3060,7 +3060,11 @@
 .overdub-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
 .overdub-controls input { width: 110px; padding: 6px; }
 .overdub-list { max-height: 33vh; overflow: auto; border: 1px solid var(--border, #ddd); border-radius: 6px; }
-.overdub-row { display: grid; grid-template-columns: 110px minmax(80px, 1fr) minmax(160px, 2fr); align-items: center; gap: 12px; padding: 7px 10px; border-bottom: 1px solid var(--border, #ddd); font-size: 13px; }
+.overdub-row { display: grid; grid-template-columns: 110px 68px minmax(80px, 1fr) minmax(160px, 2fr); align-items: center; gap: 12px; padding: 7px 10px; border-bottom: 1px solid var(--border, #ddd); font-size: 13px; }
+.overdub-source-player { display: grid; gap: 6px; margin: 10px 0; }
+.overdub-source-player p { font-size: 12px; color: var(--muted); margin: 0; }
+.overdub-source-player video { display: block; width: 100%; max-height: 240px; background: #101010; border-radius: 6px; }
+.overdub-play { white-space: nowrap; }
 .overdub-row:last-child { border-bottom: 0; }
 .overdub-row select { width: 100%; min-width: 0; }
 .overdub-clock { font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -3069,7 +3073,7 @@
 .overdub-levels input { min-width: 0; padding: 6px; }
 .overdub-confirm { display: flex; align-items: flex-start; gap: 10px; margin: 13px 0; }
 .overdub-confirm input { margin-top: 3px; }
-@media (max-width: 550px) { .overdub-row { grid-template-columns: 1fr 1fr; gap: 6px; } .overdub-row select { grid-column: 1 / -1; } }
+@media (max-width: 550px) { .overdub-row { grid-template-columns: 1fr auto; gap: 6px; } .overdub-row .overdub-play { grid-column: 2; grid-row: 1; } .overdub-row .overdub-hint { grid-column: 1 / -1; } .overdub-row select { grid-column: 1 / -1; } }
 
 
 /* Long videos keep only one bounded page of review controls in the DOM. */

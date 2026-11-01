@@ -52,6 +52,8 @@ export function overDubRowsHtml(items, indexOffset = 0) {
     ];
     return `<div class="overdub-row">
       <span class="overdub-clock">${atTime(entry.start_frame)}-${atTime(entry.end_frame)}s</span>
+      <button class="btn btn-outline btn-sm overdub-play" type="button" data-od-play="${index}"
+        aria-label="${t("Listen to original interval")} ${index + 1}">${t("Listen")}</button>
       <span class="overdub-hint">${escapeHtml(hint || t("Unknown"))}${certainty}</span>
       <select data-od-index="${index}" aria-label="${t("Treatment for audio interval")} ${index + 1}">
         ${choices.map(([value, name]) => `<option value="${value}"${entry.action === value ? " selected" : ""}>${escapeHtml(name)}</option>`).join("")}
@@ -83,6 +85,8 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
   const previousPage = $("overdubPagePrev");
   const nextPage = $("overdubPageNext");
   const pageLabel = $("overdubPageLabel");
+  const sourcePlayer = $("overdubSourcePlayer");
+  let previewStopTime = null;
 
   const allReview = () => events.every((row) => row.action === "REVIEW");
   function paint() {
@@ -160,12 +164,19 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
     if (busy) return;
     ++generation;
     jobId = null;
+    previewStopTime = null;
+    sourcePlayer.pause();
+    sourcePlayer.removeAttribute("src");
+    sourcePlayer.load();
     s2stLab.close();
     overlay.classList.remove("open");
   }
   async function open(jid) {
     if (!jid || busy) return;
     jobId = jid;
+    sourcePlayer.pause();
+    previewStopTime = null;
+    sourcePlayer.src = `/api/dub/jobs/${encodeURIComponent(jid)}/overdub/source`;
     preview = null;
     events = [];
     page = 0;
@@ -176,6 +187,30 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
     paint();
     await prepare(false);
   }
+  // Seek on the existing original-video endpoint, never the translated mix.
+  // Source playback is observation only; it does not change A4 actions.
+  list.addEventListener("click", (event) => {
+    const control = event.target.closest("[data-od-play]");
+    if (!control || busy || !preview) return;
+    const index = Number(control.dataset.odPlay);
+    const item = events[index];
+    if (!item || !Number.isSafeInteger(index)) return;
+    const start = item.start_frame / OVERDUB_RATE;
+    const end = item.end_frame / OVERDUB_RATE;
+    previewStopTime = end;
+    sourcePlayer.pause();
+    sourcePlayer.currentTime = Math.max(0, start - 0.4);
+    const started = sourcePlayer.play();
+    if (started && typeof started.catch === "function") {
+      started.catch(() => message(t("Could not play original video.")));
+    }
+  });
+  sourcePlayer.addEventListener("timeupdate", () => {
+    if (previewStopTime !== null && sourcePlayer.currentTime >= previewStopTime) {
+      sourcePlayer.pause();
+      previewStopTime = null;
+    }
+  });
   list.addEventListener("change", (event) => {
     const field = event.target.closest("[data-od-index]");
     if (!field || busy) return;

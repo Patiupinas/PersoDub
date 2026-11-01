@@ -69,7 +69,7 @@ def _paired_files(root, case):
 def _input_fingerprints(root, case):
     """Preserve evidence identity, not local full paths or transcript contents."""
     inputs = {}
-    for field in ("reference", "candidate", "source", "events"):
+    for field in ("reference", "candidate", "source", "events", "quality_report"):
         raw = case.get(field)
         if not isinstance(raw, str):
             continue
@@ -183,6 +183,9 @@ def _stage_metrics(root: Path, case: dict) -> dict:
     if stage == "export":
         return _render_export(root, case)
     if stage == "translation":
+        if case.get("quality_report"):
+            from benchmarks.persodub.translation_report import verify_report
+            return verify_report(_asset(root, case, "reference"), _asset(root, case, "candidate"), _json(root, case, "quality_report"))
         # There can be many valid paraphrases. Lexical edit distance is not
         # a semantic translation quality metric. Do not issue a fake PASS.
         return {

@@ -906,6 +906,7 @@
   "{n} parts": "구간 {n}개",
   "{n} s": "{n}초",
   "{n} selected": "{n}줄 선택됨",
+  "{n} source transcript cue(s) have questionable word timings ({zero} zero-duration words).": "원본 음성 인식 자막 {n}개 구간에서 단어 시간 정보가 의심스럽습니다(길이 0인 단어 {zero}개).",
   "{n} speech line(s) cut; {seconds} seconds lost.": "{n}개 음성 구간이 잘려 총 {seconds}초가 누락되었습니다.",
   "{n} supported languages": "지원 언어 {n}개",
   "{reason} Press Resume to pick up where it stopped.": "{reason} '이어 하기'를 누르면 멈춘 곳부터 받아요.",

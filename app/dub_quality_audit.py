@@ -13,6 +13,7 @@ import wave
 from pathlib import Path
 
 from app.qwen_assemble import _voiced_bounds
+from app.source_transcript_quality import summarize_source_timing
 
 VOICE_REFERENCE_MIN_SECONDS = 2.0
 VOICE_REFERENCE_MAX_WORDS_PER_SECOND = 6.0
@@ -145,6 +146,14 @@ def audit_completed(work_dir, expected_mode=None, output_name=None):
                 "speaker": speaker, "words_per_second": round(words_per_second, 2),
             })
 
+    source_timing = summarize_source_timing(_load(root / "transcript.json"))
+    if source_timing["status"] == "review_required":
+        issues.append({
+            "code": "source_transcript_timing_review",
+            "count": source_timing["review_cue_count"],
+            "zero_duration_words": source_timing["zero_duration_words"],
+        })
+
     translated = _load(root / "lines.json", {}) or {}
     speaker_cues = _load(root / "speakers.json", []) or []
     lines = translated.get("lines", []) if isinstance(translated, dict) else []
@@ -228,6 +237,7 @@ def audit_completed(work_dir, expected_mode=None, output_name=None):
         "expected_audio_mode": expected_mode,
         "reference_quality": ref_quality,
         "timing_overruns": duration_issues,
+        "source_transcript_timing": source_timing,
         "issues": issues,
         "speaker_similarity_model_scores": raw_similarity,
         "human_review_remaining": [

@@ -906,6 +906,7 @@
   "{n} parts": "{n} parts",
   "{n} s": "{n} s",
   "{n} selected": "{n} selected",
+  "{n} source transcript cue(s) have questionable word timings ({zero} zero-duration words).": "{n} source transcript cue(s) have questionable word timings ({zero} zero-duration words).",
   "{n} speech line(s) cut; {seconds} seconds lost.": "{n} speech line(s) cut; {seconds} seconds lost.",
   "{n} supported languages": "{n} supported languages",
   "{reason} Press Resume to pick up where it stopped.": "{reason} Press Resume to pick up where it stopped.",

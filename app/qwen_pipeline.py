@@ -56,6 +56,7 @@ from app.engines.base import (
 from app.jobs import JobCancelled, raise_if_cancelled, shown_error
 from app.nonverbal import apply_nonverbal_whitelist
 from app.qwen_assemble import (
+    END_HEADROOM_SECONDS,
     _trim_lead_tail_silence,
     _voiced_bounds,
     line_play_durations,
@@ -1174,8 +1175,8 @@ def _write_lines_manifest(work_dir: str, language: str, segments: List[dict], se
 
 
 def _write_clipped_lines(work_dir: str, clipped: List[dict]) -> None:
-    """clipped_lines.json: the lines place_lines cut short, as
-    {"clipped": [{"line": i, "cut_s": s}, ...], "clipped_count": n}."""
+    """Persist the existing clipped-lines QA ledger, including fully skipped
+    generated lines marked with "skipped": true and their lost duration."""
     with open(os.path.join(work_dir, "clipped_lines.json"), "w", encoding="utf-8") as f:
         json.dump({"clipped": clipped, "clipped_count": len(clipped)}, f, ensure_ascii=False, indent=1)
 
@@ -1280,6 +1281,25 @@ def _assemble(segments: List[dict], line_paths: List[Optional[str]], starts: Lis
     return out_wav
 
 
+def _playable_usable_slots(segments: List[dict], video_duration: Optional[float]) -> List[float]:
+    """Bound each TTS, pace and scoring slot by the actual audio assembly clock.
+
+    Cue ends and borrowed silence can exceed the next cue's start or the video
+    end. The mixer stops the current line before the next onset, preserving
+    END_HEADROOM_SECONDS of clearance. Use the same stable sort as the mixer.
+    """
+    slots = effective_slots(segments, total_dur=video_duration)
+    order = sorted(range(len(segments)), key=lambda i: (segments[i]["start"], i))
+    for n, i in enumerate(order):
+        limit = video_duration
+        if n + 1 < len(order):
+            next_onset = segments[order[n + 1]]["start"] - END_HEADROOM_SECONDS
+            limit = min(limit, next_onset) if limit is not None else next_onset
+        if limit is not None:
+            slots[i] = round(max(0.0, min(slots[i], limit - segments[i]["start"])), 3)
+    return slots
+
+
 def run_qwen_dub(
     engine, segments: List[dict], ref_cues: List[dict], work_dir: str,
     vocals_path: str, background_path: str,
@@ -1326,7 +1346,7 @@ def run_qwen_dub(
     # assign_voices writes each reference to ref_wav_path -- reuse it as the
     # scorer's speaker-embedding source (best-of-N selection compares takes against these).
     speaker_ref_paths = {spk: ref_wav_path(work_dir, spk) for spk in refs}
-    usable_slots = effective_slots(segments)
+    usable_slots = _playable_usable_slots(segments, video_duration)
 
     line_paths = synth_lines(engine, segments, seg_speakers, voice_ids, language, work_dir,
                              n_takes=n_takes, log=log,

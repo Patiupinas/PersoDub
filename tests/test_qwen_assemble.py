@@ -303,6 +303,30 @@ def test_place_lines_identical_starts_resolved_deterministically_not_summed(tmp_
     assert len(collisions) == 1  # collision is logged, not silent
 
 
+def test_place_lines_reports_complete_skips_in_existing_quality_ledger(tmp_path):
+    bg = tmp_path / "bg.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, SR, 2))
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    _write_wav(first, SR, 1, 2, _const_frames(1000, 4800, 1))
+    _write_wav(second, SR, 1, 2, _const_frames(2000, 4800, 1))
+    clipped = []
+    place_lines(str(bg), [str(first), str(second)], [0.2, 0.2],
+                str(tmp_path / "out.wav"), clipped=clipped)
+    assert clipped == [{"line": 1, "cut_s": 0.1, "skipped": True}]
+
+
+def test_place_lines_reports_out_of_video_skips_in_existing_quality_ledger(tmp_path):
+    bg = tmp_path / "bg.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, SR, 2))
+    line = tmp_path / "late.wav"
+    _write_wav(line, SR, 1, 2, _const_frames(3000, 4800, 1))
+    clipped = []
+    place_lines(str(bg), [str(line)], [1.1], str(tmp_path / "out.wav"),
+                clipped=clipped)
+    assert clipped == [{"line": 1, "cut_s": 0.1, "skipped": True}]
+
+
 def test_place_lines_near_collision_under_30ms_warns_instead_of_silent_drop(tmp_path):
     bg = tmp_path / "bg.wav"
     _write_wav(bg, SR, 2, 2, _const_frames(0, SR, 2))

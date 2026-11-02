@@ -77,7 +77,7 @@
       "runner_stage": "job_audit",
       "metric": "reference duration, transcript density, speaker purity, cross-lingual EER",
       "gold": "source recording plus independently established identity",
-      "automation": "physical plausibility audited; EER planned",
+      "automation": "physical plausibility audited; offline cached WavLM cross-language proxy tested, external RU control outranks EN source on 8/9 generated clips; not validated speaker identity; EER planned",
       "dataset": "VoxConverse and real reference sample"
     },
     {
@@ -86,7 +86,7 @@
       "runner_stage": "tts_readback",
       "metric": "independent Russian ASR WER/CER, native accent MOS, speaker ABX, phoneme error",
       "gold": "fixed target text, independent ASR, human-blind panel",
-      "automation": "lexical readback implemented; accent ABX pending",
+      "automation": "lexical readback implemented; WavLM voice similarity proxy instrumented but failed cross-language negative control, official ERes2Net and native-RU accent ABX NOT_RUN",
       "dataset": "CV3-Eval RU zero-shot/cross-lingual voice cloning, independent Russian text, plus private English reference speech"
     },
     {

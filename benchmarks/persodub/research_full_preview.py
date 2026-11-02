@@ -79,9 +79,17 @@ def splice_unapproved_pcm(source_pcm, manifest, voice_root, offset_s=145.0,
         if not len(speech):
             raise ValueError("Empty synthesized voice clip")
         source_offset = case.get("offset_s", offset_s)
-        start = round((source_offset + case["start"]) * SR)
+        onset = source_offset + case["start"]
+        # The legacy research script placed one actual 169.36s speech cue
+        # at 168.36s. Do not preserve this premature TTS onset in new mixes.
+        if case.get("source_start") is not None:
+            onset = max(onset, case["source_start"])
+        start = round(onset * SR)
         end = start + len(speech)
-        limit = round((source_offset + case["slot_end"]) * SR)
+        slot_end = source_offset + case["slot_end"]
+        if case.get("source_end") is not None:
+            slot_end = min(slot_end, case["source_end"])
+        limit = round(slot_end * SR)
         if start < 0 or end > limit or end > len(source_pcm) or active[start:end].any():
             raise ValueError("Voice exceeds source slot, video end or adjacent speech")
         active[start:end] = True

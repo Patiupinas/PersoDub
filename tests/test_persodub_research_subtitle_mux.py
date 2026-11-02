@@ -40,3 +40,38 @@ def test_synthetic_review_approval_cannot_replace_source_authority():
     bad["cases"][0]["a4_reviewed"] = True
     with pytest.raises(ValueError):
         draft_russian_cues(bad)
+
+
+def test_subtitle_cue_never_starts_before_source_speech():
+    frozen = _base()
+    frozen["cases"][0]["source_start"] = 145.6
+    frozen["cases"][0]["source_end"] = 148.5
+    cues = draft_russian_cues(frozen)
+    assert cues[0]["start"] == 145.6
+    assert cues[0]["end"] == pytest.approx(147.52)
+
+
+
+def test_actual_pcm_receipt_owns_subtitle_time_instead_of_old_timbre_duration():
+    frozen = _base()
+    actual = [{
+        "id": "a", "start_frame": 6977280, "end_frame": 7046400,
+        "slot_end_frame": 7104000,
+    }]
+    cues = draft_russian_cues(frozen, placements=actual)
+    assert cues[0]["start"] == pytest.approx(145.36)
+    assert cues[0]["end"] == pytest.approx(146.8)
+    assert cues[0]["end"] != pytest.approx(147.12)
+
+
+def test_actual_pcm_receipt_rejects_unknown_or_nonmatching_placements():
+    with pytest.raises(ValueError, match="no real voice placement"):
+        draft_russian_cues(_base(), placements=[{
+            "id": "other", "start_frame": 100, "end_frame": 200,
+            "slot_end_frame": 300,
+        }])
+    with pytest.raises(ValueError, match="Invalid actual voice placement"):
+        draft_russian_cues(_base(), placements=[{
+            "id": "a", "start_frame": 100, "end_frame": 300,
+            "slot_end_frame": 200,
+        }])

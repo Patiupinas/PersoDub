@@ -48,3 +48,30 @@ python -m benchmarks.persodub.research_full_preview --video /private/original/in
 ```
 
 The official `app.vocal_overdub_export` remains the **only product A4-approved route**. The next hard product-quality gate is true human source speech/exercise boundaries, corrected Russian adequacy, native-Russian blind voice ratings and timing on the full four minutes. Do not merge this research output into the product default or publish private audio/video/dataset files.
+
+## Subsequent exact-source 24-clip result (Mac, 2026-11-02/03)
+
+The completed local Qwen3-TTS research re-synthesis generated 19 additional AI-authored Russian **speech-only** drafts from the corrected bounded-source English SRT, using the previously saved 6.56 s speech-dominant SPK0 reference. First passes fit 14/19 source slots, then **shorter Russian phrasing** plus selected retakes produced 19/19 fitting WAVs. The earlier 5 frozen 145-179s drafts were combined with them: final total **24 Russian clips, 112.56 s of active synthesized voice**. Private manifests include per-file SHA, text, voice seed, slot, A4 NOT_APPROVED and review flags. None of these draft translations is independent bilingual gold.
+
+**Measured source-clock defect and repair:** the initial 34-second research manifest placed case `d` at 168.36 s despite source English speech starting 169.36 s. The research mixer now takes the maximum of the candidate and source onset and caps it by the source end. The prior timbre clip (3.12 s) no longer fits the true 169.36-171.60 s source interval; the previously cached 2.08 s clean-reference ICL clip fits there, so the final 24-clip mix uses that real existing take. The same source-clock constraint applies to bilingual captions. Subtitle cue timestamps in the verified final variant are taken from the **actual PCM placement receipt** (SHA-bound to the exact two-audio MP4), not an obsolete timbre duration in the draft manifest.
+
+**Final preferred listening artifact** on Raymonds-Laptop.local:
+
+`~/Documents/PersoDub-Research/reports/p1-full-lesson-research-20261102/breath-control-234s-corrected-24-verified-bilingual.mp4`
+
+This MP4 contains source video, selectable **Overdub** and byte-identical AAC **Original** audio streams, and 74 English and 24 Russian text cues as separately selectable subtitle streams. The video is still only **partially dubbed**: demonstrations, pauses, uncertain source intervals and other material outside the 24 approved-for-**research-only** speech clip windows keep their original English audio.
+
+The entire original decoded PCM outside 24 selected synthesis windows is **exactly unchanged** across **5,861,956 frames (122.124083 s)**; the remaining **5,402,880 frames (112.56 s)** receive translated-voice mixing. The full source has **11,264,836 frames (234.684083 s)**. Independent FFprobe packet-data SHA comparisons to original prove **7,039/7,039 video packets** and **10,107/10,107 original AAC packets** identical, even in the final five-stream bilingual export. Local receipt and verification:
+
+- `breath-control-234s-corrected-24-voice.json`
+- `final-24-verified-technical-validation.json`
+- `final-24-ru-caption-clock-validation.json` (all 24 Russian subtitles were extracted from the final MP4 and compared against the actual placed PCM frames; **maximum timing error 0.000 seconds** on the millisecond subtitle clock)
+- `full-lesson-ru-independent-asr.json` (independent recognizer's raw words/metrics; private)
+
+The preserved original PCM and compressed packet checks establish **technical pass for this frozen source only**. They are not human semantic, A4, speaker likeness or singing boundary gold.
+
+Independent local **Faster-Whisper Large-v3 CPU int8** readback of all 24 RU clips against their *TTS target text*, not source-language meaning, returned **7 edit errors / 232 reference words = WER 0.030172 (3.0172%)**; five target lines had nonzero errors. Report: `full-lesson-ru-independent-asr.json`. Recognizability is not a native accent, voice similarity, correct translation or preserved-pause MOS assessment. Human native-RU panel scores and complete mixed speech/exercise A4 source boundaries still **NOT_RUN**.
+
+No fresh weights/downloads, no training, no Github Actions or main/default product cutover. The isolated Qwen MPS HTTP sidecar was stopped after inference, leaving no active TTS server. Older 5-clip and 23-clip research MP4s remain diagnostic historical outputs and have **not** received the corrected source onset or the final exact subtitle-placement timing.
+
+**One next action:** use existing A4 UI on the original source to approve source speech/exercise boundaries, then conduct a genuine native-RU blinded voice/pause/translation adequacy review against this 24-clip private variant. Keep source media and translated text private until human quality is verified.

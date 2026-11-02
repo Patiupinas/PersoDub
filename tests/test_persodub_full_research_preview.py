@@ -74,3 +74,25 @@ def test_case_specific_offset_overrides_base_clip_offset(tmp_path):
                                 offset_s=0.0)]), tmp_path, offset_s=145.0)
     assert np.flatnonzero(mask)[0] == 9600
     assert len(mixed) == 48000
+
+
+def test_legacy_early_voice_is_not_placed_before_original_speech(tmp_path):
+    # Historic case d started at 168.36s despite original English at 169.36s.
+    _voice(tmp_path / "d.wav", frames=1 * 48000)
+    source = np.zeros((3 * 48000, 2), dtype="<i2")
+    row = dict(_case("d", 0.36, 2.6, "d.wav"),
+               source_start=1.36, source_end=2.6)
+    mixed, mask, receipt = splice_unapproved_pcm(
+        source, _manifest([row]), tmp_path, offset_s=0)
+    assert np.flatnonzero(mask)[0] == round(1.36 * 48000)
+    assert receipt[0]["start_frame"] == round(1.36 * 48000)
+    assert np.array_equal(mixed[~mask], source[~mask])
+
+
+def test_legacy_overlong_voice_is_rejected_on_actual_source_onset(tmp_path):
+    _voice(tmp_path / "d.wav", frames=3 * 48000)
+    source = np.zeros((4 * 48000, 2), dtype="<i2")
+    row = dict(_case("d", 0.36, 2.6, "d.wav"),
+               source_start=1.36, source_end=2.6)
+    with pytest.raises(ValueError, match="exceeds source slot"):
+        splice_unapproved_pcm(source, _manifest([row]), tmp_path, offset_s=0)

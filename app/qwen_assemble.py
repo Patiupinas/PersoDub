@@ -610,9 +610,10 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
     (pre-placement) length -- nothing plays past the end of the video either.
 
     clipped (optional): a list this function appends {"line": n, "cut_s": s}
-    to, n being the script's line number (from 1), one entry per line
-    actually cut short (never a full skip, and never the line's text -- see app/qwen_assemble.py's own log lines for the same
-    rule). The caller's to keep across every place_lines call in one job and
+    for a partial cut, or {"line": n, "cut_s": s, "skipped": True} when a
+    synthesized line has no playable space. In both cases n is the script's
+    1-based line number; no speech text is included. The caller keeps this
+    across every place_lines call in one job and
     hand to the job's result data, so the UI can show it later.
 
     vocals_path + speech_regions (optional): if given, the original vocals
@@ -734,6 +735,14 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
         if gain != 1.0:
             line = audioop.mul(line, MIX_WIDTH, gain)
         if maxlen_frames <= 0:
+            # A completely dropped line is still lost translated speech.
+            # Record it in the existing clipped-lines QA ledger.
+            if clipped is not None and line_frames > 0:
+                clipped.append({
+                    "line": i + 1,
+                    "cut_s": round(line_frames / float(SR), 3),
+                    "skipped": True,
+                })
             if nxt is not None:
                 log("   Warning: line %d at %.3fs collides with the next line's start (%.3fs) -- "
                     "skipped to avoid overlap" % (i, start, nxt))

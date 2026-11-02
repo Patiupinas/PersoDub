@@ -414,6 +414,72 @@ def test_synth_lines_n_takes_merge_wiring_one_merged_call_per_take(tmp_path, mon
 # --- run_qwen_dub end-to-end (all engine calls mocked; vocals/background are
 # local paths supplied directly by the caller, as app/pipeline.py always does) --
 
+def test_playable_slots_cap_overlapping_cues_to_next_onset():
+    segments = [{"start": 0.0, "end": 2.0}, {"start": 1.5, "end": 3.0}]
+    # The assembler fades and stops line 0 before line 1 starts at 1.5s.
+    assert qp._playable_usable_slots(segments, video_duration=3.0) == [1.47, 1.5]
+
+
+def test_playable_slots_follow_mixer_sort_order_not_input_order():
+    segments = [
+        {"start": 2.0, "end": 3.0},
+        {"start": 0.0, "end": 1.0},
+        {"start": 0.9, "end": 2.0},
+    ]
+    assert qp._playable_usable_slots(segments, video_duration=3.0) == [1.0, 0.87, 1.07]
+
+
+def test_scored_takes_reject_audio_too_long_for_actual_mix(monkeypatch, tmp_path):
+    segments = [
+        {"start": 0.0, "end": 2.0, "text": "first"},
+        {"start": 1.5, "end": 3.0, "text": "second"},
+    ]
+    paths = [["first-long.wav", "first-fitting.wav"], []]
+
+    def scored(_refs, _payload, _language, _dir, log=None):
+        return {0: [
+            {"k": 0, "sim": 0.95, "sim_other": 0.1, "asr": 0.95,
+             "dur": 1.8, "emb": [1.0, 0.0]},
+            {"k": 1, "sim": 0.80, "sim_other": 0.1, "asr": 0.95,
+             "dur": 1.25, "emb": [1.0, 0.0]},
+        ]}
+
+    monkeypatch.setattr(qp, "score_takes", scored)
+    old = qp._score_and_select(paths, segments, ["A", "A"],
+                               [2.0, 1.5], {"A": "ref.wav"}, "Russian",
+                               str(tmp_path), lambda _message: None)
+    actual = qp._score_and_select(paths, segments, ["A", "A"],
+                                  qp._playable_usable_slots(segments, 3.0),
+                                  {"A": "ref.wav"}, "Russian",
+                                  str(tmp_path), lambda _message: None)
+    assert old == {0: 0}
+    assert actual == {0: 1}
+
+
+def test_playable_slots_cap_last_line_at_video_end():
+    segments = [{"start": 1.4, "end": 3.0}]
+    assert qp._playable_usable_slots(segments, video_duration=2.0) == [0.6]
+
+
+def test_playable_slots_preserve_bounded_borrow_and_no_video_duration():
+    segments = [{"start": 0.0, "end": 2.0}, {"start": 3.0, "end": 5.0}]
+    assert qp._playable_usable_slots(segments, video_duration=None) == [2.4, 2.0]
+    assert qp._playable_usable_slots(segments, video_duration=6.0) == [2.4, 2.4]
+
+
+def test_run_qwen_dub_synthesis_uses_physical_placement_slot(monkeypatch, tmp_path):
+    segments = [{"start": 0.5, "end": 2.0, "text": "a translated sentence"}]
+    ref = [_cue(0.0, 5.0, "an original sentence to reference", "A")]
+    monkeypatch.setattr(qp, "cut_vocals_span_local", lambda *a, **k: b"REF" * 1000)
+    monkeypatch.setattr(qp, "match_line_gains", lambda *a, **k: [1.0])
+    monkeypatch.setattr(qp, "_assemble", lambda *a, **k: str(tmp_path / "mix.wav"))
+    engine = _FakeEngine()
+    qp.run_qwen_dub(engine, segments, ref, str(tmp_path), "vocals.wav", "bg.wav",
+                    video_duration=1.0)
+    assert len(engine.synth_calls) == 1
+    assert engine.synth_calls[0].duration == 0.5
+
+
 def test_run_qwen_dub_orchestrates_full_flow(monkeypatch, tmp_path):
     ref_cues = [
         _cue(0.0, 5.0, "hello this is speaker A talking a lot right now", "A"),

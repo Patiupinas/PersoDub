@@ -117,7 +117,7 @@ def test_shorter_dub_is_zero_padded_on_same_source_clock(tmp_path):
     mixed = tmp_path / "mixed.wav"
     render_overdub(src, dub, plan, mixed)
     assert sample(mixed, 0.4) > sample(mixed, 1.4)
-    assert abs(sample(mixed, 1.4) - round(5000 * 10 ** (-16 / 20))) <= 1
+    assert sample(mixed, 1.4) == sample(src, 1.4)
 
 
 def test_plan_action_must_cover_complete_source_without_overlap(tmp_path):
@@ -227,7 +227,7 @@ def test_silent_dub_does_not_bypass_verified_manifest(tmp_path):
     out = tmp_path / "mixed.wav"
     receipt = render_overdub(src, dub, plan, out)
     assert receipt["frames"] == 144000
-    assert sample(out, 0.5) == round(8000 * 10 ** (-16 / 20))
+    assert sample(out, 0.5) == sample(src, 0.5)
 
 
 def test_gain_profile_math_is_bounded_by_unity():
@@ -313,3 +313,68 @@ def test_separator_tail_rejects_non_silence_or_unbounded_padding(
     with pytest.raises(OverdubError, match="outlast"):
         render_overdub(source, voice, plan, tmp_path / "output.wav")
     assert not (tmp_path / "output.wav").exists()
+
+
+def test_original_voice_recovers_right_after_russian_voice_ends_inside_a_long_cue(tmp_path):
+    """The first sung demonstration must not wait for the entire SRT window."""
+    src = wav(tmp_path / "source.wav", seconds=4.0, amplitude=9500)
+    dub = wav(tmp_path / "voice.wav", seconds=1.2, amplitude=16000)
+    plan = make_plan(tmp_path, src, [
+        {"start_frame": 0, "end_frame": 3 * 48000, "action": "TRANSLATE"},
+        {"start_frame": 3 * 48000, "end_frame": 4 * 48000, "action": "PRESERVE"},
+    ])
+    mixed = tmp_path / "mixed.wav"
+    render_overdub(src, dub, plan, mixed, levels=OverdubLevels(-16, -2, 300))
+    assert sample(mixed, 0.5) > sample(src, 0.5)
+    # Unlike a 300 ms cue-edge fade, original must be back within 150 ms
+    # of the *actual* final voiced Russian sample.
+    for at_second in (1.35, 1.5, 2.0, 2.7, 3.0, 3.5):
+        assert sample(mixed, at_second) == sample(src, at_second)
+
+
+def test_short_silent_gap_inside_russian_sentence_does_not_pump_original(tmp_path):
+    src = wav(tmp_path / "source.wav", seconds=2.0, amplitude=8000)
+    dub = tmp_path / "dub.wav"
+    with wave.open(str(dub), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(struct.pack("<hh", 16000, 16000) * int(0.55 * 48000))
+        w.writeframes(b"\x00" * int(0.09 * 48000 * 4))
+        w.writeframes(struct.pack("<hh", 16000, 16000) * int(0.55 * 48000))
+        w.writeframes(b"\x00" * int(0.81 * 48000 * 4))
+    plan = make_plan(tmp_path, src, [
+        {"start_frame": 0, "end_frame": 2 * 48000, "action": "TRANSLATE"},
+    ])
+    mixed = tmp_path / "mixed.wav"
+    render_overdub(src, dub, plan, mixed)
+    assert sample(mixed, 0.59) == round(8000 * 10 ** (-16 / 20))
+    assert sample(mixed, 0.60) == round(8000 * 10 ** (-16 / 20))
+    assert sample(mixed, 1.40) == sample(src, 1.40)
+
+
+def test_full_original_is_audible_inside_translate_if_russian_track_is_silent(tmp_path):
+    src = wav(tmp_path / "source.wav", seconds=2.0, amplitude=9000)
+    dub = wav(tmp_path / "dub.wav", seconds=2.0, amplitude=0)
+    plan = make_plan(tmp_path, src, [
+        {"start_frame": 0, "end_frame": 2 * 48000, "action": "TRANSLATE"},
+    ])
+    output = tmp_path / "mixed.wav"
+    render_overdub(src, dub, plan, output)
+    assert output.read_bytes() == src.read_bytes()
+
+
+def test_a4_protected_original_stays_bit_exact_with_voice_activity_release(tmp_path):
+    src = wav(tmp_path / "source.wav", seconds=3.0, amplitude=-12000)
+    dub = wav(tmp_path / "voice.wav", seconds=3.0, amplitude=28000)
+    plan = make_plan(tmp_path, src, [
+        {"start_frame": 0, "end_frame": 48000, "action": "TRANSLATE"},
+        {"start_frame": 48000, "end_frame": 96000, "action": "PRESERVE"},
+        {"start_frame": 96000, "end_frame": 144000, "action": "TRANSLATE"},
+    ])
+    out = tmp_path / "mixed.wav"
+    render_overdub(src, dub, plan, out)
+    with wave.open(str(src), "rb") as original, wave.open(str(out), "rb") as mixed:
+        original.setpos(48000)
+        mixed.setpos(48000)
+        assert original.readframes(48000) == mixed.readframes(48000)

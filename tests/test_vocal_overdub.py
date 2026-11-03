@@ -268,3 +268,48 @@ def test_protected_intervals_are_byte_identical_up_to_both_boundaries(
         mixed.setpos(first)
         count = last - first
         assert mixed.readframes(count) == original.readframes(count)
+
+
+def test_separator_51ms_silent_padding_preserves_exact_video_clock(tmp_path):
+    """Real AAC/video clock mismatch: 2452 frames of harmless separator padding."""
+    source = wav(tmp_path / "source.wav", seconds=2, amplitude=9000)
+    voice = tmp_path / "voice.wav"
+    tail_frames = 2452
+    with wave.open(str(voice), "wb") as out:
+        out.setnchannels(2)
+        out.setsampwidth(2)
+        out.setframerate(48000)
+        out.writeframes(struct.pack("<hh", 16000, 16000) * 96000)
+        out.writeframes(b"\x00" * (tail_frames * 4))
+    plan = make_plan(tmp_path, source, [
+        {"start_frame": 0, "end_frame": 48000, "action": "TRANSLATE"},
+        {"start_frame": 48000, "end_frame": 96000, "action": "PRESERVE"},
+    ])
+    result = render_overdub(source, voice, plan, tmp_path / "output.wav")
+    assert result["dub_tail_trimmed_frames"] == tail_frames
+    assert sample(tmp_path / "output.wav", 0.5) > sample(source, 0.5)
+    assert sample(tmp_path / "output.wav", 1.5) == 9000
+    with wave.open(str(tmp_path / "output.wav")) as mixed:
+        assert mixed.getnframes() == 96000
+
+
+@pytest.mark.parametrize("tail_frames,tail_sample", [
+    (2452, 9000), (12001, 0),
+])
+def test_separator_tail_rejects_non_silence_or_unbounded_padding(
+    tmp_path, tail_frames, tail_sample,
+):
+    source = wav(tmp_path / "source.wav", seconds=1, amplitude=4000)
+    voice = tmp_path / "voice.wav"
+    with wave.open(str(voice), "wb") as out:
+        out.setnchannels(2)
+        out.setsampwidth(2)
+        out.setframerate(48000)
+        out.writeframes(struct.pack("<hh", 8000, 8000) * 48000)
+        out.writeframes(struct.pack("<hh", tail_sample, tail_sample) * tail_frames)
+    plan = make_plan(tmp_path, source, [
+        {"start_frame": 0, "end_frame": 48000, "action": "TRANSLATE"},
+    ])
+    with pytest.raises(OverdubError, match="outlast"):
+        render_overdub(source, voice, plan, tmp_path / "output.wav")
+    assert not (tmp_path / "output.wav").exists()

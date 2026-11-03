@@ -448,8 +448,9 @@ def test_regenerate_requires_existing_source_caches_and_full_script(
     assert "transcript" in res.text.lower()
 
 
+@pytest.mark.parametrize("silent_separator_tail_frames", [0, 2452])
 def test_selective_regeneration_real_mux_with_cached_source_no_models(
-        local_job, tmp_path, monkeypatch):
+        local_job, tmp_path, monkeypatch, silent_separator_tail_frames):
     """Exercise the real FFmpeg source clock, pipeline stages, and two-track MP4."""
     import hashlib
 
@@ -503,7 +504,13 @@ def test_selective_regeneration_real_mux_with_cached_source_no_models(
         # Deliberately overlong TTS: the approved A4 final mix must never
         # replace the original PCM inside the protected exercise.
         out = tmp_path / "fake-voice.wav"
-        _line(out, frames=3 * 48000, amplitude=7000)
+        _line(out, frames=3 * 48000 + silent_separator_tail_frames, amplitude=7000)
+        if silent_separator_tail_frames:
+            # This is the real AAC source/video clock difference, 2452 frames
+            # observed on a 234.684-second source with a 234.633-second video.
+            with out.open("r+b") as handle:
+                handle.seek(-silent_separator_tail_frames * 4, 2)
+                handle.write(b"\x00" * (silent_separator_tail_frames * 4))
         return str(out)
 
     monkeypatch.setattr(pipeline, "run_qwen_dub", fake_qwen)
@@ -522,6 +529,9 @@ def test_selective_regeneration_real_mux_with_cached_source_no_models(
     assert [x["text"] for x in calls[0]] == ["Русская реплика"]
     assert calls[0][0]["dub_limit_s"] == 1.0
     assert _verify_export_tracks(new_work / "dubbed.mp4")
+    assert json.loads((new_work / "overdub_receipt.json").read_text())[
+        "dub_tail_trimmed_frames"
+    ] == silent_separator_tail_frames
     assert (new_work / "translated.srt").read_bytes() == expected_script
     assert hashlib.sha256(source.read_bytes()).hexdigest() == before_video
     assert not list(new_work.glob("qwen_line_*.wav"))

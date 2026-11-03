@@ -320,7 +320,10 @@ def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
     sum of gain magnitudes is <=1 so the mixer never clips by summation.
 
     The dub WAV may end early (zero-padded) or have a <=50 ms encoder/separator
-    tail beyond the source (trimmed). Longer overruns are rejected.
+    tail beyond the source (trimmed). A longer, <=250 ms tail is accepted only
+    when every extra PCM byte is zero: cached separator stems may include AAC
+    stream padding beyond the source-video clock. A non-silent or larger
+    overrun is rejected, so no synthesized speech is silently truncated.
     """
     levels = levels or OverdubLevels()
     if type(levels) is not OverdubLevels:
@@ -337,8 +340,23 @@ def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
     with _open_pcm(src_path) as source, _open_pcm(dub_path) as translated:
         frames = source.getnframes()
         tail_trimmed = max(0, translated.getnframes() - frames)
-        if tail_trimmed > round(0.05 * SR):
-            raise OverdubError("Translated WAV must not outlast the source by over 50 ms")
+        short_tail = round(0.05 * SR)
+        if tail_trimmed > short_tail:
+            # The source clock is the original video's decoded PCM. A cached
+            # separation stem can have 51 ms of codec padding even when all
+            # TTS placements stop before the reviewed source end. A bounded,
+            # entirely silent overhang is not speech and may be discarded.
+            if tail_trimmed > round(0.25 * SR):
+                raise OverdubError("Translated WAV must not outlast the source by over 250 ms")
+            translated.setpos(frames)
+            remaining = tail_trimmed
+            while remaining:
+                count = min(remaining, CHUNK_FRAMES)
+                padding = translated.readframes(count)
+                if len(padding) != count * FRAME_BYTES or padding.strip(b"\x00"):
+                    raise OverdubError("Translated WAV must not outlast the source with audible audio")
+                remaining -= count
+            translated.rewind()
         spans = _parse_plan(data, frames, _sha_file(src_path))
         envelope = _Envelope(spans, levels)
         pending = out_path.with_name(out_path.name + ".part")

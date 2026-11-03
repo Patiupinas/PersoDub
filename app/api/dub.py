@@ -926,12 +926,18 @@ def _start_plan(*, video, source_url, download_id, language, language_code, num_
     # "vertex", starts as it always has), but trimmed: "gemini " passed the
     # Gemini key check by and was translated by the default local model.
     translate_engine = (translate_engine or "").strip().lower() or None
+    if dub_mode != "perso":
+        # The selected default is a real job engine: preflight and execution
+        # must agree, including when the form omits the optional field.
+        tts_engine = (tts_engine or dub_setup.default_for("voice")).strip().lower()
     if dub_mode == "perso":
         # The cloud does everything -- the per-stage engine choices (and their
         # preflights, including the local-model 409) do not apply.
         stt_engine = sep_engine = translate_engine = tts_engine = None
     if not _valid_language_code(language_code, dub_mode):
         raise HTTPException(422, t("Unknown language_code: {code}", code=language_code))
+    if tts_engine == "silero_ru" and language_code != "ru":
+        raise HTTPException(422, "Silero fixed Russian voices require target language ru.")
     if dub_mode == "perso":
         try:
             perso_model = languages.model_for(languages.lookup("perso", language_code), perso_model)
@@ -1025,12 +1031,21 @@ def _start_preflight(plan: _StartPlan, has_script: bool) -> Optional[str]:
         # needed whatever the STT and separation choices (the checks after the
         # voices run in it too).
         missing = launch_api.missing_models(need_whisper, translate_missing_id,
+                                  need_tts=plan.tts_engine != "silero_ru",
                                   need_engine=True, need_ollama=need_ollama,
                                   separation_local=plan.sep_engine != "perso",
-                                  need_roformer=plan.sep_engine == "roformer")
+                                  need_roformer=plan.sep_engine == "roformer",
+                                  need_silero_ru=plan.tts_engine == "silero_ru")
         if missing:
             launch_api.raise_models_needed(missing)
         _require_voice_engine_running()
+        if plan.tts_engine == "silero_ru":
+            from app.engines.silero_ru import SileroRuEngine
+            if not SileroRuEngine().is_available():
+                raise HTTPException(
+                    422, "Silero v5.6 Russian model must be installed under "
+                         "models/silero-tts/v5_6_ru.pt and the local engine restarted."
+                )
     return warning
 
 

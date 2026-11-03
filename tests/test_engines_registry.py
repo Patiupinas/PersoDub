@@ -50,7 +50,7 @@ def test_the_voice_engine_is_registered_without_the_api_module():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True,
                          encoding="utf-8", check=True).stdout
-    assert out.strip() == "['qwen3_tts'] False"
+    assert out.strip() == "['qwen3_tts', 'silero_ru'] False"
 
 
 def test_the_voice_stage_treats_each_engine_as_it_did_by_its_id():

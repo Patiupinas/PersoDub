@@ -59,6 +59,62 @@ QWEN_VOICE_MODE = os.environ.get("QWEN_VOICE_MODE", "timbre")
 # QWEN_TTS_MODEL must be provided by the environment (kit.env sets it); the
 # vendored copy ships no default path.
 MODEL_PATH = os.environ.get("QWEN_TTS_MODEL", "")
+SILERO_RU_MODEL_PATH = os.environ.get("SILERO_RU_MODEL_PATH") or os.path.join(
+    os.path.dirname(MODEL_PATH), "silero-tts", "v5_6_ru.pt"
+)
+SILERO_RU_VOICES = frozenset(("aidar", "baya", "kseniya", "eugene", "xenia"))
+_SILERO_LOAD_LOCK = threading.Lock()
+
+
+def _silero_synth():
+    """Load the small fixed-Russian model lazily, independent of Qwen cloning."""
+    model = getattr(app.state, "silero_synth", None)
+    if model is not None:
+        return model
+    if not os.path.isfile(SILERO_RU_MODEL_PATH):
+        raise HTTPException(503, "Russian fixed-voice model is not installed")
+    with _SILERO_LOAD_LOCK:
+        model = getattr(app.state, "silero_synth", None)
+        if model is None:
+            import torch
+            model = torch.package.PackageImporter(SILERO_RU_MODEL_PATH).load_pickle(
+                "tts_models", "model"
+            )
+            model.to(torch.device("cpu"))
+            app.state.silero_synth = model
+        return model
+
+
+@app.get("/silero/health")
+def silero_health():
+    return {
+        "available": os.path.isfile(SILERO_RU_MODEL_PATH),
+        "loaded": getattr(app.state, "silero_synth", None) is not None,
+        "voices": sorted(SILERO_RU_VOICES),
+        "sample_rate": 48000,
+    }
+
+
+@app.post("/silero/generate")
+async def silero_generate(text: str = Form(...), speaker: str = Form(...)):
+    if speaker not in SILERO_RU_VOICES:
+        raise HTTPException(400, "unknown Russian voice")
+    if not text.strip() or len(text) > 1600:
+        raise HTTPException(400, "Russian speech text must be between 1 and 1600 characters")
+
+    def synthesize():
+        model = _silero_synth()
+        tensor = model.apply_tts(text=text, speaker=speaker, sample_rate=48000)
+        return tensor.detach().cpu().numpy() if hasattr(tensor, "detach") else tensor
+
+    samples = np.asarray(await run_in_threadpool(_locked, synthesize), dtype=np.float32)
+    if samples.size == 0:
+        raise HTTPException(502, "Russian model returned empty audio")
+    return Response(
+        content=_to_wav_bytes(samples, 48000),
+        media_type="audio/wav",
+        headers={"x-audio-duration": "%.3f" % (samples.size / 48000.0)},
+    )
 
 
 def _resolve_mode(mode):

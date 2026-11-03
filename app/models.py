@@ -15,6 +15,7 @@ forever" bug from coming back: half-downloaded is a visible, resumable state,
 never silently "done" and never a dead end.
 """
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -388,12 +389,15 @@ def _stopped_reason(exc) -> str:
 def _run_download(entry, kit, progress, cancelled):
     """One model's download, end to end, between a START line and a DONE,
     CANCELLED or FAILED line with its seconds in the app log."""
-    kind = "ollama" if entry["source"].get("kind") == "ollama" else "hf"
+    source_kind = entry["source"].get("kind")
+    kind = source_kind if source_kind in ("ollama", "url") else "hf"
     log.info("MODEL %s DOWNLOAD START (%s)", entry["id"], kind)
     began = time.monotonic()
     try:
         if kind == "ollama":
             _pull_ollama(entry, progress, cancelled)
+        elif kind == "url":
+            _pull_verified_url(entry, kit, progress, cancelled)
         else:
             _pull_hf(entry, kit, progress, cancelled)
     except Exception as e:
@@ -408,6 +412,59 @@ def _run_download(entry, kit, progress, cancelled):
     # A cancel returns too, with the pieces kept.
     log.info("MODEL %s DOWNLOAD %s (%.1fs)", entry["id"], "CANCELLED" if cancelled() else "DONE",
              time.monotonic() - began)
+
+
+def _pull_verified_url(entry, kit, progress, cancelled):
+    """Download a single pinned vendor model with resumable, hashed promotion.
+
+    Keep the .part on cancellation. Do not mark the final model ready until
+    both its exact byte length and SHA-256 match the source's pinned identity.
+    A server that ignores Range restarts cleanly rather than appending twice.
+    """
+    source = entry["source"]
+    if len(entry["markers"]) != 1:
+        raise ValueError("URL model requires one exact marker")
+    directory = os.path.join(kit, *entry["dir"].split("/"))
+    os.makedirs(directory, exist_ok=True)
+    final = os.path.join(directory, entry["markers"][0])
+    part = final + ".part"
+    expected = int(entry["bytes"])
+    original_bytes = os.path.getsize(part) if os.path.isfile(part) else 0
+    if original_bytes > expected:
+        raise RuntimeError("Partial model is larger than the pinned model size")
+    headers = {"Range": f"bytes={original_bytes}-"} if original_bytes else {}
+    with _requests.get(source["url"], headers=headers, stream=True, timeout=(15, 60)) as response:
+        response.raise_for_status()
+        resumed = original_bytes and response.status_code == 206
+        if resumed:
+            content_range = response.headers.get("Content-Range", "")
+            if not content_range.startswith(f"bytes {original_bytes}-"):
+                raise RuntimeError("Model server returned a mismatched resume offset")
+        elif response.status_code != 200:
+            raise RuntimeError("Unsupported vendor download response")
+        with open(part, "ab" if resumed else "wb") as fd:
+            downloaded = original_bytes if resumed else 0
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if cancelled():
+                    return
+                if chunk:
+                    fd.write(chunk)
+                    downloaded += len(chunk)
+                    if downloaded > expected:
+                        raise RuntimeError("Downloaded model exceeds pinned size")
+                    progress(min(99, int(100 * downloaded / expected)))
+    if cancelled():
+        return
+    if os.path.getsize(part) != expected:
+        raise RuntimeError("Incomplete pinned vendor model download")
+    digest = hashlib.sha256()
+    with open(part, "rb") as fd:
+        for chunk in iter(lambda: fd.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != source["sha256"]:
+        raise RuntimeError("Pinned vendor model checksum mismatch")
+    os.replace(part, final)
+    progress(100)
 
 
 def _venv_python(kit: str) -> str:

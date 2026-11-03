@@ -455,7 +455,9 @@ const ENGINE_HINTS = {
                get gemma() { return [t("Runs on this computer, free."), t("For accuracy, use the Gemini API.")]; },
                get gemini() { return [t("Most accurate."), t("Needs a Google (Gemini) key in Settings > API keys.")]; },
                get chatgpt() { return [t("Free within a ChatGPT account's limit. Sign in once, no download.")]; } },
-  voice: { get qwen3() { return [t("Runs on this computer, free."), t("Clones each speaker\u2019s voice.")]; } },
+  voice: { get qwen3() { return [t("Runs on this computer, free."), t("Clones each speaker\u2019s voice.")]; },
+           get silero_ru() { return [t("Runs on this computer, free."),
+                  t("Native Russian voices (no cloning)")]; } },
 };
 // Perso does every stage of a Perso API dubbing: the greyed rows say so, not
 // what they would do on this computer (owner, 2026-10-22).

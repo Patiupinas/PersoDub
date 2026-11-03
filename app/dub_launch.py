@@ -238,7 +238,13 @@ def work_for(job, *, cancel_check, on_notice, voices_only=False, resume=False,
                 ),
                 "require_cached_source": True,
             }
+        # Persisted in the job so retries and redubs keep the same
+        # Russian voice model rather than silently reverting to Qwen.
+        fixed_ru = job.get("tts") == "silero_ru"
+        if fixed_ru:
+            from app.engines.silero_ru import SileroRuEngine
         return run_dub(
+            **({"qwen_engine": SileroRuEngine()} if fixed_ru else {}),
             video_path=video_path,
             srt_path=srt_path,
             source_srt_path=None if voices_only else source_srt_path,

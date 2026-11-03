@@ -187,3 +187,14 @@ test("the greyed select greys its button, and picking the same choice again chan
   btn.parent.children[1].children[0].click();
   assert.equal(sel.events, undefined, "Whisper again: no change for the page to answer");
 });
+
+test("the native Russian preset bank is an independent selectable ready model", () => {
+  const model = { id: "silero-ru", role: "tts", bytes: 147664410, state: "ready" };
+  const rows = (id) => id === "silero-ru" ? model : rowOf(id);
+  const options = [["qwen3", "Qwen3-TTS"], ["silero_ru", "Silero RU v5.6"]];
+  const view = stageView("voice", select("silero_ru", options), rows);
+  assert.equal(view.name, "Silero RU v5.6");
+  assert.equal(view.ready, true);
+  assert.equal(view.options[1].state.text, "Ready");
+  assert.match(view.options[1].line, /Native Russian voices/);
+});

@@ -24,6 +24,7 @@ from collections import Counter
 from typing import List
 
 from app.config import DIAR_PYTHON
+from app.speaker_voice_plan import apply_voice_groups, build_voice_plan
 from app.timeouts import scaled_timeout
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,4 +154,9 @@ def diarize(vocals_wav_path, cues, num_speakers=None, video_duration=None):
     out = [dict(c) for c in cues]
     for c, spk in zip(out, labels):
         c["speaker"] = spk
+    pairs = result.get("similarity_pairs") or []
+    if pairs:
+        voice_plan = build_voice_plan(out, pairs)
+        if voice_plan["merges"]:
+            out = apply_voice_groups(out, voice_plan)
     return out

@@ -15,6 +15,8 @@ import importlib.util
 import math
 import os
 
+import pytest
+
 SCRIPT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "app", "scripts", "campplus_diarize.py",
@@ -200,3 +202,26 @@ def test_merge_sim_env_valid_float(monkeypatch):
 def test_merge_sim_env_garbage_uses_default(monkeypatch):
     monkeypatch.setenv("PERSODUB_DIAR_MERGE_SIM", "banana")
     assert cd._parse_diar_merge_sim() == cd.DIAR_MERGE_SIM_DEFAULT
+
+
+def test_worker_exposes_pairwise_centroid_cosine_not_probabilities():
+    a = [1.0, 0.0]
+    b = [0.8, 0.6]
+    c = [0.0, 1.0]
+    report = cd._speaker_similarity_pairs(
+        [a, a, b, c], ["SPK0", "SPK0", "SPK1", "SPK2"], FakeNp
+    )
+    lookup = {frozenset((row["a"], row["b"])): row["similarity"] for row in report}
+    assert lookup[frozenset(("SPK0", "SPK1"))] == 0.8
+    assert lookup[frozenset(("SPK0", "SPK2"))] == 0.0
+    assert all(row["metric"] == "camplus_cosine" for row in report)
+
+
+def test_duplicate_source_voices_remain_distinct_cluster_labels_for_tts_review():
+    a = [1.0, 0.0]
+    b = [0.81, math.sqrt(1 - 0.81**2)]
+    raw = cd._maybe_collapse([a, b], [3.0, 3.0], ["SPK0", "SPK1"],
+                             2, 2, FakeNp, 0.35)
+    assert raw == ["SPK0", "SPK1"]
+    pairs = cd._speaker_similarity_pairs([a, b], raw, FakeNp)
+    assert pairs[0]["similarity"] == pytest.approx(0.81)

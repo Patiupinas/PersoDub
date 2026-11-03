@@ -375,3 +375,57 @@ def test_diarize_passes_computed_timeout_to_subprocess_run(monkeypatch):
     dcc.diarize("/fake/vocals.wav", CUES, video_duration=600.0)  # 10 min
 
     assert captured["timeout"] == 6000.0
+
+
+def test_worker_cosine_pairs_are_used_for_voice_only_not_source_labels(monkeypatch):
+    import sys
+    monkeypatch.setattr(dcc, "DIAR_PYTHON", sys.executable)
+    monkeypatch.setattr(dcc, "SCRIPT_PATH", sys.executable)
+
+    class _R:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, capture_output, text, timeout, **_kw):
+        _write_worker_output(
+            cmd[cmd.index("--output") + 1],
+            {"ok": True, "speakers": ["SPK0", "SPK1", "SPK0"],
+             "similarity_pairs": [
+                 {"a": "SPK0", "b": "SPK1",
+                  "metric": "camplus_cosine", "similarity": 0.83},
+             ]},
+        )
+        return _R()
+
+    monkeypatch.setattr(dcc.subprocess, "run", fake_run)
+    source = [dict(x) for x in CUES]
+    labelled = dcc.diarize("/fake/vocals.wav", source)
+    assert [r["speaker"] for r in labelled] == ["SPK0", "SPK1", "SPK0"]
+    assert {r["voice_group_id"] for r in labelled} == {"VOICE_01"}
+    assert all("voice_group_id" not in c for c in source)
+
+
+def test_worker_insufficient_cosine_leaves_existing_diarization_path_alone(monkeypatch):
+    import sys
+    monkeypatch.setattr(dcc, "DIAR_PYTHON", sys.executable)
+    monkeypatch.setattr(dcc, "SCRIPT_PATH", sys.executable)
+
+    class _R:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, capture_output, text, timeout, **_kw):
+        _write_worker_output(
+            cmd[cmd.index("--output") + 1],
+            {"ok": True, "speakers": ["SPK0", "SPK1", "SPK0"],
+             "similarity_pairs": [
+                 {"a": "SPK0", "b": "SPK1",
+                  "metric": "camplus_cosine", "similarity": 0.79},
+             ]},
+        )
+        return _R()
+
+    monkeypatch.setattr(dcc.subprocess, "run", fake_run)
+    labelled = dcc.diarize("/fake/vocals.wav", CUES)
+    assert [r["speaker"] for r in labelled] == ["SPK0", "SPK1", "SPK0"]
+    assert all("voice_group_id" not in c for c in labelled)

@@ -51,6 +51,7 @@ from app.run_errors import PartsMissing, advice_both, ran_out_of_memory
 from app.scripts.check_leakage import _validate_manifest_spans, measure_leakage
 from app.scripts.suppress_vocal_echo import suppress_vocal_echo
 from app.separate import SeparationEngine
+from app.speaker_voice_plan import SILERO_RU_V56
 
 # Re-exported, not merely used: the stage table lives in app/stages.py (a leaf
 # module app/source_fetch.py can import without dragging the orchestrator in),
@@ -612,6 +613,8 @@ def _carry_speaker_labels(target_cues: List[dict], labelled_cues: List[dict]) ->
         spk = cue_speaker(labelled_cues[k])
         if spk:
             cue["speaker_id"] = spk
+            if labelled_cues[k].get("voice_group_id"):
+                cue["voice_group_id"] = labelled_cues[k]["voice_group_id"]
 
 
 def _separate_with_perso(video_path, work_dir, perso_client, cancel_check, on_notice, log, title=None):
@@ -862,8 +865,11 @@ def _stage_diarize(diar_engine, vocals_path, src_cues, num_speakers, log, video_
                 # (Perso / local Whisper) may already set speaker_id, so we must
                 # overwrite THAT field or the CAM++ label is shadowed and does nothing.
                 cue["speaker_id"] = spk
+                if lab.get("voice_group_id"):
+                    cue["voice_group_id"] = lab["voice_group_id"]
         n_spk = len({cue_speaker(c) for c in src_cues if cue_speaker(c)})
-        log(f"   CAM++ labeled {len(src_cues)} lines across {n_spk} speakers")
+        n_voices = len({c.get("voice_group_id", cue_speaker(c)) for c in src_cues if cue_speaker(c)})
+        log(f"   CAM++ labeled {len(src_cues)} lines across {n_spk} source speakers, {n_voices} dubbing voices")
     except Exception as e:
         log(f"   Warning: CAM++ diarization failed ({str(e)[:80]}) — keeping existing labels")
         if on_notice:
@@ -971,21 +977,26 @@ def _stage_translate(srt_path, source_cues, language, translate_engine, translat
     return segments, auto_translated
 
 
-def _a4_tts_fingerprint(source_sha, event_plan_sha, selected, ref_cues, language, n_takes=None):
-    """Bind Qwen resume to this A4 plan, exact source and selected text.
+def _a4_tts_fingerprint(source_sha, event_plan_sha, selected, ref_cues, language,
+                        n_takes=None, engine_id="qwen3_tts"):
+    """Bind voice reuse to the source, script, engine, and fixed voice bank.
 
-    A pre-filtered script renumbers Qwen's qwen_line_N files. Reusing voice
-    lines from a previous plan can silently overlay the wrong words at the
-    wrong time. Store only a deterministic content hash, not duplicate text.
+    One filename per selected cue is shared by the speech engines. A cache
+    created with an English-reference Qwen clone must never be used as if
+    it contained a native-Russian Silero preset, or vice versa.
     """
     payload = {
-        "version": 1,
+        "version": 2,
         "source_sha256": source_sha,
         "plan_sha256": event_plan_sha,
         "selected": selected,
         "reference_cues": ref_cues,
         "language": language,
-        "voice_mode": config.QWEN_VOICE_MODE,
+        "engine_id": engine_id,
+        "voice_mode": config.QWEN_VOICE_MODE if engine_id == "qwen3_tts" else None,
+        "fixed_preset_bank": (
+            list(SILERO_RU_V56) if engine_id == "silero_ru" else None
+        ),
         "number_of_takes": QWEN_N_TAKES if n_takes is None else n_takes,
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
@@ -1054,16 +1065,26 @@ def _stage_synthesize(segments, ref_cues, work_dir, vocals_path, background_path
     ambience gate's whisper-veto subprocess timeout for long videos (see
     app.timeouts.scaled_timeout).
     """
+    engine = qwen_engine or QwenTTSEngine()
     effective_n_takes = n_takes if n_takes is not None else QWEN_N_TAKES
+    if getattr(engine, "id", None) == "silero_ru" and effective_n_takes > 1:
+        # The existing best-of-N scoring compares each take to a cloned
+        # source-language reference. A native Russian preset has no such
+        # source reference, so repeated takes cannot be ranked by that gate.
+        log("   native Russian fixed voices use one take (no source-voice scoring)")
+        effective_n_takes = 1
     # Say which Voice-quality mode ran (user feedback 2026-08-06). <=1 is the
     # "fast" UI mode: best-of-N selection is disabled (see config.QWEN_N_TAKES).
     mode = ("fast, 1 take/line" if effective_n_takes <= 1
             else f"high quality, best of {effective_n_takes} takes")
-    _log_stage(log, "synthesize", f"Cloning & synthesizing voices (Qwen3-TTS — {mode})…")
+    if getattr(engine, "id", None) != "silero_ru":
+        _log_stage(log, "synthesize", f"Cloning & synthesizing voices (Qwen3-TTS — {mode})…")
+    else:
+        _log_stage(log, "synthesize",
+                   f"Synthesizing fixed Russian voices ({engine.display_name}, {mode})…")
     if output_mode == "overdub" and not segments:
         log("   A4: no completely approved translated speech cues; source-only Overdub")
         return _a4_original_only_audio(work_dir, background_path, language)
-    engine = qwen_engine or QwenTTSEngine()
     # Say which device this is about to run on. Without it the only symptom of
     # a CPU fallback is the wait, and the user has no way to tell that from the
     # app being slow. Absent (not guessed) when the engine cannot say.
@@ -1488,7 +1509,9 @@ def run_dub(
         log("   A4: %d/%d translated cues allowed for TTS; %d original-only" %
             (len(tts_segments), len(segments), skipped))
         a4_fingerprint = _a4_tts_fingerprint(
-            a4_source_sha, a4_plan_hash, tts_segments, ref_cues, language, n_takes
+            a4_source_sha, a4_plan_hash, tts_segments, ref_cues, language, n_takes,
+            engine_id=(getattr(qwen_engine, "id", "qwen3_tts") if qwen_engine is not None
+                       else "qwen3_tts"),
         )
     reuse_lines = bool(resume and (translation_reused or srt_path))
     if audio_mode == "overdub":

@@ -291,6 +291,10 @@ async function applyEngineAvailabilityToForm() {
 
   keySaved.perso = !result.disable.perso;
   keySaved.gemini = !result.disable.gemini;
+  // This opt-in translator is a local CLI, not an app-managed download.
+  // Expose it only when the backend actually sees the binary on this host.
+  const argon = Array.from(translateSel.options).find(o => o.value === "antigravity");
+  if (argon) argon.disabled = av.antigravity_available !== true;
   voiceModels = av.voice_models || {};
   ramOk = av.ram_ok !== false;
   for (const o of $("voiceSelect").options) o.textContent = voiceLabel(o.value, voiceModels);

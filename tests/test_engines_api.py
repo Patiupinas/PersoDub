@@ -226,6 +226,7 @@ def test_engines_endpoint_all_unavailable(monkeypatch):
     monkeypatch.setattr(engines_status, "qwen_available", lambda: False)
     monkeypatch.setattr(engines_status, "hunyuan_available", lambda: False)
     monkeypatch.setattr(engines_status, "gemini_available", lambda: False)
+    monkeypatch.setattr(engines_status, "antigravity_available", lambda: False)
     monkeypatch.setattr(engines_status, "perso_available", lambda: False)
     monkeypatch.setattr(engines_status, "eraser_available", lambda: False)
     monkeypatch.setattr(engines_status, "local_engine", lambda w: {"state": "running", "message": ""})
@@ -239,6 +240,7 @@ def test_engines_endpoint_all_unavailable(monkeypatch):
         "qwen_available": False,
         "hunyuan_available": False,
         "gemini_available": False,
+        "antigravity_available": False,
         "perso_available": False,
         "voice_models": {"qwen3": "1.7B"},
         "eraser_available": False,
@@ -256,6 +258,7 @@ def test_engines_endpoint_all_available(monkeypatch):
     monkeypatch.setattr(engines_status, "qwen_available", lambda: True)
     monkeypatch.setattr(engines_status, "hunyuan_available", lambda: True)
     monkeypatch.setattr(engines_status, "gemini_available", lambda: True)
+    monkeypatch.setattr(engines_status, "antigravity_available", lambda: True)
     monkeypatch.setattr(engines_status, "perso_available", lambda: True)
     monkeypatch.setattr(engines_status, "eraser_available", lambda: True)
     monkeypatch.setattr(engines_status, "local_engine", lambda w: {"state": "running", "message": ""})
@@ -269,6 +272,7 @@ def test_engines_endpoint_all_available(monkeypatch):
         "qwen_available": True,
         "hunyuan_available": True,
         "gemini_available": True,
+        "antigravity_available": True,
         "perso_available": True,
         "voice_models": {"qwen3": "1.7B"},
         "eraser_available": True,
@@ -291,7 +295,7 @@ def test_engines_endpoint_says_whether_this_computer_has_the_memory(monkeypatch,
 
 
 @pytest.mark.parametrize("total, slow", [
-    (10 * room.GB, ["chatgpt", "gemini", "gemma", "hunyuan", "qwen"]),   # slow whatever translates
+    (10 * room.GB, ["antigravity", "chatgpt", "gemini", "gemma", "hunyuan", "qwen"]),   # slow whatever translates
     (14 * room.GB, ["gemma"]),   # Gemma translates on this computer beside the voice
     (32 * room.GB, []),
 ])

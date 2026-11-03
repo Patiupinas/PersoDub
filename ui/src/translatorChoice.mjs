@@ -6,7 +6,7 @@
 import { gb } from "./modelsUi.mjs";
 import { t, currentLanguage } from "./i18n.mjs";
 
-const NAMES = { chatgpt: "ChatGPT", hunyuan: "Hunyuan", gemma: "Gemma", gemini: "Gemini" };
+const NAMES = { antigravity: "Antigravity CLI", chatgpt: "ChatGPT", hunyuan: "Hunyuan", gemma: "Gemma", gemini: "Gemini" };
 // Best first, the order the owner named them.
 const OFFERED = ["hunyuan", "gemma", "gemini"];
 

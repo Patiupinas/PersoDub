@@ -506,10 +506,19 @@ def _auto_translate_srt(
     # Translate with an explicit per-line character budget, re-requesting only
     # out-of-window lines (too long or too short) for a closer rewrite.
     try:
-        translated = fit_translate(
-            translator, texts, target_lang, source_lang, slots, log=log
-        )
+        if getattr(translator, "id", None) == "antigravity":
+            # Antigravity owns a bounded four-cue translation and review gate.
+            # Calling fit_translate directly would bypass that gate via ask().
+            translated = translator.translate(texts, target_lang, source_lang, slots)
+        else:
+            translated = fit_translate(
+                translator, texts, target_lang, source_lang, slots, log=log
+            )
     except ValueError as e:
+        if getattr(translator, "id", None) == "antigravity":
+            # A review failure is not a malformed JSON array to retry with the
+            # same unsafe source text. Stop before storing translated.srt/TTS.
+            raise
         # If formatting keeps failing, fall back to the standard method (built-in line-count guarantee)
         log(f"   Length-fit translation failed ({str(e)[:60]}) — translating with the standard method")
         translated = translator.translate(texts, target_lang, source_lang, slots)
@@ -905,7 +914,10 @@ def _pick_source_cues(source_srt_path, perso_cues, src_cues):
 def _ready_translator(translator, translate_engine, work_dir, cancel_check, log):
     tr = translator or get_translator(translate_engine)
     # ChatGPT: a Resume re-reads what was already answered (the others keep nothing).
-    tr.answers_dir = os.path.join(work_dir, "chatgpt_answers")
+    tr.answers_dir = os.path.join(
+        work_dir, "antigravity_answers" if getattr(tr, "id", None) == "antigravity"
+        else "chatgpt_answers"
+    )
     # Cancel between asks, not only after the stage: a cancel during a
     # long translation kept asking ChatGPT for 2.5 minutes (8 more
     # requests off the user's allowance, Windows 2026-09-25). Every

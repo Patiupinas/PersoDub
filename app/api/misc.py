@@ -217,6 +217,7 @@ def engines_status_route():
         "qwen_available": engines_status.qwen_available(),
         "hunyuan_available": engines_status.hunyuan_available(),
         "gemini_available": engines_status.gemini_available(),
+        "antigravity_available": engines_status.antigravity_available(),
         "perso_available": engines_status.perso_available(),
         # The model behind each voice engine, for the dropdown and the job's
         # engine line ("Qwen3-TTS 1.7B").

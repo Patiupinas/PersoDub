@@ -679,12 +679,18 @@ class OllamaTranslator(TranslationEngine):
         return UNTRANSLATED
 
 
+def _antigravity_translator():
+    from app.translation_antigravity import AntigravityCLI
+    return AntigravityCLI()
+
+
 # Engine name -> how to build that translator. Each entry is a lambda rather
 # than the built instance (or the bare class) so nothing is decided at import
 # time: the names inside are looked up on this module when get_translator is
 # actually called, which is what lets a test swap a class here and get its own
 # class back.
 TRANSLATORS = {
+    "antigravity": lambda: _antigravity_translator(),
     "gemini": lambda: GeminiTranslator(),
     "chatgpt": lambda: ChatGptTranslator(),
     "vertex": lambda: VertexTranslator(),

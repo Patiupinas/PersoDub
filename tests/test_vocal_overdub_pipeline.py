@@ -388,3 +388,41 @@ def test_qwen_overdub_a4_assembly_never_places_voice_into_protected_interval(
     ledger = json.loads((tmp_path / "clipped_lines.json").read_text())
     assert ledger["clipped_count"] == 1
     assert ledger["clipped"][0]["cut_s"] >= 0.69
+
+
+def test_a4_clipped_qa_uses_original_source_cue_numbers_not_filtered_tts_indices(tmp_path):
+    """The real 17-cue run's clipped line 11 is source cue 26, not 27."""
+    approved = _review_spans([
+        (0, 2, "TRANSLATE"), (2, 3, "REVIEW"),
+        (3, 5, "TRANSLATE"), (5, 6, "REVIEW"),
+        (6, 8, "TRANSLATE"),
+    ])
+    source = [
+        {"start": 0.1, "end": 1.1, "text": "A"},
+        {"start": 2.1, "end": 2.6, "text": "Protected 2"},
+        {"start": 3.2, "end": 4.7, "text": "B"},
+        {"start": 5.2, "end": 5.8, "text": "Protected 4"},
+        {"start": 6.1, "end": 7.1, "text": "C"},
+    ]
+    from app.audio.overdub import select_translatable_cues
+    picked, skipped = select_translatable_cues(source, approved)
+    assert skipped == 2
+    assert [c["source_cue_number"] for c in picked] == [1, 3, 5]
+    assert all("source_cue_number" not in row for row in source)
+
+    ledger = {"clipped_count": 2, "clipped": [
+        {"line": 2, "cut_s": 1.974},
+        {"line": 3, "cut_s": 0.192},
+    ]}
+    path = tmp_path / "clipped_lines.json"
+    path.write_text(json.dumps(ledger))
+    pipeline._a4_remap_clipped_source_cues(tmp_path, picked)
+    after = json.loads(path.read_text())
+    assert after["clipped_count"] == 2
+    assert after["clipped"] == [
+        {"line": 3, "selected_line": 2, "cut_s": 1.974},
+        {"line": 5, "selected_line": 3, "cut_s": 0.192},
+    ]
+    # Re-exporting a finished job cannot remap the source indexes twice.
+    pipeline._a4_remap_clipped_source_cues(tmp_path, picked)
+    assert json.loads(path.read_text()) == after

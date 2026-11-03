@@ -7,9 +7,11 @@ import bisect
 import hashlib
 import json
 import math
+import os
+import tempfile
 from pathlib import Path
 
-from app.audio.overdub import OverdubError, _parse_plan
+from app.audio.overdub import OverdubError, OverdubLevels, _parse_plan
 from app.audio.pcm import SR
 
 KINDS = frozenset(("speech", "singing", "laughing", "crying_baby", "coughing", "sneezing", "breathing"))
@@ -71,7 +73,7 @@ def _compress(rows):
     result = []
     for row in rows:
         if result and result[-1]["end_frame"] == row["start_frame"] and all(
-            result[-1][k] == row[k]
+            result[-1].get(k) == row.get(k)
             for k in ("hint", "suggested_action", "score", "singing_score")
         ):
             result[-1]["end_frame"] = row["end_frame"]
@@ -183,3 +185,74 @@ def record_plan(dest, plan):
         json.dump(plan, out, indent=2)
         out.write("\n")
     return path
+
+# The mutable project-local draft is not an A4 approval or export plan.
+DRAFT_NAME = "overdub-review-draft.json"
+DRAFT_FIELDS = frozenset({
+    "schema_version", "source_wav_sha256", "total_frames", "events",
+    "original_speech_db", "dub_speech_db", "fade_ms", "review_confirmed",
+})
+
+
+class ReviewDraftConflict(OverdubError):
+    """A different editor already saved a newer source-bound draft."""
+
+
+def _validate_draft(draft):
+    """Only unconfirmed, complete and source-clock-bound decisions may be stored."""
+    if (type(draft) is not dict or set(draft) != DRAFT_FIELDS
+            or draft["schema_version"] != 1 or draft["review_confirmed"] is not False):
+        raise OverdubError("Unexpected A4 review-draft fields or approval state")
+    approved_plan(draft["total_frames"], draft["source_wav_sha256"], draft["events"])
+    OverdubLevels(
+        draft["original_speech_db"], draft["dub_speech_db"], draft["fade_ms"]
+    )
+    return draft
+
+
+def read_review_draft(work):
+    """Return an unapproved saved draft and its exact disk revision, if any."""
+    path = Path(work) / DRAFT_NAME
+    if not path.exists():
+        return None, None
+    with path.open("rb") as stream:
+        content = stream.read(8 * 1024 * 1024 + 1)
+    if len(content) > 8 * 1024 * 1024:
+        raise OverdubError("A4 review draft exceeds the supported size")
+    try:
+        draft = json.loads(content)
+    except (UnicodeError, ValueError) as exc:
+        raise OverdubError("A4 review draft is unreadable") from exc
+    _validate_draft(draft)
+    return draft, hashlib.sha256(content).hexdigest()
+
+
+def save_review_draft(work, draft, expected_revision):
+    """Compare-and-swap a project-owned draft with atomic 0600 replacement."""
+    _validate_draft(draft)
+    if expected_revision is not None and (
+        type(expected_revision) is not str or len(expected_revision) != 64
+        or any(c not in "0123456789abcdef" for c in expected_revision)
+    ):
+        raise OverdubError("Invalid review-draft revision")
+    _, current = read_review_draft(work)
+    if current != expected_revision:
+        raise ReviewDraftConflict("A4 review was changed elsewhere; reopen to reload it")
+    target = Path(work) / DRAFT_NAME
+    content = (json.dumps(draft, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=".overdub-review-", suffix=".tmp",
+            dir=target.parent, delete=False,
+        ) as file:
+            tmp_path = Path(file.name)
+            os.chmod(file.name, 0o600)
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(tmp_path, target)
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+    return hashlib.sha256(content).hexdigest()

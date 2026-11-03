@@ -5,7 +5,8 @@ import { readFileSync } from "node:fs";
 
 import {
   ACTIONS, OVERDUB_RATE, initOverdubDialog,
-  nextPossibleExerciseIndex, overDubRowsHtml, reviewedEvents, splitOverdubInterval,
+  nextPossibleExerciseIndex, overDubRowsHtml, restoredDraftRows,
+  reviewedEvents, splitOverdubInterval,
 } from "./overdubDialog.mjs";
 
 const FRAME = OVERDUB_RATE;
@@ -55,12 +56,14 @@ function harness({ response = preview, onExport = () => {}, onRegenerate = () =>
   $("overdubTranslationDb").value = "-2";
   $("overdubFadeMs").value = "300";
   const calls = [];
+  let prepared = response;
   const fetchFn = async (url, opts) => {
     const body = JSON.parse(opts.body);
     calls.push({ url, body });
     return {
       ok: true,
-      json: async () => url.endsWith("/prepare") ? response :
+      json: async () => url.endsWith("/prepare") ? prepared :
+        url.endsWith("/draft") ? { saved: true, revision: "c".repeat(64), review_confirmed: false } :
         url.endsWith("/regenerate") ? { job_id: "1234abcd", approved_for_tts: 1 } :
         { file: "finished-overdub.mp4",
           download_url: "/api/dub/jobs/abc/overdub/files/finished-overdub.mp4" },
@@ -68,7 +71,8 @@ function harness({ response = preview, onExport = () => {}, onRegenerate = () =>
   };
   const modal = initOverdubDialog({ $, fetchFn, onExport, onRegenerate });
   return {
-    $, modal, calls, reset: () => { globalThis.document = previousDocument; },
+    $, modal, calls, setResponse: (next) => { prepared = next; },
+    reset: () => { globalThis.document = previousDocument; },
   };
 }
 
@@ -392,4 +396,172 @@ test("low secondary singing scores do not replace original non-speech review hin
   assert.equal(nextPossibleExerciseIndex(hints), 1);
   hints[1].action = "PRESERVE";
   assert.equal(nextPossibleExerciseIndex(hints), -1);
+});
+
+// The same source-bound A4 decision partition survives navigation and reopening.
+test("save progress stores a draft without approving a split vocal interval", async (t) => {
+  const h = harness();
+  t.after(h.reset);
+  await h.modal.open("abc");
+  h.$("overdubSplitAt").value = "1.25";
+  h.$("overdubSplit").listeners.click();
+  h.$("overdubList").listeners.change({
+    target: { closest: () => ({ dataset: { odIndex: "2" }, value: "PRESERVE" }) },
+  });
+  h.$("overdubOriginalDb").value = "-12";
+  h.$("overdubOriginalDb").listeners.change();
+  assert.equal(h.$("overdubSaveDraft").disabled, false);
+  await h.$("overdubSaveDraft").listeners.click();
+  assert.equal(h.calls.length, 2);
+  assert.match(h.calls[1].url, /\/overdub\/draft$/);
+  assert.deepEqual(h.calls[1].body.events, [
+    { start_frame: 0, end_frame: FRAME, action: "REVIEW" },
+    { start_frame: FRAME, end_frame: 1.25*FRAME, action: "REVIEW" },
+    { start_frame: 1.25*FRAME, end_frame: 2*FRAME, action: "PRESERVE" },
+  ]);
+  assert.equal(h.calls[1].body.expected_revision, null);
+  assert.equal(h.calls[1].body.original_speech_db, -12);
+  assert.equal(h.calls[1].body.review_confirmed, undefined);
+  assert.equal(h.$("overdubReviewed").checked, false);
+  assert.equal(h.$("overdubExport").disabled, true);
+  assert.equal(h.$("overdubSaveDraft").disabled, true);
+  assert.match(h.$("overdubStatus").textContent, /saved/i);
+});
+
+test("resume draft retains manual boundaries, gains, and still requires confirmation", async (t) => {
+  const saved = {
+    events: [
+      { start_frame: 0, end_frame: FRAME / 2, action: "TRANSLATE" },
+      { start_frame: FRAME / 2, end_frame: FRAME, action: "PRESERVE" },
+      { start_frame: FRAME, end_frame: 2*FRAME, action: "REVIEW" },
+    ],
+    original_speech_db: -9, dub_speech_db: -5, fade_ms: 150,
+    review_confirmed: false,
+  };
+  const h = harness({ response: { ...preview, review_draft: saved, draft_revision: "d".repeat(64) } });
+  t.after(h.reset);
+  await h.modal.open("abc");
+  assert.equal(h.$("overdubList").innerHTML.match(/data-od-index/g).length, 3);
+  assert.match(h.$("overdubList").innerHTML, /<option value="PRESERVE" selected>/);
+  assert.equal(h.$("overdubOriginalDb").value, "-9");
+  assert.equal(h.$("overdubTranslationDb").value, "-5");
+  assert.equal(h.$("overdubFadeMs").value, "150");
+  assert.equal(h.$("overdubReviewed").checked, false);
+  assert.equal(h.$("overdubExport").disabled, true);
+  h.$("overdubList").listeners.change({
+    target: { closest: () => ({ dataset: { odIndex: "2" }, value: "PRESERVE" }) },
+  });
+  await h.$("overdubSaveDraft").listeners.click();
+  assert.equal(h.calls[1].body.expected_revision, "d".repeat(64));
+});
+
+test("closing a changed review saves it before releasing the original player", async (t) => {
+  const h = harness();
+  t.after(h.reset);
+  await h.modal.open("abc");
+  h.$("overdubList").listeners.change({
+    target: { closest: () => ({ dataset: { odIndex: "1" }, value: "PRESERVE" }) },
+  });
+  assert.equal(h.$("overdubOverlay").classList.contains("open"), true);
+  await h.$("overdubClose").listeners.click();
+  assert.equal(h.calls.length, 2);
+  assert.match(h.calls[1].url, /\/overdub\/draft$/);
+  assert.equal(h.$("overdubOverlay").classList.contains("open"), false);
+  assert.equal(h.$("overdubSourcePlayer").src, "");
+});
+
+test("new AST observations cannot erase split or manually preserved A4 actions", async (t) => {
+  const h = harness();
+  t.after(h.reset);
+  await h.modal.open("abc");
+  h.$("overdubList").listeners.change({
+    target: { closest: () => ({ dataset: { odIndex: "1" }, value: "PRESERVE" }) },
+  });
+  await h.$("overdubAnalyze").listeners.click();
+  assert.equal(h.calls.length, 2);
+  assert.deepEqual(h.calls[1].body, { analyze: true });
+  assert.match(h.$("overdubList").innerHTML, /<option value="PRESERVE" selected>/);
+  assert.equal(h.$("overdubReviewed").checked, false);
+});
+
+test("stale source drafts are not applied to a changed original recording", async (t) => {
+  const h = harness({ response: {
+    ...preview, review_draft: null,
+    draft_stale: true, draft_revision: "e".repeat(64),
+  } });
+  t.after(h.reset);
+  await h.modal.open("abc");
+  assert.equal(h.$("overdubReviewed").checked, false);
+  assert.equal((h.$("overdubList").innerHTML.match(/<option value="REVIEW" selected>/g) || []).length, 2);
+  assert.match(h.$("overdubStatus").textContent, /different source/i);
+  h.$("overdubList").listeners.change({
+    target: { closest: () => ({ dataset: { odIndex: "1" }, value: "PRESERVE" }) },
+  });
+  await h.$("overdubSaveDraft").listeners.click();
+  assert.equal(h.calls[1].body.expected_revision, "e".repeat(64));
+});
+
+test("source and translated transcript follow original audio playback without changing A4", async (t) => {
+  const cues = [{ start: 0.2, end: 1.0, text: "<source> & breath" }];
+  const translations = [{ start: 0.2, end: 1.0, text: "Russian draft" }];
+  const h = harness({ response: {
+    ...preview, source_cues: cues, translated_cues: translations,
+  } });
+  t.after(h.reset);
+  await h.modal.open("abc");
+  h.$("overdubList").listeners.click({
+    target: { closest: () => ({ dataset: { odPlay: "0" } }) },
+  });
+  assert.match(h.$("overdubSourceTranscript").textContent, /<source> & breath/);
+  assert.match(h.$("overdubTranslationTranscript").textContent, /Russian draft/);
+  assert.equal(h.$("overdubReviewed").checked, false);
+  assert.equal(h.$("overdubExport").disabled, true);
+  h.$("overdubList").listeners.click({
+    target: { closest: () => ({ dataset: { odPlay: "1" } }) },
+  });
+  assert.equal(h.$("overdubSourceTranscript").textContent, "");
+  assert.equal(h.$("overdubTranslationTranscript").textContent, "");
+  h.modal.close();
+  assert.equal(h.$("overdubSourceTranscript").textContent, "");
+  assert.equal(h.$("overdubTranslationTranscript").textContent, "");
+});
+
+test("a refreshed AST grid overlays source-bound decisions without discarding boundaries", () => {
+  const sourceDecisions = [
+    { start_frame: 0, end_frame: FRAME / 2, action: "TRANSLATE" },
+    { start_frame: FRAME / 2, end_frame: FRAME, action: "PRESERVE" },
+    { start_frame: FRAME, end_frame: 2 * FRAME, action: "REVIEW" },
+  ];
+  const newModelBins = [
+    { start_frame: 0, end_frame: 0.75 * FRAME, action: "REVIEW",
+      hint: "speech", suggested_action: "TRANSLATE", score: 0.9 },
+    { start_frame: 0.75 * FRAME, end_frame: 1.5 * FRAME, action: "REVIEW",
+      hint: "singing", suggested_action: "PRESERVE", score: 0.5 },
+    { start_frame: 1.5 * FRAME, end_frame: 2 * FRAME, action: "REVIEW",
+      hint: "speech", suggested_action: "TRANSLATE", score: 0.9 },
+  ];
+  const merged = restoredDraftRows(newModelBins, sourceDecisions);
+  assert.deepEqual(merged.map((r) => [r.start_frame / FRAME, r.end_frame / FRAME, r.action]), [
+    [0, 0.5, "TRANSLATE"], [0.5, 0.75, "PRESERVE"],
+    [0.75, 1.0, "PRESERVE"], [1.0, 1.5, "REVIEW"], [1.5, 2, "REVIEW"],
+  ]);
+  assert.equal(nextPossibleExerciseIndex(merged), 3);
+  assert.equal(merged[3].hint, "singing");
+  assert.equal(merged[3].suggested_action, "PRESERVE");
+  assert.deepEqual(merged.map(x => x.action), [
+    "TRANSLATE", "PRESERVE", "PRESERVE", "REVIEW", "REVIEW",
+  ]);
+  assert.deepEqual(sourceDecisions, [
+    { start_frame: 0, end_frame: FRAME / 2, action: "TRANSLATE" },
+    { start_frame: FRAME / 2, end_frame: FRAME, action: "PRESERVE" },
+    { start_frame: FRAME, end_frame: 2 * FRAME, action: "REVIEW" },
+  ]);
+});
+
+test("source review replay refuses mismatched hint clocks instead of dropping edits", () => {
+  assert.throws(() => restoredDraftRows([
+    { start_frame: 0, end_frame: FRAME, action: "REVIEW" },
+  ], [
+    { start_frame: 0, end_frame: 2 * FRAME, action: "PRESERVE" },
+  ]), /source clock/);
 });

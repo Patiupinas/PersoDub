@@ -177,3 +177,15 @@ def test_ast_secondary_singing_score_respects_original_window_boundaries():
     assert rows[0]["singing_score"] == 0.14
     assert any(row["singing_score"] == 0.09 for row in rows)
     assert all("singing_score" in row for row in rows)
+
+
+def test_transcript_fallback_merges_adjacent_speech_without_ast_fields():
+    """The real 32-cue source has adjacent cues with no singing_score field."""
+    rows = transcript_suggestions(5 * FRAME, [(0, 1), (1, 3)])
+    assert len(rows) == 2
+    assert rows[0]["hint"] == "speech-cue"
+    assert rows[0]["start_frame"] == 0
+    assert rows[0]["end_frame"] == 3 * FRAME
+    assert rows[1]["hint"] == "unknown"
+    assert rows[1]["start_frame"] == 3 * FRAME
+    assert rows[1]["end_frame"] == 5 * FRAME

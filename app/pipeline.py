@@ -1011,6 +1011,20 @@ def _a4_tts_mark_success(work_dir, fingerprint):
     os.replace(pending, path)
 
 
+def _a4_remap_clipped_source_cues(work_dir, selected):
+    """Map filtered voice-line QA back to the full original SRT line indexes."""
+    report = _load_json(str(work_dir), "clipped_lines.json")
+    if not report or not report.get("clipped"):
+        return
+    for row in report["clipped"]:
+        original_index = row.get("selected_line", row.get("line"))
+        if type(original_index) is not int or not (1 <= original_index <= len(selected)):
+            raise ValueError("Invalid filtered Qwen line index in clipped QA")
+        row["selected_line"] = original_index
+        row["line"] = selected[original_index - 1]["source_cue_number"]
+    _save_json(str(work_dir), "clipped_lines.json", report)
+
+
 def _a4_original_only_audio(work_dir, background_path, language):
     """Produce no translated speech if A4 approved none; never start TTS."""
     out = os.path.join(work_dir, "qwen_dub_48k.wav")
@@ -1493,6 +1507,7 @@ def run_dub(
             translator=pace_tr, sample_cues=sample_cues,
             **({"output_mode": "overdub"} if audio_mode == "overdub" else {}))
         if audio_mode == "overdub":
+            _a4_remap_clipped_source_cues(work_dir, tts_segments)
             _a4_tts_mark_success(work_dir, a4_fingerprint)
 
     checkpoint()

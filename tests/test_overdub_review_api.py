@@ -636,3 +636,134 @@ def test_regenerate_rejects_original_cache_stem_symlink_outside_source_project(
     (tmp_path / "vocals.wav").symlink_to(external)
     with pytest.raises(OverdubError, match="vocals"):
         source_inputs(tmp_path)
+
+
+def test_a4_draft_roundtrip_resumes_edited_intervals_without_approval(local_job, tmp_path):
+    preview = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
+    assert preview["review_draft"] is None
+    assert preview["draft_revision"] is None
+    payload = {
+        "source_wav_sha256": preview["source_wav_sha256"],
+        "total_frames": preview["total_frames"],
+        "expected_revision": None,
+        "events": [
+            {"start_frame": 0, "end_frame": 24000, "action": "TRANSLATE"},
+            {"start_frame": 24000, "end_frame": 48000, "action": "PRESERVE"},
+            {"start_frame": 48000, "end_frame": preview["total_frames"], "action": "REVIEW"},
+        ],
+        "original_speech_db": -12,
+        "dub_speech_db": -3,
+        "fade_ms": 150,
+    }
+    saved = client.post("/api/dub/jobs/bench/overdub/draft", json=payload)
+    assert saved.status_code == 200, saved.text
+    revision = saved.json()["revision"]
+    assert len(revision) == 64
+    saved_path = tmp_path / "overdub-review-draft.json"
+    assert saved_path.is_file()
+    assert json.loads(saved_path.read_text())["review_confirmed"] is False
+    restored = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
+    assert restored["draft_revision"] == revision
+    assert restored["draft_stale"] is False
+    assert restored["review_draft"]["events"] == payload["events"]
+    assert restored["review_draft"]["original_speech_db"] == -12
+    assert restored["review_draft"]["dub_speech_db"] == -3
+    assert restored["review_draft"]["fade_ms"] == 150
+    assert restored["review_draft"]["review_confirmed"] is False
+    assert all(row["action"] == "REVIEW" for row in restored["suggestions"])
+
+
+def test_a4_draft_rejects_stale_cas_and_wrong_media_without_overwriting(local_job, tmp_path):
+    preview = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
+    payload = {
+        "source_wav_sha256": preview["source_wav_sha256"],
+        "total_frames": preview["total_frames"],
+        "expected_revision": None,
+        "events": [
+            {"start_frame": 0, "end_frame": preview["total_frames"], "action": "REVIEW"}
+        ],
+    }
+    saved = client.post("/api/dub/jobs/bench/overdub/draft", json=payload)
+    assert saved.status_code == 200
+    old_sha = (tmp_path / "overdub-review-draft.json").read_bytes()
+    assert client.post("/api/dub/jobs/bench/overdub/draft", json=payload).status_code == 409
+    assert client.post("/api/dub/jobs/bench/overdub/draft", json={
+        **payload, "expected_revision": saved.json()["revision"],
+        "source_wav_sha256": "f"*64,
+    }).status_code == 422
+    assert client.post("/api/dub/jobs/bench/overdub/draft", json={
+        **payload, "expected_revision": saved.json()["revision"],
+        "events": [{"start_frame": 0, "end_frame": 48000, "action": "TRANSLATE"}],
+    }).status_code == 422
+    assert old_sha == (tmp_path / "overdub-review-draft.json").read_bytes()
+    updated = client.post("/api/dub/jobs/bench/overdub/draft", json={
+        **payload, "expected_revision": saved.json()["revision"],
+        "events": [{"start_frame": 0, "end_frame": preview["total_frames"],
+                    "action": "PRESERVE"}],
+    })
+    assert updated.status_code == 200
+    assert updated.json()["revision"] != saved.json()["revision"]
+
+
+def test_a4_draft_does_not_restore_on_changed_original_audio(local_job, tmp_path, monkeypatch):
+    import app.api.overdub as api
+    preview = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
+    saved = client.post("/api/dub/jobs/bench/overdub/draft", json={
+        "source_wav_sha256": preview["source_wav_sha256"],
+        "total_frames": preview["total_frames"],
+        "expected_revision": None,
+        "events": [{"start_frame": 0, "end_frame": preview["total_frames"],
+                    "action": "TRANSLATE"}],
+    })
+    assert saved.status_code == 200
+    original = api.extract_original_pcm
+
+    def modified_source(video, wav, duration):
+        original(video, wav, duration)
+        # Replacing a sample while keeping the same audio clock changes the
+        # source identity. The old draft must remain available but inactive.
+        with open(wav, "r+b") as f:
+            f.seek(84)
+            b = f.read(1)
+            f.seek(84)
+            f.write(bytes([b[0] ^ 1]))
+
+    monkeypatch.setattr(api, "extract_original_pcm", modified_source)
+    fresh = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
+    assert fresh["source_wav_sha256"] != preview["source_wav_sha256"]
+    assert fresh["review_draft"] is None
+    assert fresh["draft_stale"] is True
+    assert fresh["draft_revision"] == saved.json()["revision"]
+    assert client.post("/api/dub/jobs/bench/overdub/draft", json={
+        "source_wav_sha256": preview["source_wav_sha256"],
+        "total_frames": preview["total_frames"],
+        "expected_revision": saved.json()["revision"],
+        "events": [{"start_frame": 0, "end_frame": preview["total_frames"],
+                    "action": "TRANSLATE"}],
+    }).status_code == 422
+    # A new review can supersede the stale draft with its exact old revision.
+    result = client.post("/api/dub/jobs/bench/overdub/draft", json={
+        "source_wav_sha256": fresh["source_wav_sha256"],
+        "total_frames": fresh["total_frames"],
+        "expected_revision": fresh["draft_revision"],
+        "events": [{"start_frame": 0, "end_frame": fresh["total_frames"],
+                    "action": "REVIEW"}],
+    })
+    assert result.status_code == 200
+
+
+def test_prepare_offers_automatic_source_and_current_russian_text_for_review(local_job, tmp_path):
+    (tmp_path / "translated.srt").write_text(
+        "1\n00:00:00,200 --> 00:00:01,000\nRussian draft\n", encoding="utf-8",
+    )
+    reply=client.post("/api/dub/jobs/bench/overdub/prepare",json={})
+    assert reply.status_code==200
+    data=reply.json()
+    assert data["source_cues"] == [{"start": 0.2, "end": 1.0, "text": "Original speech"}]
+    assert data["translated_cues"] == [{"start": 0.2, "end": 1.0, "text": "Russian draft"}]
+    (tmp_path/"edited.srt").write_text(
+        "1\n00:00:00,200 --> 00:00:01,000\nEdited translation\n",encoding="utf-8",
+    )
+    second=client.post("/api/dub/jobs/bench/overdub/prepare",json={}).json()
+    assert second["translated_cues"][0]["text"]=="Edited translation"
+    assert second["source_cues"]==data["source_cues"]

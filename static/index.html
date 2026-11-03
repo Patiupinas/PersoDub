@@ -1015,10 +1015,15 @@
           <button class="btn btn-outline btn-sm" id="overdubAnalyze" type="button" data-i18n>Suggest events with AST</button>
           <button class="btn btn-outline btn-sm" id="overdubNextExercise" type="button" disabled data-i18n>Next possible vocal exercise</button>
           <button class="btn btn-outline btn-sm" id="overdubUseHints" type="button" data-i18n>Apply suggestions</button>
+          <button class="btn btn-outline btn-sm" id="overdubSaveDraft" type="button" disabled data-i18n>Save review progress</button>
         </div>
         <p id="overdubStatus" class="settings-hint" aria-live="polite"></p>
         <div class="overdub-source-player">
           <p data-i18n>Listen to original video before choosing speech or vocal exercise</p>
+          <div class="overdub-transcript-context" aria-live="polite">
+            <p id="overdubSourceTranscript" class="settings-hint"></p>
+            <p id="overdubTranslationTranscript" class="settings-hint"></p>
+          </div>
           <video id="overdubSourcePlayer" preload="metadata" controls playsinline
             aria-label="Original video" data-i18n-aria-label></video>
         </div>

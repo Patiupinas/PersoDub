@@ -207,7 +207,7 @@ def select_translatable_cues(segments, approved_spans):
     starts = [start for start, _end in translated]
     selected = []
     skipped = 0
-    for cue in segments:
+    for source_cue_number, cue in enumerate(segments, start=1):
         start = cue.get("start")
         end = cue.get("end")
         if (type(start) not in (int, float)
@@ -224,6 +224,7 @@ def select_translatable_cues(segments, approved_spans):
             continue
         keep = dict(cue)
         keep["dub_limit_s"] = translated[idx][1] / SR
+        keep["source_cue_number"] = source_cue_number
         selected.append(keep)
     return selected, skipped
 

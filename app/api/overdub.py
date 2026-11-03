@@ -30,20 +30,25 @@ from app.audio.overdub import (
     extract_original_pcm,
     select_translatable_cues,
 )
+from app.dub_script import script_path
 from app.jobs import JobKind, JobStatus, kind_of
 from app.text.srt import parse_srt
 from app.vocal_overdub_export import _line_manifest, export_existing
 from app.vocal_overdub_regenerate import seed_regeneration, source_inputs
 from app.vocal_overdub_review import (
+    ReviewDraftConflict,
     approved_plan,
     model_suggestions,
+    read_review_draft,
     record_plan,
+    save_review_draft,
     transcript_suggestions,
 )
 
 router = APIRouter()
 logger = logging.getLogger("persodub.api.overdub")
 _EXPORT_LOCK = threading.Lock()
+_DRAFT_LOCK = threading.Lock()
 _FILE_RE = re.compile(r"^finished-overdub(?:-[0-9]+)?\.mp4$")
 PCM_BYTES_PER_SECOND = 48000 * 2 * 2
 # Keep a margin for RIFF metadata (WAV length fields are 32-bit unsigned).
@@ -92,6 +97,16 @@ class ExportRequest(BaseModel):
     fade_ms: float = 300.0
 
 
+class DraftRequest(BaseModel):
+    source_wav_sha256: str
+    total_frames: int
+    expected_revision: str | None = None
+    events: list[dict]
+    original_speech_db: float = -16.0
+    dub_speech_db: float = -2.0
+    fade_ms: float = 300.0
+
+
 def _job(jid):
     job = state.job_store.get(jid)
     if job is None:
@@ -109,6 +124,17 @@ def _job(jid):
     except (OSError, ValueError) as exc:
         raise HTTPException(409, "Saved Qwen voice lines are unavailable") from exc
     return source, work
+
+
+def _review_text_cues(path, work):
+    """Local-only transcript context is advisory, never a source A4 label."""
+    path = Path(path)
+    if not path.is_file() or path.resolve().parent != Path(work).resolve():
+        return []
+    return [
+        {"start": cue["start"], "end": cue["end"], "text": cue.get("text", "")}
+        for cue in parse_srt(path.read_text(encoding="utf-8-sig"))
+    ]
 
 
 def _source_preview(source, work, analyze=False):
@@ -150,18 +176,26 @@ def _source_preview(source, work, analyze=False):
                 analysis = "model_failed"
         elif analyze:
             analysis = "model_not_configured"
+        source_cues = _review_text_cues(work / "original.srt", work)
+        translated_cues = _review_text_cues(script_path(str(work)), work)
         if suggestions is None:
-            cues = []
-            script = work / "original.srt"
-            if script.is_file():
-                for cue in parse_srt(script.read_text(encoding="utf-8-sig")):
-                    cues.append((cue["start"], cue["end"]))
-            suggestions = transcript_suggestions(frames, cues)
+            suggestions = transcript_suggestions(
+                frames, [(cue["start"], cue["end"]) for cue in source_cues]
+            )
+        with _DRAFT_LOCK:
+            draft, revision = read_review_draft(work)
+        stale = bool(draft and (
+            draft["source_wav_sha256"] != source_sha
+            or draft["total_frames"] != frames
+        ))
         return {
             "source_wav_sha256": source_sha, "total_frames": frames,
             "sample_rate": 48000, "suggestions": suggestions,
+            "source_cues": source_cues, "translated_cues": translated_cues,
             "analysis": analysis, "ast_available": configured,
             "requires_review": True,
+            "review_draft": None if stale else draft,
+            "draft_revision": revision, "draft_stale": stale,
         }
 
 
@@ -187,6 +221,34 @@ def overdub_prepare(jid: str, request: PreviewRequest):
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, OverdubError) as error:
         logger.info("Overdub preview failed: %s", type(error).__name__)
         raise HTTPException(422, "Could not prepare original audio for overdub") from error
+
+
+@router.post("/api/dub/jobs/{jid}/overdub/draft")
+def overdub_save_draft(jid: str, request: DraftRequest):
+    """Store only unapproved review progress, never an authorized export plan."""
+    source, work = _job(jid)
+    try:
+        current = _source_preview(source, work, analyze=False)
+        if (current["source_wav_sha256"] != request.source_wav_sha256
+                or current["total_frames"] != request.total_frames):
+            raise OverdubError("Review draft does not match the current source audio")
+        draft = {
+            "schema_version": 1,
+            "source_wav_sha256": request.source_wav_sha256,
+            "total_frames": request.total_frames,
+            "events": request.events,
+            "original_speech_db": request.original_speech_db,
+            "dub_speech_db": request.dub_speech_db,
+            "fade_ms": request.fade_ms,
+            "review_confirmed": False,
+        }
+        with _DRAFT_LOCK:
+            revision = save_review_draft(work, draft, request.expected_revision)
+        return {"saved": True, "revision": revision, "review_confirmed": False}
+    except ReviewDraftConflict as error:
+        raise HTTPException(409, str(error)) from error
+    except (OverdubError, OSError, ValueError) as error:
+        raise HTTPException(422, str(error)[:180]) from error
 
 
 @router.post("/api/dub/jobs/{jid}/overdub/export")

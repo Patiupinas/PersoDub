@@ -132,6 +132,10 @@ pipeline and the Perso cloud path remain unchanged. All strings and controls
 are available in the desktop UI; new untranslated strings fall back to English
 under a non-English UI locale.
 
+## Resume A4 review without creating an approval (2026-11-03)
+
+The completed-project A4 editor now supports **Save review progress**, automatic save-on-close and automatic restoration of source-hash-bound draft splits/actions and gain settings. The private project-local draft is a single compare-and-swap, fsynced file; a stale original-audio SHA or a conflicting tab's revision cannot silently overwrite the user's current review. All restored actions are explicitly **unconfirmed** and source playback still leads; there is no generated A4 `PRESERVE` gold. Running AST again overlays its updated source-frame hint edges while retaining each manual action and original split. The source player shows overlapping **automatic original transcript** and **current draft Russian SRT** as text only. See `docs/p1-a4-draft-review-and-real-seventeen-20261103.md` for actual-source regression, API contract and zero-clipped private Qwen research (not a full, human-approved lesson).
+
 ## Rebuild the approved speech in the product UI (2026-11-03)
 
 The completed local project's Overdub dialog now exposes two deliberate choices under the *same* confirmed source-bound A4 plan: **Mix saved voices** (existing remix of completed Qwen WAVs) and **Rebuild reviewed speech** (new selective-TTS project). The latter starts a separate JobStore job with the exact reviewed A4 partition and original source-clock SHA. It takes its full current edited Russian script, source SRT, cached separated stems and transcript into a new isolated folder, and **does not copy old Qwen lines**. Recognition, translation and separation are reused; the only heavy new inference is selected TTS. Existing review, manual confirmation, source playback, output tracks and the default replacement dub are unchanged. The normal running-project UI handles progress and resume.

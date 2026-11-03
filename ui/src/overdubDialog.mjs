@@ -56,12 +56,44 @@ export function splitOverdubInterval(items, seconds) {
   ];
 }
 
+// Restore only the user's exact boundaries and actions. Hints are derived
+// from the current source preview; never persist them as manual A4 authority.
+export function restoredDraftRows(suggestions, savedEvents) {
+  const saved = reviewedEvents(savedEvents);
+  // Joining edge sets instead of replacing them preserves every user action
+  // while allowing a new AST run to expose finer vocal-event boundaries.
+  reviewedEvents(suggestions);
+  if (suggestions.at(-1).end_frame !== saved.at(-1).end_frame) {
+    throw new Error("A4 suggestions and draft have different source clocks");
+  }
+  const rows = [];
+  let manual = 0;
+  let model = 0;
+  while (manual < saved.length && model < suggestions.length) {
+    const approved = saved[manual];
+    const hint = suggestions[model];
+    const start = Math.max(approved.start_frame, hint.start_frame);
+    const end = Math.min(approved.end_frame, hint.end_frame);
+    if (start < end) rows.push({
+      ...hint, start_frame: start, end_frame: end, action: approved.action,
+    });
+    if (approved.end_frame <= end) manual += 1;
+    if (hint.end_frame <= end) model += 1;
+  }
+  if (manual !== saved.length || model !== suggestions.length) {
+    throw new Error("A4 suggestions and draft have different source clocks");
+  }
+  reviewedEvents(rows);
+  return rows;
+}
+
 function atTime(frames) { return (frames / OVERDUB_RATE).toFixed(2); }
 
 export function overDubRowsHtml(items, indexOffset = 0) {
   return items.map((entry, localIndex) => {
     const index = indexOffset + localIndex;
     const hint = entry.hint === "speech-cue" ? t("Speech cue") :
+      entry.hint === "saved-interval" ? t("Saved interval") :
       entry.hint === "unknown" ? t("Unknown") : entry.hint;
     // AST group scores are not calibrated probabilities; never display them as confidence percentages.
     const certainty = entry.score == null ? "" : ` · ${t("Model score")} ${Number(entry.score).toFixed(2)}`;
@@ -99,6 +131,8 @@ export function initOverdubDialog({
   let generation = 0;
   let page = 0;
   let exerciseCursor = -1;
+  let draftRevision = null;
+  let draftDirty = false;
   const s2stLab = initS2stLab({ $, fetchFn });
   const overlay = $("overdubOverlay");
   const status = $("overdubStatus");
@@ -106,6 +140,7 @@ export function initOverdubDialog({
   const confirm = $("overdubReviewed");
   const exportButton = $("overdubExport");
   const regenerateButton = $("overdubRegenerate");
+  const saveDraftButton = $("overdubSaveDraft");
   const analyze = $("overdubAnalyze");
   const useHints = $("overdubUseHints");
   const nextExercise = $("overdubNextExercise");
@@ -115,9 +150,15 @@ export function initOverdubDialog({
   const nextPage = $("overdubPageNext");
   const pageLabel = $("overdubPageLabel");
   const sourcePlayer = $("overdubSourcePlayer");
+  const sourceTranscript = $("overdubSourceTranscript");
+  const translationTranscript = $("overdubTranslationTranscript");
   let previewStopTime = null;
 
-  const allReview = () => events.every((row) => row.action === "REVIEW");
+  function changed() {
+    draftDirty = true;
+    confirm.checked = false;
+    paint();
+  }
   function paint() {
     const scroll = list.scrollTop;
     const pages = Math.max(1, Math.ceil(events.length / REVIEW_PAGE_SIZE));
@@ -138,6 +179,7 @@ export function initOverdubDialog({
     confirm.disabled = busy || !hasSource;
     exportButton.disabled = busy || !hasSource || !confirm.checked;
     regenerateButton.disabled = busy || !hasSource || !confirm.checked;
+    saveDraftButton.disabled = busy || !hasSource || !draftDirty;
     $("overdubClose").disabled = busy;
     $("overdubOriginalDb").disabled = busy;
     $("overdubTranslationDb").disabled = busy;
@@ -157,10 +199,11 @@ export function initOverdubDialog({
   }
   async function prepare(analyzeWithAst = false) {
     if (!jobId || busy) return;
-    if (analyzeWithAst && !allReview()) {
-      message(t("Clear reviewed choices before analyzing again."));
-      return;
-    }
+    // A fresh AST run must not discard manually reviewed or split intervals.
+    const currentActions = analyzeWithAst && (draftDirty || draftRevision)
+      ? reviewedEvents(events) : null;
+    const wasDirty = draftDirty;
+    const oldSource = preview;
     const currentJob = jobId;
     const currentGen = ++generation;
     busy = true;
@@ -172,10 +215,28 @@ export function initOverdubDialog({
       const answer = await api("prepare", { analyze: analyzeWithAst });
       if (currentGen !== generation || currentJob !== jobId) return;
       preview = answer;
-      events = answer.suggestions.map((row) => ({ ...row, action: "REVIEW" }));
+      draftRevision = answer.draft_revision ?? null;
+      draftDirty = false;
+      const sameClock = oldSource && oldSource.source_wav_sha256 === answer.source_wav_sha256
+        && oldSource.total_frames === answer.total_frames;
+      if (currentActions && sameClock) {
+        events = restoredDraftRows(answer.suggestions, currentActions);
+        draftDirty = wasDirty;
+      } else if (answer.review_draft && !answer.draft_stale) {
+        events = restoredDraftRows(answer.suggestions, answer.review_draft.events);
+        $("overdubOriginalDb").value = String(answer.review_draft.original_speech_db);
+        $("overdubTranslationDb").value = String(answer.review_draft.dub_speech_db);
+        $("overdubFadeMs").value = String(answer.review_draft.fade_ms);
+      } else {
+        events = answer.suggestions.map((row) => ({ ...row, action: "REVIEW" }));
+      }
       exerciseCursor = -1;
       page = 0;
-      if (answer.analysis === "ast_observations") {
+      if (answer.draft_stale) {
+        message(t("Previous review belongs to different source audio."));
+      } else if (answer.review_draft && !currentActions) {
+        message(t("Saved A4 review restored; confirm before export."));
+      } else if (answer.analysis === "ast_observations") {
         message(t("AST event suggestions are ready. Review every interval before export."));
       } else if (answer.analysis === "model_failed") {
         message(t("AST analysis did not complete. Using speech-cue suggestions."));
@@ -188,27 +249,72 @@ export function initOverdubDialog({
       if (currentGen !== generation || currentJob !== jobId) return;
       preview = null;
       events = [];
+      draftDirty = false;
       message(errorText(err));
     } finally {
       if (currentGen === generation) { busy = false; paint(); }
+    }
+  }
+  async function saveDraft() {
+    if (!preview || busy || !draftDirty || !jobId) return !draftDirty;
+    busy = true;
+    message(t("Saving review draft…"));
+    paint();
+    try {
+      const actions = reviewedEvents(events);
+      if (actions.at(-1).end_frame !== preview.total_frames) {
+        throw new Error("Event plan does not cover the complete source");
+      }
+      const answer = await api("draft", {
+        source_wav_sha256: preview.source_wav_sha256,
+        total_frames: preview.total_frames,
+        expected_revision: draftRevision, events: actions,
+        original_speech_db: Number($("overdubOriginalDb").value),
+        dub_speech_db: Number($("overdubTranslationDb").value),
+        fade_ms: Number($("overdubFadeMs").value),
+      });
+      if (!answer.saved || !answer.revision) throw new Error(t("Overdub request failed"));
+      draftRevision = answer.revision;
+      draftDirty = false;
+      message(t("Review progress saved as draft; approval is still required."));
+      return true;
+    } catch (err) {
+      message(errorText(err));
+      return false;
+    } finally {
+      busy = false;
+      paint();
     }
   }
   function close() {
     if (busy) return;
     ++generation;
     jobId = null;
+    draftRevision = null;
+    draftDirty = false;
     previewStopTime = null;
     sourcePlayer.pause();
     sourcePlayer.removeAttribute("src");
     sourcePlayer.load();
+    sourceTranscript.textContent = "";
+    translationTranscript.textContent = "";
     s2stLab.close();
     overlay.classList.remove("open");
+  }
+  async function requestClose() {
+    if (busy) return;
+    if (draftDirty && !await saveDraft()) return;
+    close();
   }
   async function open(jid) {
     if (!jid || busy) return;
     jobId = jid;
+    draftRevision = null;
+    draftDirty = false;
     sourcePlayer.pause();
     previewStopTime = null;
+    sourceTranscript.textContent = "";
+    translationTranscript.textContent = "";
     sourcePlayer.src = `/api/dub/jobs/${encodeURIComponent(jid)}/overdub/source`;
     preview = null;
     events = [];
@@ -229,6 +335,14 @@ export function initOverdubDialog({
     exerciseCursor = index;
     const start = item.start_frame / OVERDUB_RATE;
     const end = item.end_frame / OVERDUB_RATE;
+    const context = (cues) => (Array.isArray(cues) ? cues : [])
+      .filter((cue) => cue.start < end && cue.end > start)
+      .slice(0, 3).map((cue) => cue.text.trim()).filter(Boolean).join(" ");
+    const en = context(preview.source_cues);
+    const ru = context(preview.translated_cues);
+    // textContent is intentional: the source transcript is untrusted user media.
+    sourceTranscript.textContent = en ? `${t("Original transcript (automatic)")}: ${en}` : "";
+    translationTranscript.textContent = ru ? `${t("Russian subtitles (draft)")}: ${ru}` : "";
     previewStopTime = end;
     sourcePlayer.pause();
     sourcePlayer.currentTime = Math.max(0, start - 0.4);
@@ -265,17 +379,15 @@ export function initOverdubDialog({
     const i = Number(field.dataset.odIndex);
     if (!events[i] || !ACTIONS.includes(field.value)) return;
     events[i].action = field.value;
-    confirm.checked = false;
-    paint();
+    changed();
   });
   useHints.addEventListener("click", () => {
     if (busy || !preview) return;
     events = events.map((item) => ({
       ...item, action: ACTIONS.includes(item.suggested_action) ? item.suggested_action : "REVIEW",
     }));
-    confirm.checked = false;
+    changed();
     message(t("Suggestions applied. Check each interval and confirm your choices."));
-    paint();
   });
   previousPage.addEventListener("click", () => {
     if (busy || page === 0) return;
@@ -293,11 +405,14 @@ export function initOverdubDialog({
     if (busy) return;
     try {
       events = splitOverdubInterval(events, $("overdubSplitAt").value);
-      confirm.checked = false;
+      changed();
       message(t("Interval split. Review both sides."));
-      paint();
     } catch (err) { message(errorText(err)); }
   });
+  for (const id of ["overdubOriginalDb", "overdubTranslationDb", "overdubFadeMs"]) {
+    $(id).addEventListener("change", changed);
+  }
+  saveDraftButton.addEventListener("click", saveDraft);
   confirm.addEventListener("change", paint);
   analyze.addEventListener("click", () => prepare(true));
   function confirmedRequest() {
@@ -357,7 +472,9 @@ export function initOverdubDialog({
       onRegenerate(newJob);
     }
   });
-  $("overdubClose").addEventListener("click", close);
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+  $("overdubClose").addEventListener("click", requestClose);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) return requestClose();
+  });
   return { open, close };
 }

@@ -110,6 +110,7 @@ ROUTES = [
     ('POST', '/api/downloads/{did}/save'),
     ('POST', '/api/dub/jobs/{jid}/again'),
     ('POST', '/api/dub/jobs/{jid}/cancel'),
+    ('POST', '/api/dub/jobs/{jid}/overdub/draft'),
     ('POST', '/api/dub/jobs/{jid}/overdub/export'),
     ('POST', '/api/dub/jobs/{jid}/overdub/prepare'),
     ('POST', '/api/dub/jobs/{jid}/overdub/regenerate'),

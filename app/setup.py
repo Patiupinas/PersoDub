@@ -29,7 +29,7 @@ STAGES = {
     "stt": ("STT_ENGINE", ("local", "perso"), "local"),
     "translator": ("TRANSLATE_ENGINE", tuple(t.name for t in TRANSLATORS.values() if t.offered), None),
     "voice_quality": ("VOICE_QUALITY", ("fast", "high"), "fast"),
-    "voice": ("TTS_ENGINE", ("qwen3",), "qwen3"),
+    "voice": ("TTS_ENGINE", ("qwen3", "silero_ru"), "qwen3"),
 }
 
 # What the voice engine's best-of-N count is for each quality word (the same

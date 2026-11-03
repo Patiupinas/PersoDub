@@ -189,3 +189,10 @@ def test_an_install_that_has_hunyuan_keeps_it_as_the_default(tmp_path, monkeypat
     assert client.get("/api/setup").json()["defaults"]["translator"] == "hunyuan"
     monkeypatch.setattr(setup_mod, "_hunyuan_installed", lambda: False)
     assert client.get("/api/setup").json()["defaults"]["translator"] == "chatgpt"
+
+
+def test_native_russian_fixed_voice_option_is_opt_in(monkeypatch):
+    from app import setup
+    assert setup.checked_choice("voice", "silero_ru") == "silero_ru"
+    assert "silero_ru" in setup.STAGES["voice"][1]
+    assert setup.STAGES["voice"][2] == "qwen3"

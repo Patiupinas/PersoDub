@@ -726,3 +726,7 @@ test("buildDubFormData: the voice engine travels when one is chosen, and only th
   // No choice sent: the server's saved default decides.
   assert.equal(buildDubFormData({ video, direction: "en_to_ko" }).get("tts_engine"), null);
 });
+
+test("native Russian fixed-voice engine is named distinctly from a clone", () => {
+  assert.equal(voiceLabel("silero_ru"), "Silero RU v5.6");
+});

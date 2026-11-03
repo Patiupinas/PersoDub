@@ -104,3 +104,49 @@ def test_a_remade_line_the_check_makes_again_comes_out_new_too(monkeypatch, tmp_
     qwen_pipeline._check_fast_lines(None, [{"text": "hello there"}], ["A"], {"A": "v"}, "English", str(tmp_path),
                                     [str(first)], [2.0], lambda m: None, [], remake_seed=777)
     assert seeds == [778, 779]
+
+
+def test_fixed_russian_line_can_be_remade_without_english_reference_or_clone(monkeypatch, tmp_path):
+    from pathlib import Path
+    work_dir = str(tmp_path)
+    (tmp_path / "russian_voice_assignments.json").write_text(json.dumps({
+        "version": 1, "engine": "silero_ru",
+        "speaker_to_voice": {"VOICE_01": "aidar"},
+        "source_clone": False,
+    }), encoding="utf-8")
+
+    class FixedEngine:
+        free_retakes = False
+        def clone(self, *args, **kwargs):
+            raise AssertionError("Fixed Russian voices must not clone English")
+
+    engine = FixedEngine()
+    monkeypatch.setattr("app.engines.base.get_engine", lambda name: engine if name == "silero_ru" else None)
+    calls = []
+    def speak(eng, cue, voice, language, seed, path, log, label, **kwargs):
+        calls.append((voice, language, cue["text"]))
+        Path(path).write_bytes(b"RIFF_mock")
+        return path
+
+    monkeypatch.setattr(qwen_pipeline, "_synth_one", speak)
+    monkeypatch.setattr(qwen_pipeline, "_check_fast_lines", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("Native fixed voice has no source-voice scorer")))
+    out = qwen_pipeline.resynth_one_line(work_dir, {
+        "i": 7, "speaker": "VOICE_01", "start": 3.0, "end": 4.0
+    }, "Прекрасное упражнение.", "Russian")
+    assert out.endswith("qwen_line_7.wav")
+    assert calls == [("aidar", "Russian", "Прекрасное упражнение.")]
+    assert not list(tmp_path.glob("qwen_ref_*.wav"))
+
+
+def test_missing_fixed_voice_assignment_never_falls_back_to_source_cloning(monkeypatch, tmp_path):
+    (tmp_path / "russian_voice_assignments.json").write_text(json.dumps({
+        "version": 1, "engine": "silero_ru",
+        "speaker_to_voice": {"VOICE_01": "aidar"},
+        "source_clone": False,
+    }), encoding="utf-8")
+    import pytest
+    with pytest.raises(ValueError, match="speaker.*fixed"):
+        qwen_pipeline.resynth_one_line(
+            str(tmp_path), {"i": 0, "speaker": "VOICE_03"}, "Привет", "Russian"
+        )

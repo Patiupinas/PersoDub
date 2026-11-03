@@ -246,3 +246,8 @@ test("every group title and note is in the page's tables, so Korean shows it in 
   assert.equal(ko["Needed to run the models"], "모델을 돌리는 데 필요해요");
   assert.equal(Object.hasOwn(ko, "Base programs"), false, "the old name is gone");
 });
+
+test("native Russian fixed-voice model has its own download identity", () => {
+  assert.equal(neededModelId("voice", "silero_ru"), "silero-ru");
+  assert.equal(neededModelId("voice", "qwen3"), "qwen3-tts");
+});

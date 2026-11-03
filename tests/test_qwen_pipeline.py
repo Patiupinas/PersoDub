@@ -1553,3 +1553,21 @@ def test_selective_tts_does_not_clone_unselected_diarized_speaker(
         )
     assert actual_speakers == [["SPK0"]]
     assert len(engine.cloned) == 1
+
+
+def test_voice_group_shares_one_synthesis_voice_but_preserves_source_labels():
+    originals = [_cue(0, 3, "one", "SPK0"), _cue(3, 5, "two", "SPK1"),
+                 _cue(5, 7, "three", "SPK0")]
+    originals[0]["voice_group_id"] = "VOICE_01"
+    originals[1]["voice_group_id"] = "VOICE_01"
+    originals[2]["voice_group_id"] = "VOICE_01"
+    segments = [{"start": 0, "end": 3, "text": "первый"},
+                {"start": 3, "end": 5, "text": "второй"},
+                {"start": 5, "end": 7, "text": "третий"}]
+    speakers, assigned, refs, samples = qp._speaker_plan(segments, originals, originals)
+    assert speakers == ["VOICE_01"]
+    assert assigned == ["VOICE_01"] * 3
+    assert all(row["speaker_id"] == "VOICE_01" for row in refs)
+    assert [row["speaker_id"] for row in originals] == ["SPK0", "SPK1", "SPK0"]
+    assert [row["source_speaker_id"] for row in refs] == ["SPK0", "SPK1", "SPK0"]
+    assert all(row["speaker_id"] == "VOICE_01" for row in samples)

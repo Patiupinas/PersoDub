@@ -775,3 +775,28 @@ def test_try_again_on_a_cloud_job_names_no_local_engines(recorder, tmp_path):
     _wait(recorder["cloud"])
     record = state.job_store.get(r.json()["job_id"])
     assert [record.get(k) for k in ("stt_engine", "translator", "tts", "quality", "separation")] == [None] * 5
+
+
+def test_saved_native_russian_voice_engine_routes_through_the_project_job_not_qwen(tmp_path, monkeypatch):
+    from app import dub_launch
+
+    args = {}
+    def runner(**kw):
+        args.update(kw)
+        return {"out_path": kw["out_path"]}
+
+    job = {
+        "id": "ru-native", "work_dir": str(tmp_path),
+        "language": "Russian", "language_code": "ru",
+        "dub_mode": "local", "tts": "silero_ru",
+        "stt_engine": "whisper", "separation": "demucs",
+        "translator": "hunyuan", "quality": 1,
+    }
+    (tmp_path/"input.mp4").write_bytes(b"FAKE")
+    work = dub_launch.work_for(
+        job, cancel_check=lambda: False, on_notice=lambda _: None, run_dub=runner,
+    )
+    work(lambda _: None)
+    assert args["qwen_engine"].id == "silero_ru"
+    assert args["language"] == "Russian"
+    assert args["language_code"] == "ru"

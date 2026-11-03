@@ -1152,12 +1152,41 @@ def fit_to_pace(engine, translator, segments: List[dict], seg_speakers: List[str
 
 
 def _speaker_plan(segments: List[dict], ref_cues: List[dict], sample_cues: List[dict]):
-    """Who says what: (speakers, each line's speaker, ref_cues, sample_cues).
-    A transcript with no speaker labels at all is one speaker,
-    DEFAULT_SPEAKER, and its cues come back labelled with it."""
+    """Map source speaker labels to dubbing voice owners without rewriting gold.
+
+    A source diarizer can oversplit a narrator into SPK0 and SPK1. If their
+    validated voice_group_id is shared, the TTS stage uses one consistent
+    voice reference while transcript/source labels remain separate.
+    """
     speakers = speakers_in(ref_cues)
     if speakers:
-        return speakers, map_segments_to_speakers(segments, ref_cues, speakers), ref_cues, sample_cues
+        line_sources = map_segments_to_speakers(segments, ref_cues, speakers)
+        voice_by_speaker = {}
+        for cue in ref_cues:
+            source = cue_speaker(cue)
+            if source:
+                group = cue.get("voice_group_id") or source
+                if source in voice_by_speaker and voice_by_speaker[source] != group:
+                    raise ValueError("inconsistent voice group for one diarized speaker")
+                voice_by_speaker[source] = group
+        if all(voice_by_speaker.get(speaker, speaker) == speaker for speaker in speakers):
+            return speakers, line_sources, ref_cues, sample_cues
+
+        def mapped_copy(cue):
+            source = cue_speaker(cue)
+            if not source:
+                return dict(cue)
+            return dict(cue, speaker_id=voice_by_speaker.get(source, source),
+                        source_speaker_id=source)
+
+        voice_ref_cues = [mapped_copy(c) for c in ref_cues]
+        voice_samples = [mapped_copy(c) for c in sample_cues]
+        voice_speakers = list(dict.fromkeys(
+            voice_by_speaker[cue_speaker(c)] for c in ref_cues if cue_speaker(c)
+        ))
+        return (voice_speakers,
+                [voice_by_speaker.get(s, s) for s in line_sources],
+                voice_ref_cues, voice_samples)
     # No speaker labels anywhere -- treat the whole transcript as one speaker.
     ref_cues = [dict(c, speaker_id=DEFAULT_SPEAKER) for c in ref_cues]
     sample_cues = [dict(c, speaker_id=DEFAULT_SPEAKER) for c in sample_cues]
@@ -1357,10 +1386,14 @@ def run_qwen_dub(
     # not unrelated short/uncertain diarization fragments.
     active_speakers = set(seg_speakers)
     speakers = [speaker for speaker in speakers if speaker in active_speakers]
-    refs = build_speaker_refs(sample_cues, speakers, vocals_path, mode=voice_mode)
-    log("   %d/%d speaker reference(s) built (4-7s contiguous span)" % (len(refs), len(speakers)))
-    # A voice for every speaker (TTSEngine.assign_voices): Qwen3-TTS clones
-    # each reference once.
+    if getattr(engine, "id", None) != "silero_ru":
+        refs = build_speaker_refs(sample_cues, speakers, vocals_path, mode=voice_mode)
+        log("   %d/%d speaker reference(s) built (4-7s contiguous span)" % (len(refs), len(speakers)))
+    else:
+        # Native Russian presets do not need English source samples and
+        # must not copy the source speaker's foreign accent into the TTS.
+        refs = {}
+        log("   source voice cloning disabled; selecting native Russian presets")
     voice_ids = engine.assign_voices(refs, speakers, work_dir, log, mode=voice_mode)
     write_speaker_refs_manifest(refs, sample_cues, work_dir)
     # assign_voices writes each reference to ref_wav_path -- reuse it as the
@@ -1415,17 +1448,29 @@ def resynth_one_line(work_dir, entry, text, language):
 
     i = int(entry["i"])
     spk = entry.get("speaker") or DEFAULT_SPEAKER
-    ref_wav = ref_wav_path(work_dir, spk)
-    refs_path = os.path.join(work_dir, "speaker_refs.json")
-    if not os.path.exists(ref_wav) or not os.path.exists(refs_path):
-        raise FileNotFoundError(i18n.t(
-            "This job has no reference audio for the speaker - remake the whole job."))
-    with open(refs_path, encoding="utf-8") as f:
-        refs = json.load(f)
-    ref_text = (refs.get(spk) or {}).get("ref_text") or ""
-
-    engine = get_engine("qwen3_tts")
-    voice_id = engine.clone(ref_wav, ref_text)
+    fixed_voices = os.path.join(work_dir, "russian_voice_assignments.json")
+    if os.path.isfile(fixed_voices):
+        with open(fixed_voices, encoding="utf-8") as fd:
+            manifest = json.load(fd)
+        if manifest.get("engine") != "silero_ru" or manifest.get("source_clone") is not False:
+            raise ValueError("invalid native Russian speaker assignment manifest")
+        voice_id = (manifest.get("speaker_to_voice") or {}).get(spk)
+        if not voice_id:
+            raise ValueError("speaker has no fixed Russian voice assignment")
+        engine = get_engine("silero_ru")
+        if engine is None:
+            raise RuntimeError("native Russian TTS engine is not registered")
+    else:
+        ref_wav = ref_wav_path(work_dir, spk)
+        refs_path = os.path.join(work_dir, "speaker_refs.json")
+        if not os.path.exists(ref_wav) or not os.path.exists(refs_path):
+            raise FileNotFoundError(i18n.t(
+                "This job has no reference audio for the speaker - remake the whole job."))
+        with open(refs_path, encoding="utf-8") as fd:
+            refs = json.load(fd)
+        ref_text = (refs.get(spk) or {}).get("ref_text") or ""
+        engine = get_engine("qwen3_tts")
+        voice_id = engine.clone(ref_wav, ref_text)
     out_path = os.path.join(work_dir, "qwen_line_%d.wav" % i)
     # A fresh seed every time: a remake is asked for because the voice there
     # is not wanted, so it has to be able to come out differently. The fixed
@@ -1435,7 +1480,7 @@ def resynth_one_line(work_dir, entry, text, language):
     slot = max(0.0, float(entry.get("end", 0) or 0) - float(entry.get("start", 0) or 0)) or None
     made = _synth_one(engine, {"text": text}, voice_id, language, seed,
                       out_path, lambda m: None, "line %d" % i, slot=slot)
-    if made:
+    if made and getattr(engine, "free_retakes", True):
         # Heard back like a line the first pass made: a stray sound next to the
         # sentence is cut, a wrong take made again (2026-10-03). Only line i is
         # in the lists the check walks.

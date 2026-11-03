@@ -426,3 +426,17 @@ def test_a4_clipped_qa_uses_original_source_cue_numbers_not_filtered_tts_indices
     # Re-exporting a finished job cannot remap the source indexes twice.
     pipeline._a4_remap_clipped_source_cues(tmp_path, picked)
     assert json.loads(path.read_text()) == after
+
+
+def test_a4_tts_fingerprint_never_reuses_qwen_voice_for_a_russian_preset_engine():
+    from app.pipeline import _a4_tts_fingerprint
+
+    content = [{"start": 0, "end": 2, "text": "Привет"}]
+    reference = [{"start": 0, "end": 2, "text": "Hello", "speaker_id": "SPK0"}]
+    original = _a4_tts_fingerprint("a" * 64, "b" * 64, content, reference, "Russian",
+                                   engine_id="qwen3_tts")
+    russian = _a4_tts_fingerprint("a" * 64, "b" * 64, content, reference, "Russian",
+                                  engine_id="silero_ru")
+    assert original != russian
+    assert original == _a4_tts_fingerprint("a" * 64, "b" * 64, content, reference,
+                                            "Russian", engine_id="qwen3_tts")

@@ -466,3 +466,102 @@ def test_a_cancelled_ollama_pull_closes_its_start_whichever_way_it_stops(monkeyp
     lines = _model_lines(caplog)
     assert [level for level, _msg in lines] == ["INFO"] * 3
     assert re.fullmatch(r"DOWNLOAD CANCELLED ollama gemma3:12b after \d+\.\ds", lines[-1][1])
+
+
+def test_silero_ru_vendor_model_is_version_pinned_in_the_catalog():
+    from app import models as m
+
+    row = m.find("silero-ru")
+    assert row["bytes"] == 147664410
+    assert row["source"]["kind"] == "url"
+    assert row["markers"] == ["v5_6_ru.pt"]
+    assert row["source"]["url"].endswith("/v5_6_ru.pt")
+    assert len(row["source"]["sha256"]) == 64
+    assert row["source"]["license"] == "CC-BY-NC-SA-4.0"
+
+
+def test_vendor_url_download_stages_hashes_then_atomically_promotes_model(monkeypatch, tmp_path):
+    import hashlib
+
+    data = b"MODEL" * 40
+    entry = {
+        "role": "tts", "dir": "models/silero-tts",
+        "markers": ["v5_6_ru.pt"], "bytes": len(data),
+        "source": {"kind": "url", "url": "https://example.org/v5_6_ru.pt",
+                   "sha256": hashlib.sha256(data).hexdigest()},
+    }
+    calls = []
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def raise_for_status(self): return None
+        def iter_content(self, chunk_size): yield data
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr(models_module._requests, "get", fake_get)
+    progresses = []
+    models_module._run_download({"id": "silero-ru", **entry}, str(tmp_path), progresses.append,
+                                lambda: False)
+    target = tmp_path / "models" / "silero-tts" / "v5_6_ru.pt"
+    assert target.read_bytes() == data
+    assert not (tmp_path / "models" / "silero-tts" / "v5_6_ru.pt.part").exists()
+    assert progresses[-1] == 100
+    assert calls[0][1]["stream"] is True
+    assert models_module.model_state(entry, str(tmp_path)) == "ready"
+
+
+def test_vendor_url_resume_uses_exact_content_range_and_never_corrupts_partial(monkeypatch, tmp_path):
+    import hashlib
+    data = b"FOUR_BYTES_OF_DATA"
+    part = tmp_path / "models" / "silero-tts" / "v5_6_ru.pt.part"
+    part.parent.mkdir(parents=True)
+    prefix = data[:4]
+    part.write_bytes(prefix)
+    entry = {
+        "dir": "models/silero-tts", "markers": ["v5_6_ru.pt"], "bytes": len(data),
+        "source": {"kind": "url", "url": "https://example.org/v5_6_ru.pt",
+                   "sha256": hashlib.sha256(data).hexdigest()},
+    }
+    class FakeResponse:
+        status_code = 206
+        headers = {"Content-Range": f"bytes {len(prefix)}-{len(data)-1}/{len(data)}"}
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def raise_for_status(self): return None
+        def iter_content(self, chunk_size): yield data[len(prefix):]
+
+    def fake_get(url, headers, **kwargs):
+        assert headers["Range"] == "bytes=4-"
+        return FakeResponse()
+
+    monkeypatch.setattr(models_module._requests, "get", fake_get)
+    models_module._pull_verified_url(entry, str(tmp_path), lambda x: None, lambda: False)
+    assert not part.exists()
+    assert (part.parent / "v5_6_ru.pt").read_bytes() == data
+
+
+def test_vendor_url_rejects_bad_checksum_without_ready_marker(monkeypatch, tmp_path):
+    data = b"corrupted"
+    entry = {
+        "dir": "models/silero-tts", "markers": ["v5_6_ru.pt"], "bytes": len(data),
+        "source": {"kind": "url", "url": "https://example.org/v5_6_ru.pt",
+                   "sha256": "0" * 64},
+    }
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def raise_for_status(self): return None
+        def iter_content(self, chunk_size): yield data
+
+    monkeypatch.setattr(models_module._requests, "get", lambda *a, **k: FakeResponse())
+    with pytest.raises(RuntimeError, match="checksum"):
+        models_module._pull_verified_url(entry, str(tmp_path), lambda x: None, lambda: False)
+    assert not (tmp_path / "models" / "silero-tts" / "v5_6_ru.pt").exists()
+    assert (tmp_path / "models" / "silero-tts" / "v5_6_ru.pt.part").read_bytes() == data

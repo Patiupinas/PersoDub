@@ -164,16 +164,37 @@ def _maybe_collapse(embs, durs, labels, num_speakers, k, np, threshold):
     return _merge_alike(embs, durs, labels, np, threshold)
 
 
-def diarize(vocals_wav_path, cues, num_speakers, campplus_model):
-    """Label each cue with a neutral speaker id using CAM++ embeddings.
+def _speaker_similarity_pairs(embs, labels, np):
+    """Report actual within-job embedding cosine, not a calibrated percentage.
 
-    Returns a list of labels ("SPK0", "SPK1", ...), one per cue, same order.
-    Ported from the pre-refactor in-process app/diar_campplus_client.py --
-    logic unchanged, just parameterized to run standalone in this process.
+    Return similarities between surviving source cluster centroids only;
+    separate dubbing voice policy consumes this evidence without relabelling
+    the source transcript.
     """
+    grouped = {}
+    for embedding, speaker in zip(embs, labels):
+        grouped.setdefault(speaker, []).append(embedding)
+    centroids = {speaker: _centroid(vecs, np) for speaker, vecs in grouped.items()}
+    speakers = sorted(centroids)
+    return [
+        {"a": a, "b": b, "similarity": round(float(np.dot(centroids[a], centroids[b])), 6),
+         "metric": "camplus_cosine"}
+        for index, a in enumerate(speakers)
+        for b in speakers[index + 1:]
+    ]
+
+
+def diarize(vocals_wav_path, cues, num_speakers, campplus_model):
+    """Backwards-compatible source speaker labels without voice metadata."""
+    labels, _ = diarize_with_voice_pairs(vocals_wav_path, cues, num_speakers, campplus_model)
+    return labels
+
+
+def diarize_with_voice_pairs(vocals_wav_path, cues, num_speakers, campplus_model):
+    """Return source labels plus their optional pairwise voice similarities."""
     np, ort, sf, torch, kaldi = lazy_imports()
     if not cues:
-        return []
+        return [], []
 
     sess = ort.InferenceSession(campplus_model, providers=["CPUExecutionProvider"])
     x = load_mono16k(vocals_wav_path, np, sf)
@@ -189,7 +210,7 @@ def diarize(vocals_wav_path, cues, num_speakers, campplus_model):
         durs.append(len(seg) / SR)
 
     if len(valid_idx) < 2:
-        return ["SPK0"] * len(cues)
+        return ["SPK0"] * len(cues), []
 
     embs = np.array(embs)
     k = int(num_speakers) if num_speakers else _estimate_k(embs)
@@ -197,6 +218,7 @@ def diarize(vocals_wav_path, cues, num_speakers, campplus_model):
     raw = _cluster(embs, k) if k > 1 else [0] * len(valid_idx)
     labels = relabel_by_size(raw)
     labels = _maybe_collapse(embs, durs, labels, num_speakers, k, np, DIAR_MERGE_SIM)
+    similarities = _speaker_similarity_pairs(embs, labels, np)
 
     out = [None] * len(cues)
     for pos, i in enumerate(valid_idx):
@@ -206,7 +228,7 @@ def diarize(vocals_wav_path, cues, num_speakers, campplus_model):
     for i in range(len(out)):
         if out[i] is None:
             out[i] = majority
-    return out
+    return out, similarities
 
 
 def main():
@@ -217,12 +239,13 @@ def main():
     try:
         with open(a.input, encoding="utf-8") as f:
             payload = json.load(f)
-        speakers = diarize(
+        speakers, similarity_pairs = diarize_with_voice_pairs(
             payload["vocals_wav_path"], payload.get("cues") or [],
             payload.get("num_speakers"),
             payload.get("campplus_model") or "models/campplus/campplus.onnx",
         )
-        result = {"ok": True, "speakers": speakers}
+        result = {"ok": True, "speakers": speakers,
+                  "similarity_pairs": similarity_pairs}
     except Exception as e:
         result = {"ok": False, "error": str(e)[:500]}
         with open(a.output, "w", encoding="utf-8") as f:

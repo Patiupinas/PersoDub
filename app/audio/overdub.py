@@ -14,7 +14,9 @@ import math
 import os
 import struct
 import subprocess
+import sys
 import wave
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -122,11 +124,48 @@ def _parse_plan(data, source_frames, source_sha):
     return spans
 
 
+def _voice_activity_intervals(voice, frames):
+    """Locate actual Russian TTS speech, independent of subtitle windows.
+
+    Keep brief intra-sentence pauses ducked, but restore the source rapidly
+    when the dubbed voice ends, including within a longer A4 speech cue.
+    This scans the WAV in bounded blocks without loading the whole recording.
+    """
+    window = round(SR * 0.02)
+    active = []
+    for start in range(0, min(frames, voice.getnframes()), window):
+        length = min(window, frames - start)
+        data = voice.readframes(length)
+        values = array("h")
+        values.frombytes(data)
+        if sys.byteorder != "little":
+            values.byteswap()
+        if any(abs(value) >= 100 for value in values):
+            active.append((start, start + length))
+    voice.rewind()
+    if not active:
+        return []
+    lead = round(SR * 0.03)
+    hold = round(SR * 0.06)
+    bridge = round(SR * 0.12)
+    merged = []
+    for a, b in active:
+        start = max(0, a - lead)
+        end = min(frames, b + hold)
+        if merged and start <= merged[-1][1] + bridge:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 class _Envelope:
     """Piecewise gains with bounded cosine transitions at verified boundaries."""
 
-    def __init__(self, spans, levels):
+    def __init__(self, spans, levels, voice_activity=None):
         self.spans = spans
+        self.voice_activity = voice_activity
+        self.voice_starts = [a for a, _ in voice_activity] if voice_activity is not None else None
         self.starts = [span.start for span in spans]
         self.original_speech, self.dub_speech = levels.translate_gains
         self.transitions = {}
@@ -151,7 +190,7 @@ class _Envelope:
             return self.original_speech, self.dub_speech
         return 1.0, 0.0
 
-    def at(self, frame):
+    def _base_at(self, frame):
         # At a boundary, either of the adjacent partitions may own the ramp.
         i = bisect.bisect_right(self.starts, frame) - 1
         for j in (i, i + 1):
@@ -167,6 +206,29 @@ class _Envelope:
                     before[1] + (after[1] - before[1]) * weight,
                 )
         return self._gains(self.spans[i].action)
+
+    def at(self, frame):
+        source_gain, dubbing_gain = self._base_at(frame)
+        if self.voice_starts is None:
+            return source_gain, dubbing_gain
+        # Keep every PRESERVE/REVIEW original frame bit-identical.
+        index = bisect.bisect_right(self.starts, frame) - 1
+        if self.spans[index].action != "TRANSLATE":
+            return 1.0, 0.0
+        i = bisect.bisect_right(self.voice_starts, frame) - 1
+        if i < 0 or frame >= self.voice_activity[i][1]:
+            return 1.0, 0.0
+        begin, end = self.voice_activity[i]
+        ramp = round(SR * 0.025)
+        if frame < begin + ramp:
+            fraction = min(1.0, (frame - begin) / ramp)
+            weight = 0.5 - 0.5 * math.cos(math.pi * fraction)
+        elif frame >= end - ramp:
+            fraction = min(1.0, (end - frame) / ramp)
+            weight = 0.5 - 0.5 * math.cos(math.pi * fraction)
+        else:
+            weight = 1.0
+        return 1.0 + (source_gain - 1.0) * weight, dubbing_gain * weight
 
 
 def _mix_chunk(original_pcm, dub_pcm, start_frame, envelope):
@@ -447,7 +509,8 @@ def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
                 remaining -= count
             translated.rewind()
         spans = _parse_plan(data, frames, _sha_file(src_path))
-        envelope = _Envelope(spans, levels)
+        voice_activity = _voice_activity_intervals(translated, frames)
+        envelope = _Envelope(spans, levels, voice_activity=voice_activity)
         pending = out_path.with_name(out_path.name + ".part")
         if pending.exists():
             raise OverdubError("Pending output file already exists")
@@ -482,7 +545,9 @@ def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
             "original_under_speech_db": levels.speech_original_db,
             "dub_under_speech_db": levels.speech_dub_db,
             "fade_ms": levels.fade_ms,
+            "voice_silence_release": "60ms hold plus 25ms final fade",
         },
+        "voice_activity_intervals": len(voice_activity),
         "action_frames": {
             action: sum(s.end - s.start for s in spans if s.action == action)
             for action in ("TRANSLATE", "PRESERVE", "REVIEW")

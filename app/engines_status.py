@@ -134,6 +134,12 @@ def voice_models() -> dict:
     return {"qwen3": size}
 
 
+def antigravity_available() -> bool:
+    """Only report the CLI on machines where it can be invoked."""
+    import shutil
+    return shutil.which("antigravity") is not None
+
+
 def chatgpt_available() -> bool:
     """A ChatGPT sign-in this machine can translate with: the sign-in program
     is here and says it is signed in. Asked once per dub start, like the
@@ -198,6 +204,9 @@ class TranslatorInfo:
 TRANSLATORS = {t.name: t for t in (
     # In English on purpose: the page opens the ChatGPT sign-in when it reads
     # "ChatGPT sign-in" in a refused start (ui/src/app.mjs submitDubStart).
+    TranslatorInfo("antigravity", "Antigravity CLI", "account",
+                   lambda: antigravity_available(),
+                   unavailable=lambda: "Antigravity CLI is not installed on this computer."),
     TranslatorInfo("chatgpt", "ChatGPT", "account", lambda: chatgpt_available(),
                    unavailable=lambda: ("ChatGPT translation needs a ChatGPT sign-in. Open Settings and "
                                         "press Sign in with ChatGPT first.")),

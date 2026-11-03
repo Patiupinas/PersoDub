@@ -21,6 +21,7 @@ import audioop
 import struct
 import subprocess
 import wave
+from math import isfinite as _isfinite
 from math import log10 as _log10
 from typing import Callable, List, Optional, Sequence, Tuple
 
@@ -583,14 +584,17 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
                 log: Optional[Callable[[str], None]] = None,
                 gate_pad_sec: Optional[float] = None,
                 gate_duck_db: Optional[float] = None,
-                clipped: Optional[List[dict]] = None) -> str:
+                clipped: Optional[List[dict]] = None,
+                max_ends: Optional[Sequence[Optional[float]]] = None) -> str:
     """Lay each line wav at its cue start time (seconds) over the background track.
 
     background_path: the Demucs 'no_vocals' track (any sample rate/width/channel
     count -- typically 44.1kHz stereo straight out of the container).
     line_paths[i] (or None to skip a line, e.g. a failed synth) is placed at
     starts[i] seconds, gained by gains[i] (default 1.0, i.e. unchanged -- see
-    match_line_gains for how real gains are computed).
+    match_line_gains for how real gains are computed). Optional max_ends[i]
+    supplies the exact right edge of a reviewed A4 TRANSLATE region; a line
+    must not sound beyond it even if the next translated line starts later.
 
     Each line's own lead/tail silence is trimmed before it's placed (see
     _trim_lead_tail_silence) -- Qwen's TTS output can start with real dead air,
@@ -645,6 +649,15 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
     to 16-bit only at the very end. Returns out_path.
     """
     log = log or (lambda m: None)
+    if max_ends is not None:
+        if len(max_ends) != len(line_paths):
+            raise ValueError("A4 placement end limits must align with voice lines")
+        for ending in max_ends:
+            if ending is not None and (
+                isinstance(ending, bool) or not isinstance(ending, (float, int))
+                or not _isfinite(ending) or ending < 0
+            ):
+                raise ValueError("Invalid A4 placement end time")
     bg_data, bg_sr, bg_w, bg_ch = _read_wav(background_path)
     bed = bytearray(audioop.lin2lin(
         _to_48k_stereo_pcm16(bg_data, bg_sr, bg_w, bg_ch), SAMPWIDTH, MIX_WIDTH))
@@ -718,6 +731,11 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
         # neighbor's start, and with no end-headroom subtracted (there is no
         # next line's onset to keep clear of).
         limit_frame = (int(round(nxt * SR)) - head_frames) if nxt is not None else video_end_frame
+        a4_limited = False
+        if max_ends is not None and max_ends[i] is not None:
+            approved_end_frame = int(round(max_ends[i] * SR))
+            a4_limited = approved_end_frame < limit_frame
+            limit_frame = min(limit_frame, approved_end_frame)
         maxlen_frames = limit_frame - pos_frame
 
         # A line that would be cut is first sped up, at most QWEN_MAX_SPEEDUP,
@@ -743,7 +761,10 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
                     "cut_s": round(line_frames / float(SR), 3),
                     "skipped": True,
                 })
-            if nxt is not None:
+            if a4_limited:
+                log("   Warning: line %d at %.3fs has no room before the reviewed A4 boundary -- "
+                    "skipped" % (i, start))
+            elif nxt is not None:
                 log("   Warning: line %d at %.3fs collides with the next line's start (%.3fs) -- "
                     "skipped to avoid overlap" % (i, start, nxt))
             else:
@@ -755,8 +776,10 @@ def place_lines(background_path: str, line_paths: List[Optional[str]],
             cut_s = (line_frames - maxlen_frames) / float(SR)
             # Seconds cut, never the line's own words -- same rule as every
             # other log line in this app.
-            log("   line %d cut short by %.2fs (%s)" % (
-                i, cut_s, "runs into the next line" if nxt is not None else "runs past the end of the video"))
+            reason = ("runs into reviewed A4 boundary" if a4_limited else
+                      "runs into the next line" if nxt is not None else
+                      "runs past the end of the video")
+            log("   line %d cut short by %.2fs (%s)" % (i, cut_s, reason))
             if clipped is not None:
                 # Numbered as the script is, from 1 (i counts from 0): the
                 # screen reads it by the script's own line number.

@@ -5,6 +5,7 @@ If no subtitles are provided: transcribe -> translate (the engine the job names)
 Every stage runs locally or through our own Qwen3-TTS sidecar -- no third-party
 container anywhere in this app.
 """
+import hashlib
 import json
 import logging
 import os
@@ -17,7 +18,13 @@ from typing import Callable, List, NoReturn, Optional
 
 from app import config, media, room, settings_env
 from app.audio.onset import snap_starts
-from app.audio.overdub import extract_original_pcm, render_overdub, validate_overdub_plan
+from app.audio.overdub import (
+    extract_original_pcm,
+    render_overdub,
+    select_translatable_cues,
+    validate_overdub_plan,
+    write_silent_bed_like,
+)
 from app.config import QWEN_N_TAKES
 from app.diar_campplus_client import diarize
 from app.engines.base import VoiceEngineDown
@@ -963,6 +970,63 @@ def _stage_translate(srt_path, source_cues, language, translate_engine, translat
     return segments, auto_translated
 
 
+def _a4_tts_fingerprint(source_sha, event_plan_sha, selected, ref_cues, language, n_takes=None):
+    """Bind Qwen resume to this A4 plan, exact source and selected text.
+
+    A pre-filtered script renumbers Qwen's qwen_line_N files. Reusing voice
+    lines from a previous plan can silently overlay the wrong words at the
+    wrong time. Store only a deterministic content hash, not duplicate text.
+    """
+    payload = {
+        "version": 1,
+        "source_sha256": source_sha,
+        "plan_sha256": event_plan_sha,
+        "selected": selected,
+        "reference_cues": ref_cues,
+        "language": language,
+        "voice_mode": config.QWEN_VOICE_MODE,
+        "number_of_takes": QWEN_N_TAKES if n_takes is None else n_takes,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _a4_tts_resume_matches(work_dir, fingerprint):
+    path = os.path.join(work_dir, "a4_tts_selection.json")
+    try:
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+        return data == {"version": 1, "fingerprint": fingerprint}
+    except (OSError, ValueError):
+        return False
+
+
+def _a4_tts_mark_success(work_dir, fingerprint):
+    path = os.path.join(work_dir, "a4_tts_selection.json")
+    pending = path + ".part"
+    with open(pending, "w", encoding="utf-8") as stream:
+        json.dump({"version": 1, "fingerprint": fingerprint}, stream)
+    os.replace(pending, path)
+
+
+def _a4_original_only_audio(work_dir, background_path, language):
+    """Produce no translated speech if A4 approved none; never start TTS."""
+    out = os.path.join(work_dir, "qwen_dub_48k.wav")
+    pending = out + ".a4-part.wav"
+    if os.path.exists(pending):
+        os.remove(pending)
+    try:
+        write_silent_bed_like(background_path, pending)
+        os.replace(pending, out)
+    finally:
+        if os.path.exists(pending):
+            os.remove(pending)
+    _save_json(work_dir, "lines.json", {"language": language, "lines": []})
+    _save_json(work_dir, "clipped_lines.json", {"clipped": [], "clipped_count": 0})
+    return out
+
+
 def _stage_synthesize(segments, ref_cues, work_dir, vocals_path, background_path,
                       language, n_takes, qwen_engine, on_notice, log, video_duration=None,
                       reuse_lines=False, cancel_check=None, translator=None,
@@ -981,6 +1045,9 @@ def _stage_synthesize(segments, ref_cues, work_dir, vocals_path, background_path
     mode = ("fast, 1 take/line" if effective_n_takes <= 1
             else f"high quality, best of {effective_n_takes} takes")
     _log_stage(log, "synthesize", f"Cloning & synthesizing voices (Qwen3-TTS — {mode})…")
+    if output_mode == "overdub" and not segments:
+        log("   A4: no completely approved translated speech cues; source-only Overdub")
+        return _a4_original_only_audio(work_dir, background_path, language)
     engine = qwen_engine or QwenTTSEngine()
     # Say which device this is about to run on. Without it the only symptom of
     # a CPU fallback is the wait, and the user has no way to tell that from the
@@ -1300,6 +1367,9 @@ def run_dub(
         raise ValueError("Unknown audio mode: expected replace or overdub")
     overdub_source_pcm = None
     overdub_plan = None
+    approved_spans = None
+    a4_plan_hash = None
+    a4_source_sha = None
     if audio_mode == "overdub":
         # The source-bound A4 event plan must exist BEFORE TTS is started.
         # Unreviewed model tags are never silently converted into dub actions.
@@ -1312,7 +1382,13 @@ def run_dub(
         extract_original_pcm(video_path, extracted, duration=video_duration)
         overdub_source_pcm = os.path.join(work_dir, "overdub_original_48k.wav")
         os.replace(extracted, overdub_source_pcm)
-        validate_overdub_plan(overdub_source_pcm, overdub_plan)
+        approved_spans = validate_overdub_plan(overdub_source_pcm, overdub_plan)
+        with open(overdub_plan, "rb") as stream:
+            raw_plan = stream.read()
+        a4_plan_hash = hashlib.sha256(raw_plan).hexdigest()
+        # validate_overdub_plan just bound this source checksum to the decoded
+        # audio; do not hash multi-gigabyte PCM again for the TTS resume key.
+        a4_source_sha = json.loads(raw_plan)["source_wav_sha256"]
 
     def checkpoint():
         # Between two stages: stop if Cancel was pressed, or if the rest of
@@ -1369,35 +1445,59 @@ def run_dub(
         # are voiced, by the same translator, to fit each slot at the speaker's
         # real pace (app/qwen_pipeline.fit_to_pace). Never a script the user gave.
         pace_tr = None
-        if config.PACE_FIT and auto_translated:
+        # Pace-fit rewrites the translated.srt from exactly the cues passed
+        # to Qwen. In A4 Overdub those cues are intentionally filtered, so
+        # re-saving them would silently discard all protected source lines.
+        if config.PACE_FIT and auto_translated and audio_mode != "overdub":
             pace_tr = _ready_translator(translator, translate_engine, work_dir, cancel_check, log)
             if not getattr(pace_tr, "length_rules", True):
                 log("   pace fit off: %s does not follow a length" % (getattr(pace_tr, "display_name", "") or "this translator"))
                 pace_tr = None
 
     checkpoint()
+    tts_segments = segments
+    a4_fingerprint = None
+    if audio_mode == "overdub":
+        tts_segments, skipped = select_translatable_cues(segments, approved_spans)
+        log("   A4: %d/%d translated cues allowed for TTS; %d original-only" %
+            (len(tts_segments), len(segments), skipped))
+        a4_fingerprint = _a4_tts_fingerprint(
+            a4_source_sha, a4_plan_hash, tts_segments, ref_cues, language, n_takes
+        )
     reuse_lines = bool(resume and (translation_reused or srt_path))
+    if audio_mode == "overdub":
+        reuse_lines = reuse_lines and _a4_tts_resume_matches(work_dir, a4_fingerprint)
+        if resume and not reuse_lines:
+            log("   A4: source/approval/script changed or selection cache absent; no TTS reuse")
     # The voices are cloned from the reference lines' speakers: the script's
     # own lines (parse_srt) carry none.
-    with _timed_stage(log, "synthesize", lines=len(segments), n_takes=n_takes,
+    with _timed_stage(log, "synthesize", lines=len(tts_segments), n_takes=n_takes,
                       speakers=len({cue_speaker(c) for c in ref_cues if cue_speaker(c)}) or None,
                       resume=reuse_lines):
         audio_wav = _stage_synthesize(
-            segments, ref_cues, work_dir, vocals_path, background_path,
+            tts_segments, ref_cues, work_dir, vocals_path, background_path,
             language, n_takes, qwen_engine, on_notice, log, video_duration=video_duration,
             reuse_lines=reuse_lines, cancel_check=cancel_check,
             translator=pace_tr, sample_cues=sample_cues,
             **({"output_mode": "overdub"} if audio_mode == "overdub" else {}))
+        if audio_mode == "overdub":
+            _a4_tts_mark_success(work_dir, a4_fingerprint)
 
     checkpoint()
 
     # The check stage: catch original speech bleeding through the dub.
     with _timed_stage(log, "check"):
-        audio_wav = leakage_gate(audio_wav, vocals_path,
-                                 os.path.join(work_dir, "nonverbal_manifest.json"),
-                                 work_dir, log)
+        if audio_mode == "overdub" and not tts_segments:
+            log("   A4: original-only mix; no synthesized voice to check")
+        else:
+            audio_wav = leakage_gate(audio_wav, vocals_path,
+                                     os.path.join(work_dir, "nonverbal_manifest.json"),
+                                     work_dir, log)
 
     if audio_mode == "overdub":
+        with open(overdub_plan, "rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != a4_plan_hash:
+                raise ValueError("A4 event plan changed during synthesis; review again")
         overdub_wav = os.path.join(work_dir, "overdub_mixed_48k.wav")
         if os.path.exists(overdub_wav):
             os.remove(overdub_wav)
@@ -1416,6 +1516,11 @@ def run_dub(
     if audio_mode == "overdub":
         result["audio_mode"] = "overdub"
         result["audio_tracks"] = ["Overdub", "Original"]
+        result["a4_synthesis"] = {
+            "selected": len(tts_segments),
+            "source_only": len(segments) - len(tts_segments),
+            "plan_sha256": a4_plan_hash,
+        }
     return result
 
 

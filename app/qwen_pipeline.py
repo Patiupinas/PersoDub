@@ -1041,7 +1041,16 @@ def synth_lines(
     # and the slot stays silent. Given no speaker, it neither joins a merge unit
     # nor lets the line after it join across it; its own unit is then dropped.
     silent = {i for i, s in enumerate(segments) if not s.get("text", "").strip()}
-    merge_speakers = [None if i in silent else spk for i, spk in enumerate(seg_speakers)]
+    # A short line may join only another line in the SAME reviewed A4 speech
+    # region. Never synthesize one merged phrase across a PRESERVE/REVIEW gap,
+    # even if its speaker and cue timestamps are adjacent.
+    merge_speakers = [
+        None if i in silent else (
+            (spk, round(s["dub_limit_s"] * 48000))
+            if "dub_limit_s" in s else spk
+        )
+        for i, (spk, s) in enumerate(zip(seg_speakers, segments))
+    ]
     units = [u for u in group_merge_units(segments, merge_speakers, resolved_usable)
              if u[0] not in silent]
     if silent:
@@ -1238,8 +1247,11 @@ def _assemble(segments: List[dict], line_paths: List[Optional[str]], starts: Lis
         silent_bed = os.path.join(work_dir, "overdub_silent_bed.wav")
         if not os.path.isfile(silent_bed):
             write_silent_bed_like(background_path, silent_bed)
+        approved_ends = [s.get("dub_limit_s") for s in segments]
         place_lines(silent_bed, line_paths, starts, out_wav, gains=gains,
-                    log=log, clipped=clipped)
+                    log=log, clipped=clipped,
+                    **({"max_ends": approved_ends} if any(e is not None for e in approved_ends)
+                       else {}))
     elif QWEN_GATE_MODE == "safe":
         # Default: the original vocals track never reaches place_lines, so
         # leaking the original actor's voice is structurally impossible --
@@ -1295,6 +1307,9 @@ def _playable_usable_slots(segments: List[dict], video_duration: Optional[float]
         if n + 1 < len(order):
             next_onset = segments[order[n + 1]]["start"] - END_HEADROOM_SECONDS
             limit = min(limit, next_onset) if limit is not None else next_onset
+        approved_end = segments[i].get("dub_limit_s")
+        if approved_end is not None:
+            limit = min(limit, approved_end) if limit is not None else approved_end
         if limit is not None:
             slots[i] = round(max(0.0, min(slots[i], limit - segments[i]["start"])), 3)
     return slots

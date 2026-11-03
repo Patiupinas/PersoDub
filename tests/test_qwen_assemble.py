@@ -1239,3 +1239,40 @@ def test_place_lines_preserve_mode_hard_mutes_bed_residue_too(tmp_path, monkeypa
     # both the bed residue and the vocals-gate's own speech pass are hard-
     # muted in preserve mode -- nothing left to sum at all.
     assert total == 0
+
+
+def test_place_lines_caps_voice_at_explicit_approved_a4_end(tmp_path, monkeypatch):
+    # An approved speech cue can end well before the next translated cue.
+    # TTS must never fill the intervening vocal exercise.
+    monkeypatch.setattr(qa, "QWEN_MAX_SPEEDUP", 1.0)
+    bg = tmp_path / "bed.wav"
+    line = tmp_path / "speech.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, 2 * SR, 2))
+    _write_wav(line, SR, 1, 2, _const_frames(7000, SR, 1))
+    clipped = []
+    logs = []
+    out = tmp_path / "out.wav"
+    place_lines(str(bg), [str(line)], [0.2], str(out),
+                max_ends=[0.8], clipped=clipped, log=logs.append)
+    with wave.open(str(out), "rb") as audio:
+        audio.setpos(round(0.6 * SR))
+        during = audio.readframes(1)
+        audio.setpos(round(0.85 * SR))
+        protected = audio.readframes(1)
+    assert during != b"\x00\x00\x00\x00"
+    assert protected == b"\x00\x00\x00\x00"
+    assert clipped[0]["cut_s"] >= 0.39
+    assert any("reviewed A4 boundary" in line for line in logs)
+
+
+def test_place_lines_does_not_apply_a4_cap_to_ordinary_replace(tmp_path):
+    bg = tmp_path / "bed.wav"
+    line = tmp_path / "speech.wav"
+    _write_wav(bg, SR, 2, 2, _const_frames(0, 2 * SR, 2))
+    _write_wav(line, SR, 1, 2, _const_frames(7000, SR, 1))
+    out = tmp_path / "out.wav"
+    place_lines(str(bg), [str(line)], [0.2], str(out))
+    with wave.open(str(out), "rb") as audio:
+        audio.setpos(round(0.85 * SR))
+        sample = audio.readframes(1)
+    assert sample != b"\x00\x00\x00\x00"

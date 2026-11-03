@@ -1479,3 +1479,42 @@ def test_synth_lines_restarts_a_bloated_engine_between_lines(tmp_path):
     assert all(paths)
     assert [req.text for req in engine.synth_calls] == ["line zero", "line one", "line two"]
     assert any("starting it again" in m for m in logs)
+
+
+def test_playable_slots_respect_explicit_a4_right_boundary():
+    segments = [
+        {"start": 1.0, "end": 2.0, "text": "one", "dub_limit_s": 2.1},
+        {"start": 4.0, "end": 4.7, "text": "two", "dub_limit_s": 4.7},
+    ]
+    assert qp._playable_usable_slots(segments, 6.0) == [1.1, 0.7]
+
+
+
+def test_a4_protected_gap_prevents_short_line_merge(monkeypatch, tmp_path):
+    # The second short line follows a protected interval but has the same
+    # original speaker. Grouped synthesis would speak across that boundary.
+    from app.audio.merge import group_merge_units
+
+    segments = [
+        {"start": 0.2, "end": 1.0, "text": "first",
+         "dub_limit_s": 1.0},
+        {"start": 1.02, "end": 1.32, "text": "second",
+         "dub_limit_s": 1.8},
+    ]
+    captured = []
+    orig = qp.group_merge_units
+
+    def capture(segments, keys, slots):
+        captured.extend(keys)
+        return orig(segments, keys, slots, threshold=2.0, max_gap=0.2)
+
+    monkeypatch.setattr(qp, "group_merge_units", capture)
+    monkeypatch.setattr(qp, "_synth_fast", lambda synth, units: [None, None])
+    qp.synth_lines(
+        object(), segments, ["A", "A"], {"A": "voice"},
+        "Russian", str(tmp_path), n_takes=1,
+        usable_slots=[0.8, 0.3], log=lambda m: None,
+    )
+    assert captured[0] != captured[1]
+    assert group_merge_units(segments, captured, [0.8, 0.3],
+                             threshold=2.0, max_gap=0.2) == [[0], [1]]

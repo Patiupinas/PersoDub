@@ -16,6 +16,9 @@ KINDS = frozenset(("speech", "singing", "laughing", "crying_baby", "coughing", "
 SUGGEST = {k: ("TRANSLATE" if k == "speech" else "PRESERVE") for k in KINDS}
 BIN_FRAMES = SR * 2
 WINDOW_FRAMES = SR * 4
+# Review-queue sensitivity only, not a calibrated class probability.
+# Speech-leading singing requires explicit human A4 action.
+SINGING_REVIEW_SCORE = 0.04
 
 
 def _score_top(scores):
@@ -68,7 +71,8 @@ def _compress(rows):
     result = []
     for row in rows:
         if result and result[-1]["end_frame"] == row["start_frame"] and all(
-            result[-1][k] == row[k] for k in ("hint", "suggested_action", "score")
+            result[-1][k] == row[k]
+            for k in ("hint", "suggested_action", "score", "singing_score")
         ):
             result[-1]["end_frame"] = row["end_frame"]
         else:
@@ -94,11 +98,21 @@ def model_suggestions(frames, sha, observations):
         sample = windows[nearest]
         kind, score = _score_top(sample["scores"])
         available = sample["start_frame"] <= center < sample["end_frame"]
+        secondary_singing = (
+            available and kind == "speech"
+            and sample["scores"]["singing"] >= SINGING_REVIEW_SCORE
+        )
         rows.append({
             "start_frame": start, "end_frame": end, "action": "REVIEW",
-            "suggested_action": SUGGEST[kind] if available else "REVIEW",
+            # Do not suggest translating likely mixed speech/phonation.
+            "suggested_action": (
+                "REVIEW" if secondary_singing or not available else SUGGEST[kind]
+            ),
             "hint": kind if available else "unscored",
             "score": score if available else None,
+            # Preserve the secondary signal: speech may dominate AST even
+            # during a sung demonstration. This is review priority only.
+            "singing_score": sample["scores"]["singing"] if available else None,
         })
     return _compress(rows)
 

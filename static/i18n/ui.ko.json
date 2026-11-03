@@ -656,6 +656,7 @@
   "Speaker {speaker} has only {seconds} seconds of reference audio.": "화자 {speaker}의 참조 오디오는 {seconds}초뿐입니다.",
   "Speaker {speaker} is missing a reference recording.": "화자 {speaker}의 참조 녹음이 없습니다.",
   "Speaker {speaker}'s reference text does not fit the recorded audio.": "화자 {speaker}의 참조 텍스트가 녹음된 음성과 일치하지 않습니다.",
+  "Singing score": "노래 모델 점수",
   "Speech cue": "음성 구간",
   "Speech-to-text": "받아쓰기",
   "Split at playhead": "재생 위치에서 자르기",

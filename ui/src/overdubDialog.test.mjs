@@ -349,3 +349,47 @@ test("review changes disable both reuse and fresh synthesis", async (t) => {
   assert.equal(h.$("overdubExport").disabled, true);
   assert.equal(h.$("overdubRegenerate").disabled, true);
 });
+
+test("secondary AST singing evidence opens review even with speech as top class", async (t) => {
+  const hints = [
+    { start_frame: 0, end_frame: 2 * FRAME,
+      action: "REVIEW", suggested_action: "TRANSLATE",
+      hint: "speech", score: 0.82, singing_score: 0.006 },
+    { start_frame: 2 * FRAME, end_frame: 4 * FRAME,
+      action: "REVIEW", suggested_action: "REVIEW",
+      hint: "speech", score: 0.34, singing_score: 0.146299 },
+    { start_frame: 4 * FRAME, end_frame: 6 * FRAME,
+      action: "REVIEW", suggested_action: "TRANSLATE",
+      hint: "speech", score: 0.63, singing_score: 0.01 },
+  ];
+  assert.equal(nextPossibleExerciseIndex(hints), 1);
+  const h = harness({ response: {
+    ...preview, total_frames: 6 * FRAME, suggestions: hints,
+  } });
+  t.after(h.reset);
+  await h.modal.open("abc");
+  assert.equal(h.$("overdubNextExercise").disabled, false);
+  assert.match(h.$("overdubList").innerHTML, /Singing score 0\.15/);
+  h.$("overdubNextExercise").listeners.click();
+  assert.equal(h.$("overdubSourcePlayer").currentTime, 1.6);
+  assert.equal(h.$("overdubReviewed").checked, false);
+  assert.equal(h.$("overdubExport").disabled, true);
+  assert.equal(h.$("overdubRegenerate").disabled, true);
+  // Applying the generic model proposals may not promote this mixed cue.
+  h.$("overdubUseHints").listeners.click();
+  assert.match(h.$("overdubList").innerHTML, /<option value="REVIEW" selected>/);
+  assert.equal(h.$("overdubReviewed").checked, false);
+  assert.equal(h.calls.length, 1);
+});
+
+
+test("low secondary singing scores do not replace original non-speech review hints", () => {
+  const hints = [
+    { hint: "speech", action: "REVIEW", suggested_action: "TRANSLATE", singing_score: 0.009 },
+    { hint: "coughing", action: "REVIEW", suggested_action: "PRESERVE", singing_score: 0.012 },
+    { hint: "speech", action: "REVIEW", suggested_action: "TRANSLATE", singing_score: 0.025 },
+  ];
+  assert.equal(nextPossibleExerciseIndex(hints), 1);
+  hints[1].action = "PRESERVE";
+  assert.equal(nextPossibleExerciseIndex(hints), -1);
+});

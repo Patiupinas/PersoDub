@@ -10,6 +10,8 @@ export const ACTIONS = ["REVIEW", "TRANSLATE", "PRESERVE"];
 const EXERCISE_HINTS = new Set([
   "singing", "breathing", "coughing", "sneezing", "laughing", "crying_baby",
 ]);
+// The backend owns the threshold for ambiguous speech-plus-singing spans;
+// they stay REVIEW even after applying suggestions. Navigation is not approval.
 
 // Prioritize unreviewed original audio, never treat model labels as approvals.
 // Return -1 when only transcript speech/unknown hints remain.
@@ -17,9 +19,11 @@ export function nextPossibleExerciseIndex(items, after = -1) {
   if (!Array.isArray(items) || !items.length) return -1;
   for (let step = 1; step <= items.length; step++) {
     const index = ((after + step) % items.length + items.length) % items.length;
-    if (items[index].action === "REVIEW" && EXERCISE_HINTS.has(items[index].hint)) {
-      return index;
-    }
+    const item = items[index];
+    if (item.action !== "REVIEW") continue;
+    const singingHint = item.hint === "speech" && item.suggested_action === "REVIEW"
+      && Number.isFinite(item.singing_score);
+    if (EXERCISE_HINTS.has(item.hint) || singingHint) return index;
   }
   return -1;
 }
@@ -61,6 +65,9 @@ export function overDubRowsHtml(items, indexOffset = 0) {
       entry.hint === "unknown" ? t("Unknown") : entry.hint;
     // AST group scores are not calibrated probabilities; never display them as confidence percentages.
     const certainty = entry.score == null ? "" : ` · ${t("Model score")} ${Number(entry.score).toFixed(2)}`;
+    const singingSignal = entry.hint === "speech" && entry.suggested_action === "REVIEW"
+      && Number.isFinite(entry.singing_score)
+      ? ` · ${t("Singing score")} ${Number(entry.singing_score).toFixed(2)}` : "";
     const choices = [
       ["REVIEW", t("Keep original / review")],
       ["TRANSLATE", t("Original quiet + translation")],
@@ -70,7 +77,7 @@ export function overDubRowsHtml(items, indexOffset = 0) {
       <span class="overdub-clock">${atTime(entry.start_frame)}-${atTime(entry.end_frame)}s</span>
       <button class="btn btn-outline btn-sm overdub-play" type="button" data-od-play="${index}"
         aria-label="${t("Listen to original interval")} ${index + 1}">${t("Listen")}</button>
-      <span class="overdub-hint">${escapeHtml(hint || t("Unknown"))}${certainty}</span>
+      <span class="overdub-hint">${escapeHtml(hint || t("Unknown"))}${certainty}${singingSignal}</span>
       <select data-od-index="${index}" aria-label="${t("Treatment for audio interval")} ${index + 1}">
         ${choices.map(([value, name]) => `<option value="${value}"${entry.action === value ? " selected" : ""}>${escapeHtml(name)}</option>`).join("")}
       </select></div>`;

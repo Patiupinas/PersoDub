@@ -1518,3 +1518,38 @@ def test_a4_protected_gap_prevents_short_line_merge(monkeypatch, tmp_path):
     assert captured[0] != captured[1]
     assert group_merge_units(segments, captured, [0.8, 0.3],
                              threshold=2.0, max_gap=0.2) == [[0], [1]]
+
+
+def test_selective_tts_does_not_clone_unselected_diarized_speaker(
+    monkeypatch, tmp_path,
+):
+    """The 4-cue real source used only SPK0, yet also cloned 1.08s SPK1."""
+    import pytest
+
+    reference = [
+        _cue(0.0, 5.0, "Instructor speaking", "SPK0"),
+        _cue(5.0, 6.08, "Brief second voice", "SPK1"),
+    ]
+    selected = [{"start": 0.5, "end": 4.2, "text": "Only speaker zero"}]
+    actual_speakers = []
+
+    def fake_refs(_cues, speakers, _vocals, mode=None):
+        actual_speakers.append(list(speakers))
+        return {speaker: {
+            "wav_bytes": b"RIFF" + b"\x00" * 1200,
+            "ref_text": "Instructor speaking",
+            "span": {"start": 0.0, "end": 5.0},
+        } for speaker in speakers}
+
+    monkeypatch.setattr(qp, "build_speaker_refs", fake_refs)
+    monkeypatch.setattr(qp, "write_speaker_refs_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(qp, "synth_lines", lambda *a, **k: [None])
+    engine = _FakeEngine()
+    with pytest.raises(RuntimeError, match="synthesized"):
+        qp.run_qwen_dub(
+            engine, selected, reference, str(tmp_path),
+            "/vocals.wav", "/background.wav", language="Russian",
+            output_mode="overdub",
+        )
+    assert actual_speakers == [["SPK0"]]
+    assert len(engine.cloned) == 1

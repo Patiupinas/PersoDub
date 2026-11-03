@@ -656,6 +656,7 @@
   "Speaker {speaker} has only {seconds} seconds of reference audio.": "Speaker {speaker} has only {seconds} seconds of reference audio.",
   "Speaker {speaker} is missing a reference recording.": "Speaker {speaker} is missing a reference recording.",
   "Speaker {speaker}'s reference text does not fit the recorded audio.": "Speaker {speaker}'s reference text does not fit the recorded audio.",
+  "Singing score": "Singing score",
   "Speech cue": "Speech cue",
   "Speech-to-text": "Speech-to-text",
   "Split at playhead": "Split at playhead",

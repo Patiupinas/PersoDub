@@ -154,3 +154,26 @@ def test_six_hour_ast_suggestions_and_transcript_cues_scale_without_quadratic_sc
     assert any(row["suggested_action"] == "TRANSLATE" for row in fallback)
     assert any(row["suggested_action"] == "REVIEW" for row in fallback)
     assert all(a["end_frame"] == b["start_frame"] for a, b in zip(fallback, fallback[1:]))
+
+
+def test_ast_speech_winner_preserves_secondary_singing_evidence_for_review():
+    """An AST speech winner may still contain a vocal demonstration."""
+    data = observation()
+    data["windows"][0]["scores"]["singing"] = 0.146299
+    rows = model_suggestions(8 * FRAME, SOURCE, data)
+    assert rows[0]["hint"] == "speech"
+    assert rows[0]["score"] == 0.85
+    assert rows[0]["singing_score"] == 0.146299
+    assert rows[0]["action"] == "REVIEW"
+    assert rows[0]["suggested_action"] == "REVIEW"
+    assert all(row["start_frame"] < row["end_frame"] for row in rows)
+
+
+def test_ast_secondary_singing_score_respects_original_window_boundaries():
+    data = observation()
+    data["windows"][0]["scores"]["singing"] = 0.14
+    data["windows"][1]["scores"]["singing"] = 0.09
+    rows = model_suggestions(8 * FRAME, SOURCE, data)
+    assert rows[0]["singing_score"] == 0.14
+    assert any(row["singing_score"] == 0.09 for row in rows)
+    assert all("singing_score" in row for row in rows)

@@ -1352,6 +1352,11 @@ def run_qwen_dub(
     """
     log = log or (lambda m: None)
     speakers, seg_speakers, ref_cues, sample_cues = _speaker_plan(segments, ref_cues, sample_cues or ref_cues)
+    # A4 selective-TTS may retain only one instructor from a multi-speaker
+    # transcript. Clone exactly the speakers of lines that will be voiced,
+    # not unrelated short/uncertain diarization fragments.
+    active_speakers = set(seg_speakers)
+    speakers = [speaker for speaker in speakers if speaker in active_speakers]
     refs = build_speaker_refs(sample_cues, speakers, vocals_path, mode=voice_mode)
     log("   %d/%d speaker reference(s) built (4-7s contiguous span)" % (len(refs), len(speakers)))
     # A voice for every speaker (TTSEngine.assign_voices): Qwen3-TTS clones

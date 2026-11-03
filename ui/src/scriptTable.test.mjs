@@ -1771,3 +1771,49 @@ test("the translator's name takes the particle Korean reads it with", async (t) 
   h.api.retranslate("j1", null, "chatgpt", true);
   assert.equal(h.$("scriptSaving").textContent, "ChatGPT로 모든 줄 번역 중…");
 });
+
+test("completed Overdub reports translated source speech coverage next to script count", async (t) => {
+  const h = harness({
+    job: { id: "j1", result: { audio_mode: "overdub", a4_synthesis: { coverage: {
+      source_cues: 32, translated_cues: 32, source_only_cues: 0,
+      source_cue_coverage_percent: 100, source_speech_time_coverage_percent: 100,
+      outside_source_cue_seconds: 34.153,
+    } } } },
+    responses: { [SCRIPT]: ok({ lines: [line(1)] }) },
+  });
+  t.after(h.log.restore);
+  await h.api.renderScript("j1");
+  const display = h.$("scriptCoverage");
+  assert.equal(display.hidden, false);
+  assert.match(display.textContent, /32\/32/);
+  assert.match(display.title, /transcribed speech cues/i);
+});
+
+test("partial Overdub reports the unvoiced script lines instead of a false complete badge", async (t) => {
+  const h = harness({
+    job: { id: "j1", result: { audio_mode: "overdub", a4_synthesis: { coverage: {
+      source_cues: 32, translated_cues: 17, source_only_cues: 15,
+      source_cue_coverage_percent: 53.125, source_speech_time_coverage_percent: 56.2,
+      outside_source_cue_seconds: 39.1,
+    } } } },
+    responses: { [SCRIPT]: ok({ lines: [line(1)] }) },
+  });
+  t.after(h.log.restore);
+  await h.api.renderScript("j1");
+  const display = h.$("scriptCoverage");
+  assert.equal(display.hidden, false);
+  assert.match(display.textContent, /17\/32/);
+  assert.match(display.title, /remain in the original soundtrack/i);
+});
+
+test("older projects without source speech coverage do not invent completion status", async (t) => {
+  const h = harness({
+    job: { id: "j1", result: { audio_mode: "overdub" } },
+    responses: { [SCRIPT]: ok({ lines: [line(1)] }) },
+  });
+  t.after(h.log.restore);
+  await h.api.renderScript("j1");
+  const display = h.$("scriptCoverage");
+  assert.equal(display.hidden, true);
+  assert.equal(display.textContent, "");
+});

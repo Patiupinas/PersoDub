@@ -343,6 +343,24 @@ export function initScriptTableUi({ $, scriptLangNames, isPersoJob, renderTimeli
       by.textContent = label ? `${t("Translation")} ${label}` : "";
       by.title = by.textContent;
     }
+    const speech = $("scriptCoverage");
+    if (speech) {
+      const current = getJob();
+      const meta = current && current.id === jobId
+        ? current.result?.a4_synthesis?.coverage : null;
+      const valid = meta && Number.isInteger(meta.source_cues)
+        && Number.isInteger(meta.translated_cues)
+        && meta.source_cues > 0
+        && meta.translated_cues >= 0
+        && meta.translated_cues <= meta.source_cues;
+      speech.hidden = !valid;
+      speech.textContent = valid ? t("Speech translated: {translated}/{total}", {
+        translated: meta.translated_cues, total: meta.source_cues,
+      }) : "";
+      speech.title = !valid ? "" : meta.source_only_cues > 0
+        ? t("Some speech cues remain in the original soundtrack")
+        : t("All transcribed speech cues selected; exercises still need review");
+    }
     if (!data || !data.lines || !data.lines.length) {
       const perso = isPersoJob();
       box.innerHTML = `<div class="script-empty">${perso

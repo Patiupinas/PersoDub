@@ -289,6 +289,11 @@ def _run_fake_a4_pipeline(tmp_path, monkeypatch, actions, *, mutate_plan_during_
     expected_selected = len(calls[0]["cues"]) if calls else 0
     assert result["a4_synthesis"]["selected"] == expected_selected
     assert result["a4_synthesis"]["source_only"] == 4 - expected_selected
+    persisted = json.loads((tmp_path / "speech_coverage.json").read_text())
+    assert persisted == result["a4_synthesis"]["coverage"]
+    assert persisted["translated_cues"] == expected_selected
+    assert persisted["source_only_cues"] == 4 - expected_selected
+    assert any("Source speech coverage:" in item for item in log)
     return calls, log, tmp_path
 
 

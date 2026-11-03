@@ -23,6 +23,7 @@ from app.audio.overdub import (
     extract_original_pcm,
     render_overdub,
     select_translatable_cues,
+    source_speech_coverage,
     validate_overdub_plan,
     write_silent_bed_like,
 )
@@ -1504,10 +1505,21 @@ def run_dub(
     checkpoint()
     tts_segments = segments
     a4_fingerprint = None
+    coverage = None
     if audio_mode == "overdub":
         tts_segments, skipped = select_translatable_cues(segments, approved_spans)
+        coverage = source_speech_coverage(
+            segments, tts_segments, approved_spans[-1].end
+        )
+        _save_json(work_dir, "speech_coverage.json", coverage)
         log("   A4: %d/%d translated cues allowed for TTS; %d original-only" %
             (len(tts_segments), len(segments), skipped))
+        log("   Source speech coverage: %.2f%% of cues, %.2f%% of source speech time; "
+            "%.3fs original-only outside transcript" % (
+                coverage["source_cue_coverage_percent"] or 0,
+                coverage["source_speech_time_coverage_percent"] or 0,
+                coverage["outside_source_cue_seconds"],
+            ))
         a4_fingerprint = _a4_tts_fingerprint(
             a4_source_sha, a4_plan_hash, tts_segments, ref_cues, language, n_takes,
             engine_id=(getattr(qwen_engine, "id", "qwen3_tts") if qwen_engine is not None
@@ -1572,6 +1584,7 @@ def run_dub(
         result["a4_synthesis"] = {
             "selected": len(tts_segments),
             "source_only": len(segments) - len(tts_segments),
+            "coverage": coverage,
             "plan_sha256": a4_plan_hash,
         }
     return result

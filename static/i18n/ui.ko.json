@@ -1,4 +1,5 @@
 {
+  "All transcribed speech cues selected; exercises still need review": "인식된 모든 발화가 선택되었습니다. 발성 연습 구간은 추가 검토가 필요합니다",
   "Native Russian voices (no cloning)": "러시아어 기본 음성 (목소리 복제 없음)",
   "(empty answer)": "(빈 답변)",
   "+ Add language": "+ 언어 추가",
@@ -656,6 +657,7 @@
   "Small and fast": "작고 빨라요",
   "Smaller": "작게",
   "Soft Card": "Soft Card",
+  "Some speech cues remain in the original soundtrack": "일부 발화는 원본 오디오로 남아 있습니다",
   "Something went wrong in {app}. Try again, and if it happens again, quit and reopen {app}.": "{app}에서 문제가 생겼어요. 다시 해 보고, 또 그러면 {app}을 껐다 켜면 돼요.",
   "Source and target languages must be different.": "원본 언어와 더빙 언어는 달라야 해요.",
   "Source and translated scripts contain different numbers of lines.": "원본과 번역 스크립트의 줄 수가 다릅니다.",
@@ -667,6 +669,7 @@
   "Speaker {speaker}'s reference text does not fit the recorded audio.": "화자 {speaker}의 참조 텍스트가 녹음된 음성과 일치하지 않습니다.",
   "Singing score": "노래 모델 점수",
   "Speech cue": "음성 구간",
+  "Speech translated: {translated}/{total}": "음성 번역: {translated}/{total}",
   "Speech-to-text": "받아쓰기",
   "Split at playhead": "재생 위치에서 자르기",
   "Split at second": "분할 시점(초)",

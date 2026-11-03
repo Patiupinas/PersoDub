@@ -229,6 +229,94 @@ def select_translatable_cues(segments, approved_spans):
     return selected, skipped
 
 
+def source_speech_coverage(source_cues, selected, total_frames):
+    """Measure speech-cue selection, not musical-exercise or word-level truth.
+
+    This explicitly distinguishes original-only gaps between source speech
+    cues from spoken cues omitted by A4 selection. A completed MP4 and a
+    successful mux alone never prove complete translated speech coverage.
+    The clock is in original 48kHz PCM frames, not video-container duration.
+    """
+    if type(total_frames) is not int or total_frames <= 0:
+        raise OverdubError("source PCM clock must contain positive frames")
+
+    def cue_window(cue, where):
+        if type(cue) is not dict or not (cue.get("text") or "").strip():
+            return None
+        a, b = cue.get("start"), cue.get("end")
+        if (type(a) not in (int, float) or type(b) not in (int, float)
+                or not math.isfinite(a) or not math.isfinite(b)
+                or a < 0 or b <= a):
+            return None
+        begin, end = round(a * SR), round(b * SR)
+        if begin < 0 or begin >= end or end > total_frames:
+            raise OverdubError(f"{where}: speech cue outside original source clock")
+        return begin, end
+
+    def union_frames(intervals):
+        total, last_end = 0, 0
+        for begin, end in sorted(intervals):
+            if end <= last_end:
+                continue
+            total += end - max(begin, last_end)
+            last_end = end
+        return total
+
+    source_windows = {}
+    for i, cue in enumerate(source_cues, 1):
+        window = cue_window(cue, f"source cue {i}")
+        if window is not None:
+            source_windows[i] = window
+
+    seen = set()
+    translated_windows = []
+    for cue in selected:
+        source_no = cue.get("source_cue_number") if isinstance(cue, dict) else None
+        if type(source_no) is not int or source_no not in source_windows:
+            raise OverdubError("selected voice cue is not tied to a source speech cue")
+        if source_no in seen:
+            raise OverdubError("duplicate selected source speech cue")
+        source = source_cues[source_no - 1]
+        if (cue.get("start") != source.get("start") or
+                cue.get("end") != source.get("end") or
+                cue.get("text") != source.get("text")):
+            raise OverdubError("selected voice cue differs from the source speech cue")
+        seen.add(source_no)
+        translated_windows.append(source_windows[source_no])
+
+    source_frames = union_frames(source_windows.values())
+    selected_frames = union_frames(translated_windows)
+    if selected_frames > source_frames:
+        raise OverdubError("selected speech exceeds source speech clock")
+    absent = [i for i in range(1, len(source_cues) + 1) if i not in seen]
+    if not source_cues:
+        status = "NO_TRANSCRIBED_SPEECH"
+    elif absent:
+        status = "INCOMPLETE_SOURCE_SPEECH_COVERAGE"
+    else:
+        status = "ALL_TRANSCRIBED_SPEECH_CUES_SELECTED"
+    return {
+        "status": status,
+        "source_cues": len(source_cues),
+        "translated_cues": len(seen),
+        "source_only_cues": len(absent),
+        "uncovered_source_cue_numbers": absent,
+        "source_cue_coverage_percent": (
+            round(len(seen) * 100 / len(source_cues), 6) if source_cues else None
+        ),
+        "source_speech_seconds": round(source_frames / SR, 3),
+        "translated_source_cue_seconds": round(selected_frames / SR, 3),
+        "untranslated_source_cue_seconds": round((source_frames - selected_frames) / SR, 3),
+        "source_speech_time_coverage_percent": (
+            round(selected_frames * 100 / source_frames, 6) if source_frames else None
+        ),
+        "outside_source_cue_seconds": round((total_frames - source_frames) / SR, 3),
+        "source_pcm_frames": total_frames,
+        "human_verified_exercises": False,
+        "metric_scope": "source_transcript_cue_windows_not_word_or_singing_gold",
+    }
+
+
 def validate_overdub_plan(source_wav, event_plan):
     """Validate the exact sample clock and original PCM hash before TTS."""
     with _open_pcm(source_wav) as source:

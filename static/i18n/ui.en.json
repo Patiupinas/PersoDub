@@ -1,4 +1,5 @@
 {
+  "All transcribed speech cues selected; exercises still need review": "All transcribed speech cues selected; exercises still need review",
   "Native Russian voices (no cloning)": "Native Russian voices (no cloning)",
   "(empty answer)": "(empty answer)",
   "+ Add language": "+ Add language",
@@ -656,6 +657,7 @@
   "Small and fast": "Small and fast",
   "Smaller": "Smaller",
   "Soft Card": "Soft Card",
+  "Some speech cues remain in the original soundtrack": "Some speech cues remain in the original soundtrack",
   "Something went wrong in {app}. Try again, and if it happens again, quit and reopen {app}.": "Something went wrong in {app}. Try again, and if it happens again, quit and reopen {app}.",
   "Source and target languages must be different.": "Source and target languages must be different.",
   "Source and translated scripts contain different numbers of lines.": "Source and translated scripts contain different numbers of lines.",
@@ -667,6 +669,7 @@
   "Speaker {speaker}'s reference text does not fit the recorded audio.": "Speaker {speaker}'s reference text does not fit the recorded audio.",
   "Singing score": "Singing score",
   "Speech cue": "Speech cue",
+  "Speech translated: {translated}/{total}": "Speech translated: {translated}/{total}",
   "Speech-to-text": "Speech-to-text",
   "Split at playhead": "Split at playhead",
   "Split at second": "Split at second",

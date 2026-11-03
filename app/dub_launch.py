@@ -19,6 +19,7 @@ seams the tests fake (run_dub, the cloud path, the download, the trim) come in
 as arguments so app/api/dub.py can keep passing its own module attributes,
 which is where they have always been patched.
 """
+import json
 import os
 from typing import Optional
 
@@ -220,6 +221,23 @@ def work_for(job, *, cancel_check, on_notice, voices_only=False, resume=False,
         # (owner, 2026-10-22); said only then, for the same fakes.
         to_perso = not voices_only and "perso" in (job.get("stt_engine"), job.get("separation"))
         perso_name = (job.get("title") or job.get("project")) if to_perso else None
+        # A reviewed Overdub job is a fresh selective-TTS run, not a new
+        # translation. Its complete source and stage caches were isolated
+        # when the job was created. Resume after restart keeps that contract.
+        overdub_options = {}
+        if job.get("audio_mode") == "overdub":
+            from app.audio.overdub import OverdubLevels
+
+            with open(os.path.join(work, "overdub_levels.json"), encoding="utf-8") as stream:
+                gains = json.load(stream)
+            overdub_options = {
+                "audio_mode": "overdub",
+                "overdub_event_plan_path": os.path.join(work, "overdub_events.json"),
+                "overdub_levels": OverdubLevels(
+                    gains["original_speech_db"], gains["dub_speech_db"], gains["fade_ms"],
+                ),
+                "require_cached_source": True,
+            }
         return run_dub(
             video_path=video_path,
             srt_path=srt_path,
@@ -241,6 +259,7 @@ def work_for(job, *, cancel_check, on_notice, voices_only=False, resume=False,
             # Only said when it is true: the run_dub fakes in tests predate it.
             **({"resume": True} if resume else {}),
             **({"title": perso_name} if perso_name else {}),
+            **overdub_options,
         )
 
     return work_now

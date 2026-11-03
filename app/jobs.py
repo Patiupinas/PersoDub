@@ -74,7 +74,8 @@ SAVED_FIELDS = ("id", "status", "kind", "language", "language_code", "source_lan
                 # screen names it beside the translator, after the default
                 # has moved on (app/translate.py translator_model).
                 "translator_model",
-                "dub_mode", "perso_project_seq", "perso_space_seq",
+                "dub_mode", "audio_mode", "overdub_source_job",
+                "perso_project_seq", "perso_space_seq",
                 # The Perso voice model a cloud dubbing was started with.
                 "perso_model",
                 # What a finished dub cost in Perso credits and how long the

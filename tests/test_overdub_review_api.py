@@ -304,3 +304,325 @@ def test_a4_source_playback_respects_completed_local_job_scope(local_job, monkey
         "id": jid, "kind": "dub", "status": "running",
     })
     assert client.get("/api/dub/jobs/bench/overdub/source").status_code == 409
+
+
+def _ready_regeneration_source(local_job, tmp_path):
+    # Reuse the original source and stage manifests, never fake a successful
+    # expensive ASR/separation stage in the new job's own working directory.
+    original = tmp_path / "original.srt"
+    assert original.is_file()
+    (tmp_path / "translated.srt").write_text(
+        "1\n00:00:00,200 --> 00:00:01,000\nРусская реплика\n",
+        encoding="utf-8",
+    )
+    _line(tmp_path / "vocals.wav", frames=3 * 48000, amplitude=2300)
+    _line(tmp_path / "background.wav", frames=3 * 48000, amplitude=150)
+    (tmp_path / "separated.json").write_text(json.dumps({
+        "vocals": "vocals.wav", "background": "background.wav", "model": "cached"
+    }))
+    (tmp_path / "transcript.json").write_text(json.dumps({
+        "cues": [{"start": 0.2, "end": 1, "text": "Original speech", "speaker_id": "SPK0"}],
+        "detected": "en", "perso": False, "source_asr_mode": "default",
+        "source_asr_language": None,
+    }))
+    local_job.update({
+        "language": "Russian", "language_code": "ru", "source_lang": "en",
+        "project": "Original Lesson", "quality": 2, "tts": "qwen3",
+    })
+
+
+def test_regenerate_start_uses_reviewed_a4_and_new_independent_project(
+        local_job, tmp_path, monkeypatch):
+    import app.api.overdub as api
+
+    _ready_regeneration_source(local_job, tmp_path)
+    new_work = tmp_path.parent / (tmp_path.name + "-selective-overdub")
+    calls = []
+
+    monkeypatch.setattr(api, "check_space", lambda path: None)
+    monkeypatch.setattr(api, "job_dir", lambda title, code: (new_work.mkdir() or str(new_work)))
+    monkeypatch.setattr(api, "_require_selected_voice_engine", lambda count: calls.append(("voices", count)))
+    monkeypatch.setattr(api, "launch_job", lambda work, fields, intro, target:
+                        (calls.append(("launch", work, fields, target)) or "fedcba12"))
+    prep = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
+    body = {
+        "source_wav_sha256": prep["source_wav_sha256"],
+        "total_frames": prep["total_frames"],
+        "review_confirmed": True,
+        "events": [
+            {"start_frame": 0, "end_frame": 48000, "action": "TRANSLATE"},
+            {"start_frame": 48000, "end_frame": 3 * 48000, "action": "PRESERVE"},
+        ],
+        "original_speech_db": -16, "dub_speech_db": -2, "fade_ms": 300,
+    }
+    response = client.post("/api/dub/jobs/bench/overdub/regenerate", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["job_id"] == "fedcba12"
+    assert response.json()["approved_for_tts"] == 1
+    assert response.json()["source_only"] == 0
+    assert calls[0] == ("voices", 1)
+    launch = calls[1]
+    assert launch[0] == "launch"
+    assert launch[2]["audio_mode"] == "overdub"
+    assert launch[2]["overdub_source_job"] == "bench"
+    assert launch[2]["language"] == "Russian"
+    assert launch[2]["quality"] == 2
+    assert launch[2]["work_dir"] == str(new_work)
+    assert (new_work / "input.mp4").read_bytes() == (tmp_path / "input.mp4").read_bytes()
+    assert (new_work / "sub.srt").read_text() == (tmp_path / "translated.srt").read_text()
+    assert (new_work / "source.srt").read_text() == (tmp_path / "original.srt").read_text()
+    assert (new_work / "separated.json").is_file()
+    assert (new_work / "transcript.json").is_file()
+    assert (new_work / "vocals.wav").read_bytes() == (tmp_path / "vocals.wav").read_bytes()
+    assert (new_work / "background.wav").read_bytes() == (tmp_path / "background.wav").read_bytes()
+    assert not list(new_work.glob("qwen_line_*.wav"))
+    assert json.loads((new_work / "overdub_events.json").read_text())["events"] == body["events"]
+    assert json.loads((new_work / "overdub_levels.json").read_text()) == {
+        "original_speech_db": -16, "dub_speech_db": -2, "fade_ms": 300,
+    }
+    assert not (tmp_path / "overdub_events.json").exists()
+    assert (tmp_path / "input.mp4").is_file()
+    # Running the registered target must delegate to the normal persisted job
+    # pipeline, not hide a synchronous TTS run inside the HTTP route.
+    assert callable(launch[3])
+
+
+def test_regenerate_refuses_unreviewed_or_stale_source_before_creating_job(
+        local_job, tmp_path, monkeypatch):
+    import app.api.overdub as api
+
+    _ready_regeneration_source(local_job, tmp_path)
+    monkeypatch.setattr(api, "job_dir", lambda *_: pytest.fail("No new job folder on rejection"))
+    prep = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
+    event = [{"start_frame": 0, "end_frame": prep["total_frames"], "action": "TRANSLATE"}]
+    body = {"source_wav_sha256": prep["source_wav_sha256"],
+            "total_frames": prep["total_frames"], "events": event}
+    assert client.post("/api/dub/jobs/bench/overdub/regenerate", json=body).status_code == 422
+    assert client.post("/api/dub/jobs/bench/overdub/regenerate", json={
+        **body, "review_confirmed": True, "source_wav_sha256": "f" * 64,
+    }).status_code == 422
+    assert client.post("/api/dub/jobs/bench/overdub/regenerate", json={
+        **body, "review_confirmed": True,
+        "events": [{"start_frame": 0, "end_frame": 48000, "action": "PRESERVE"}],
+    }).status_code == 422
+
+
+def test_regenerate_no_approved_speech_does_not_need_voice_engine(
+        local_job, tmp_path, monkeypatch):
+    import app.api.overdub as api
+
+    _ready_regeneration_source(local_job, tmp_path)
+    new_work = tmp_path.parent / (tmp_path.name + "-original-only")
+    monkeypatch.setattr(api, "check_space", lambda *_: None)
+    monkeypatch.setattr(api, "job_dir", lambda title, code: (new_work.mkdir() or str(new_work)))
+    monkeypatch.setattr(api, "_require_selected_voice_engine", lambda count: (
+        pytest.fail("No Qwen pack needed for zero eligible cues")))
+    monkeypatch.setattr(api, "launch_job", lambda *_args: "1234abcd")
+    prep = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
+    resp = client.post("/api/dub/jobs/bench/overdub/regenerate", json={
+        "source_wav_sha256": prep["source_wav_sha256"],
+        "total_frames": prep["total_frames"],
+        "events": [{"start_frame": 0, "end_frame": prep["total_frames"], "action": "REVIEW"}],
+        "review_confirmed": True,
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["approved_for_tts"] == 0
+    assert resp.json()["job_id"] == "1234abcd"
+
+
+def test_regenerate_requires_existing_source_caches_and_full_script(
+        local_job, tmp_path, monkeypatch):
+    import app.api.overdub as api
+
+    _ready_regeneration_source(local_job, tmp_path)
+    (tmp_path / "transcript.json").unlink()
+    monkeypatch.setattr(api, "job_dir", lambda *_: pytest.fail("No job for missing cache"))
+    prep = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
+    res = client.post("/api/dub/jobs/bench/overdub/regenerate", json={
+        "source_wav_sha256": prep["source_wav_sha256"],
+        "total_frames": prep["total_frames"],
+        "events": [{"start_frame": 0, "end_frame": prep["total_frames"], "action": "TRANSLATE"}],
+        "review_confirmed": True,
+    })
+    assert res.status_code == 409
+    assert "transcript" in res.text.lower()
+
+
+def test_selective_regeneration_real_mux_with_cached_source_no_models(
+        local_job, tmp_path, monkeypatch):
+    """Exercise the real FFmpeg source clock, pipeline stages, and two-track MP4."""
+    import hashlib
+
+    from app import pipeline
+    from app.audio.overdub import (
+        OverdubLevels,
+        _open_pcm,
+        _sha_file,
+        extract_original_pcm,
+    )
+    from app.vocal_overdub_export import _verify_export_tracks
+    from app.vocal_overdub_regenerate import seed_regeneration, source_inputs
+    from app.vocal_overdub_review import approved_plan
+
+    _ready_regeneration_source(local_job, tmp_path)
+    inputs = source_inputs(tmp_path)
+    source = tmp_path / "input.mp4"
+    source_pcm = tmp_path / "source-48k.wav"
+    extract_original_pcm(source, source_pcm, duration=3)
+    with _open_pcm(source_pcm) as track:
+        frames = track.getnframes()
+    assert frames == 3 * 48000
+    rows = [
+        {"start_frame": 0, "end_frame": 48000, "action": "TRANSLATE"},
+        {"start_frame": 48000, "end_frame": frames, "action": "PRESERVE"},
+    ]
+    plan = approved_plan(frames, _sha_file(source_pcm), rows)
+    new_work = tmp_path / "regenerated"
+    new_work.mkdir()
+    seed_regeneration(inputs, new_work, plan, OverdubLevels(-16, -2, 300))
+    expected_script = (tmp_path / "translated.srt").read_bytes()
+    before_video = hashlib.sha256(source.read_bytes()).hexdigest()
+    calls = []
+
+    monkeypatch.setattr(
+        pipeline, "_stage_separate",
+        lambda *_a, **_k: pytest.fail("Cached separation must not rerun"),
+    )
+    monkeypatch.setattr(
+        pipeline, "_stage_transcribe_local",
+        lambda *_a, **_k: pytest.fail("Cached source ASR must not rerun"),
+    )
+    monkeypatch.setattr(
+        pipeline, "_source_asr_mode",
+        lambda _code: "bounded",  # mismatches old cache, must still reuse frozen source
+    )
+    monkeypatch.setattr(pipeline, "leakage_gate", lambda wav, *_a: wav)
+
+    def fake_qwen(_engine, segments, _refs, work_dir, *_a, **_k):
+        calls.append([dict(row) for row in segments])
+        # Deliberately overlong TTS: the approved A4 final mix must never
+        # replace the original PCM inside the protected exercise.
+        out = tmp_path / "fake-voice.wav"
+        _line(out, frames=3 * 48000, amplitude=7000)
+        return str(out)
+
+    monkeypatch.setattr(pipeline, "run_qwen_dub", fake_qwen)
+    results = pipeline.run_dub(
+        str(new_work / "input.mp4"), str(new_work / "dubbed.mp4"),
+        srt_path=str(new_work / "sub.srt"),
+        source_srt_path=str(new_work / "source.srt"),
+        language="Russian", source_language_code="en",
+        audio_mode="overdub", overdub_event_plan_path=str(new_work / "overdub_events.json"),
+        overdub_levels=OverdubLevels(-16, -2, 300),
+        qwen_engine=object(), resume=True, require_cached_source=True,
+        log=lambda _: None,
+    )
+    assert results["a4_synthesis"]["selected"] == 1
+    assert len(calls) == 1
+    assert [x["text"] for x in calls[0]] == ["Русская реплика"]
+    assert calls[0][0]["dub_limit_s"] == 1.0
+    assert _verify_export_tracks(new_work / "dubbed.mp4")
+    assert (new_work / "translated.srt").read_bytes() == expected_script
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == before_video
+    assert not list(new_work.glob("qwen_line_*.wav"))
+    # Protected source is bit-identical outside the A4 crossfade.
+    import wave
+    with wave.open(str(new_work / "overdub_mixed_48k.wav")) as actual, wave.open(
+        str(new_work / "overdub_original_48k.wav")
+    ) as reference:
+        pos = round(1.6 * 48000)
+        actual.setpos(pos)
+        reference.setpos(pos)
+        assert actual.readframes(4800) == reference.readframes(4800)
+
+
+def test_new_a4_mode_and_source_reference_survive_jobstore_restart(tmp_path):
+    from app.jobs import JobStore
+
+    work = tmp_path / "2026-11-03" / "source-overdub_ru"
+    work.mkdir(parents=True)
+    original = JobStore(log_dir=str(tmp_path / "log-original"))
+    jid = original.create()
+    original.update(
+        jid, work_dir=str(work), audio_mode="overdub",
+        overdub_source_job="abcd1234", language="Russian",
+        language_code="ru", dub_mode="local",
+    )
+    original.persist(jid, str(work))
+    restored = JobStore(log_dir=str(tmp_path / "log-restored"))
+    restored.restore(str(tmp_path))
+    record = restored.get(jid)
+    assert record["audio_mode"] == "overdub"
+    assert record["overdub_source_job"] == "abcd1234"
+
+
+def test_dub_launch_passes_selective_source_contract_and_levels(tmp_path):
+    from app.audio.overdub import OverdubLevels
+    from app.dub_launch import work_for
+
+    (tmp_path / "input.mp4").write_bytes(b"original")
+    (tmp_path / "source.srt").write_text("source")
+    (tmp_path / "sub.srt").write_text("target")
+    (tmp_path / "overdub_levels.json").write_text(json.dumps({
+        "original_speech_db": -13, "dub_speech_db": -4, "fade_ms": 250,
+    }))
+    called = []
+
+    def fake_run_dub(**kwargs):
+        called.append(kwargs)
+        return {"audio_mode": "overdub"}
+
+    worker = work_for({
+        "id": "abcd1234", "work_dir": str(tmp_path),
+        "language": "Russian", "language_code": "ru",
+        "dub_mode": "local", "audio_mode": "overdub",
+        "stt_engine": "whisper", "quality": 2,
+    }, cancel_check=lambda: False, on_notice=lambda _: None,
+        run_dub=fake_run_dub, resume=True)
+    assert worker(lambda _: None)["audio_mode"] == "overdub"
+    assert len(called) == 1
+    kwargs = called[0]
+    assert kwargs["resume"] is True
+    assert kwargs["require_cached_source"] is True
+    assert kwargs["audio_mode"] == "overdub"
+    assert kwargs["overdub_event_plan_path"] == str(tmp_path / "overdub_events.json")
+    assert kwargs["overdub_levels"] == OverdubLevels(-13, -4, 250)
+    assert kwargs["srt_path"] == str(tmp_path / "sub.srt")
+    assert kwargs["source_srt_path"] == str(tmp_path / "source.srt")
+
+
+def test_regenerate_uses_latest_edited_translation_not_old_generated_voice(
+        local_job, tmp_path):
+    from app.audio.overdub import OverdubLevels
+    from app.vocal_overdub_regenerate import seed_regeneration, source_inputs
+    from app.vocal_overdub_review import approved_plan
+
+    _ready_regeneration_source(local_job, tmp_path)
+    (tmp_path / "edited.srt").write_text(
+        "1\n00:00:00,200 --> 00:00:01,000\nИсправленный перевод\n",
+        encoding="utf-8",
+    )
+    files = source_inputs(tmp_path)
+    assert files["sub.srt"].name == "edited.srt"
+    new_work = tmp_path / "fresh-edited"
+    new_work.mkdir()
+    seed_regeneration(files, new_work, approved_plan(
+        48000, "a" * 64, [{"start_frame": 0, "end_frame": 48000, "action": "REVIEW"}],
+    ), OverdubLevels())
+    assert "Исправленный перевод" in (new_work / "sub.srt").read_text()
+    assert "Русская реплика" in (tmp_path / "translated.srt").read_text()
+    assert not list(new_work.glob("qwen_line*.wav"))
+
+
+def test_regenerate_rejects_original_cache_stem_symlink_outside_source_project(
+        local_job, tmp_path):
+    from app.audio.overdub import OverdubError
+    from app.vocal_overdub_regenerate import source_inputs
+
+    _ready_regeneration_source(local_job, tmp_path)
+    external = tmp_path.parent / (tmp_path.name + "-external.wav")
+    _line(external)
+    (tmp_path / "vocals.wav").unlink()
+    (tmp_path / "vocals.wav").symlink_to(external)
+    with pytest.raises(OverdubError, match="vocals"):
+        source_inputs(tmp_path)

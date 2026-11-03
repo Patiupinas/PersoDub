@@ -19,6 +19,7 @@ from typing import Callable, List, NoReturn, Optional
 from app import config, media, room, settings_env
 from app.audio.onset import snap_starts
 from app.audio.overdub import (
+    OverdubLevels,
     extract_original_pcm,
     render_overdub,
     select_translatable_cues,
@@ -1190,7 +1191,7 @@ def _separate_or_reuse(video_path, work_dir, resume, sep_engine, perso_client, c
 
 def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, source_language_code,
                          diar_engine, num_speakers, perso_client, cancel_check, on_notice, log,
-                         video_duration=None, title=None):
+                         video_duration=None, title=None, strict_cached=False):
     """Stage 2/6, or the transcript the earlier run saved (TRANSCRIPT_NAME)
     when `reuse`. Perso cloud STT if the user picked it, else local Whisper.
     Whisper auto-detects the source language, and that code comes back so
@@ -1199,7 +1200,7 @@ def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, s
     reused)."""
     saved = _saved_transcript(work_dir) if reuse else None
     intended_mode = _source_asr_mode(source_language_code) if stt_engine != "perso" else "perso"
-    if saved and (
+    if saved and not strict_cached and (
         (intended_mode == "bounded" and (
             saved.get("source_asr_mode") != "bounded"
             or saved.get("source_asr_language") != source_language_code
@@ -1210,6 +1211,8 @@ def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, s
         # different ASR clock; changing the decoder invalidates their reuse.
         _log_stage(log, "transcribe", "Source ASR mode changed; rebuilding transcript")
         saved = None
+    if strict_cached and not saved:
+        raise ValueError("Selective Overdub requires the original cached transcript")
     if saved:
         _log_stage(log, "transcribe",
                    "Transcript from the earlier run, reused (%d lines)" % len(saved["cues"]))
@@ -1320,6 +1323,8 @@ def run_dub(
     title: Optional[str] = None,
     audio_mode: str = "replace",
     overdub_event_plan_path: Optional[str] = None,
+    overdub_levels: Optional[OverdubLevels] = None,
+    require_cached_source: bool = False,
 ) -> dict:
     """Dub a single video and save it to out_path.
 
@@ -1365,6 +1370,12 @@ def run_dub(
     video_duration = _duration_or_none(video_path)
     if audio_mode not in ("replace", "overdub"):
         raise ValueError("Unknown audio mode: expected replace or overdub")
+    if require_cached_source and (
+        not resume or not _saved_separation(work_dir) or not _saved_transcript(work_dir)
+    ):
+        raise ValueError("Selective Overdub requires an existing separation and transcript")
+    if overdub_levels is not None and (audio_mode != "overdub" or type(overdub_levels) is not OverdubLevels):
+        raise ValueError("Custom Overdub levels are only valid in Overdub mode")
     overdub_source_pcm = None
     overdub_plan = None
     approved_spans = None
@@ -1419,7 +1430,8 @@ def run_dub(
         src_cues, perso_cues, detected_code, perso_client, tx_reused = _transcribe_or_reuse(
             video_path, work_dir, sep_reused, vocals_path, stt_engine, source_language_code,
             diar_engine, num_speakers, perso_client, cancel_check, on_notice, log,
-            video_duration=video_duration, title=title)
+            video_duration=video_duration, title=title,
+            **({"strict_cached": True} if require_cached_source else {}))
         source_cues = _pick_source_cues(source_srt_path, perso_cues, src_cues)
 
     checkpoint()
@@ -1501,7 +1513,10 @@ def run_dub(
         overdub_wav = os.path.join(work_dir, "overdub_mixed_48k.wav")
         if os.path.exists(overdub_wav):
             os.remove(overdub_wav)
-        receipt = render_overdub(overdub_source_pcm, audio_wav, overdub_plan, overdub_wav)
+        receipt = render_overdub(
+            overdub_source_pcm, audio_wav, overdub_plan, overdub_wav,
+            **({"levels": overdub_levels} if overdub_levels is not None else {}),
+        )
         _save_json(work_dir, "overdub_receipt.json", receipt)
         audio_wav = overdub_wav
 

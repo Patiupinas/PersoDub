@@ -81,7 +81,10 @@ export function overDubRowsHtml(items, indexOffset = 0) {
  * Render a source-bound event review dialog for a *completed local* Qwen job.
  * No full replacement option is changed. Final download is a separate MP4.
  */
-export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), onExport = () => {} }) {
+export function initOverdubDialog({
+  $, fetchFn = (...args) => fetch(...args),
+  onExport = () => {}, onRegenerate = () => {},
+}) {
   let jobId = null;
   let preview = null;
   let events = [];
@@ -95,6 +98,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
   const list = $("overdubList");
   const confirm = $("overdubReviewed");
   const exportButton = $("overdubExport");
+  const regenerateButton = $("overdubRegenerate");
   const analyze = $("overdubAnalyze");
   const useHints = $("overdubUseHints");
   const nextExercise = $("overdubNextExercise");
@@ -126,6 +130,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
     split.disabled = busy || !hasSource;
     confirm.disabled = busy || !hasSource;
     exportButton.disabled = busy || !hasSource || !confirm.checked;
+    regenerateButton.disabled = busy || !hasSource || !confirm.checked;
     $("overdubClose").disabled = busy;
     $("overdubOriginalDb").disabled = busy;
     $("overdubTranslationDb").disabled = busy;
@@ -288,6 +293,20 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
   });
   confirm.addEventListener("change", paint);
   analyze.addEventListener("click", () => prepare(true));
+  function confirmedRequest() {
+    const actions = reviewedEvents(events);
+    if (actions.at(-1).end_frame !== preview.total_frames) {
+      throw new Error("Event plan does not cover the complete source");
+    }
+    return {
+      source_wav_sha256: preview.source_wav_sha256,
+      total_frames: preview.total_frames, events: actions,
+      review_confirmed: true,
+      original_speech_db: Number($("overdubOriginalDb").value),
+      dub_speech_db: Number($("overdubTranslationDb").value),
+      fade_ms: Number($("overdubFadeMs").value),
+    };
+  }
   exportButton.addEventListener("click", async () => {
     if (!preview || busy || !confirm.checked || !jobId) return;
     busy = true;
@@ -295,18 +314,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
     message(t("Building the Overdub MP4 with two selectable audio tracks…"));
     paint();
     try {
-      const actions = reviewedEvents(events);
-      if (actions[actions.length - 1].end_frame !== preview.total_frames) {
-        throw new Error("Event plan does not cover the complete source");
-      }
-      const answer = await api("export", {
-        source_wav_sha256: preview.source_wav_sha256,
-        total_frames: preview.total_frames, events: actions,
-        review_confirmed: true,
-        original_speech_db: Number($("overdubOriginalDb").value),
-        dub_speech_db: Number($("overdubTranslationDb").value),
-        fade_ms: Number($("overdubFadeMs").value),
-      });
+      const answer = await api("export", confirmedRequest());
       result.hidden = false;
       result.textContent = "";
       const link = document.createElement("a");
@@ -319,6 +327,28 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
     } catch (err) {
       message(errorText(err));
     } finally { busy = false; paint(); }
+  });
+  regenerateButton.addEventListener("click", async () => {
+    if (!preview || busy || !confirm.checked || !jobId) return;
+    busy = true;
+    result.hidden = true;
+    message(t("Preparing a new project for selective voice synthesis…"));
+    paint();
+    let newJob = null;
+    try {
+      const answer = await api("regenerate", confirmedRequest());
+      if (!/^[a-f0-9]{8}$/.test(answer.job_id)) throw new Error(t("Overdub request failed"));
+      newJob = answer.job_id;
+    } catch (err) {
+      message(errorText(err));
+    } finally {
+      busy = false;
+      paint();
+    }
+    if (newJob) {
+      close();
+      onRegenerate(newJob);
+    }
   });
   $("overdubClose").addEventListener("click", close);
   overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });

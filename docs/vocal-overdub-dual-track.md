@@ -132,6 +132,12 @@ pipeline and the Perso cloud path remain unchanged. All strings and controls
 are available in the desktop UI; new untranslated strings fall back to English
 under a non-English UI locale.
 
+## Rebuild the approved speech in the product UI (2026-11-03)
+
+The completed local project's Overdub dialog now exposes two deliberate choices under the *same* confirmed source-bound A4 plan: **Mix saved voices** (existing remix of completed Qwen WAVs) and **Rebuild reviewed speech** (new selective-TTS project). The latter starts a separate JobStore job with the exact reviewed A4 partition and original source-clock SHA. It takes its full current edited Russian script, source SRT, cached separated stems and transcript into a new isolated folder, and **does not copy old Qwen lines**. Recognition, translation and separation are reused; the only heavy new inference is selected TTS. Existing review, manual confirmation, source playback, output tracks and the default replacement dub are unchanged. The normal running-project UI handles progress and resume.
+
+See `docs/p1-a4-regeneration-connected-20261103.md` for the contract, tests, current real-source exercise-review gap and the independent voice-quality gate. A model's guessed exercise hints remain `REVIEW` until a human changes them.
+
 ## Source-bound selective TTS (2026-11-03)
 
 The opt-in product `run_dub(audio_mode="overdub")` now **uses the reviewed A4 event plan before Qwen**. Only translated cues completely contained in `TRANSLATE` are synthesized; every cue crossing `REVIEW` or `PRESERVE` stays original-only, and no TTS is run if none qualifies. Eligible Qwen request, scorer, merge and final PCM placement are bounded by the same exact A4 right-edge source sample clock. The original track and untouched full translated subtitles remain; this is separate from retrospective re-export of an already synthesized job.

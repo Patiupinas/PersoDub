@@ -112,6 +112,7 @@ ROUTES = [
     ('POST', '/api/dub/jobs/{jid}/cancel'),
     ('POST', '/api/dub/jobs/{jid}/overdub/export'),
     ('POST', '/api/dub/jobs/{jid}/overdub/prepare'),
+    ('POST', '/api/dub/jobs/{jid}/overdub/regenerate'),
     ('POST', '/api/dub/jobs/{jid}/perso/materialize'),
     ('POST', '/api/dub/jobs/{jid}/perso/proofread'),
     ('POST', '/api/dub/jobs/{jid}/perso/script/{line}/fit'),

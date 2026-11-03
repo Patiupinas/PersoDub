@@ -43,7 +43,7 @@ function element(id) {
   };
 }
 
-function harness({ response = preview, onExport = () => {} } = {}) {
+function harness({ response = preview, onExport = () => {}, onRegenerate = () => {} } = {}) {
   const previousDocument = globalThis.document;
   globalThis.document = { createElement: element };
   const all = new Map();
@@ -61,11 +61,12 @@ function harness({ response = preview, onExport = () => {} } = {}) {
     return {
       ok: true,
       json: async () => url.endsWith("/prepare") ? response :
+        url.endsWith("/regenerate") ? { job_id: "1234abcd", approved_for_tts: 1 } :
         { file: "finished-overdub.mp4",
           download_url: "/api/dub/jobs/abc/overdub/files/finished-overdub.mp4" },
     };
   };
-  const modal = initOverdubDialog({ $, fetchFn, onExport });
+  const modal = initOverdubDialog({ $, fetchFn, onExport, onRegenerate });
   return {
     $, modal, calls, reset: () => { globalThis.document = previousDocument; },
   };
@@ -306,4 +307,45 @@ test("possible exercise button jumps to source without applying classifier actio
   // Model suggestions remain unapproved; only an explicit human change alters actions.
   assert.equal(h.calls.length, 1);
   assert.match(h.$("overdubList").innerHTML, /data-od-index="128"/);
+});
+
+
+test("A4 rebuild starts a separate job with confirmed exact source decisions", async (t) => {
+  const opened = [];
+  const h = harness({ onRegenerate: id => opened.push(id) });
+  t.after(h.reset);
+  await h.modal.open("abc");
+  assert.equal(h.$("overdubRegenerate").disabled, true);
+  h.$("overdubUseHints").listeners.click();
+  h.$("overdubReviewed").checked = true;
+  h.$("overdubReviewed").listeners.change();
+  assert.equal(h.$("overdubRegenerate").disabled, false);
+  await h.$("overdubRegenerate").listeners.click();
+  assert.deepEqual(opened, ["1234abcd"]);
+  assert.equal(h.$("overdubOverlay").classList.contains("open"), false);
+  assert.equal(h.calls.length, 2);
+  assert.match(h.calls[1].url, /\/overdub\/regenerate$/);
+  assert.deepEqual(h.calls[1].body.events, [
+    { start_frame: 0, end_frame: FRAME, action: "TRANSLATE" },
+    { start_frame: FRAME, end_frame: 2 * FRAME, action: "PRESERVE" },
+  ]);
+  assert.equal(h.calls[1].body.review_confirmed, true);
+  assert.equal(h.calls[1].body.source_wav_sha256, preview.source_wav_sha256);
+  assert.equal(h.calls[1].body.original_speech_db, -16);
+  assert.equal(h.$("overdubSourcePlayer").src, "");
+});
+
+test("review changes disable both reuse and fresh synthesis", async (t) => {
+  const h = harness();
+  t.after(h.reset);
+  await h.modal.open("abc");
+  h.$("overdubReviewed").checked = true;
+  h.$("overdubReviewed").listeners.change();
+  assert.equal(h.$("overdubExport").disabled, false);
+  assert.equal(h.$("overdubRegenerate").disabled, false);
+  h.$("overdubList").listeners.change({
+    target: { closest: () => ({ dataset: { odIndex: "1" }, value: "PRESERVE" }) },
+  });
+  assert.equal(h.$("overdubExport").disabled, true);
+  assert.equal(h.$("overdubRegenerate").disabled, true);
 });

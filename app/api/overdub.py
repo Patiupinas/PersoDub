@@ -20,11 +20,20 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import media, settings_env, state
+from app.api import _launch as launch_api
+from app.api._launch import check_space, job_dir, launch_job
 from app.api._shared import free_path, work_dir_of
-from app.audio.overdub import OverdubError, OverdubLevels, extract_original_pcm
+from app.audio.overdub import (
+    OverdubError,
+    OverdubLevels,
+    _parse_plan,
+    extract_original_pcm,
+    select_translatable_cues,
+)
 from app.jobs import JobKind, JobStatus, kind_of
 from app.text.srt import parse_srt
 from app.vocal_overdub_export import _line_manifest, export_existing
+from app.vocal_overdub_regenerate import seed_regeneration, source_inputs
 from app.vocal_overdub_review import (
     approved_plan,
     model_suggestions,
@@ -217,6 +226,111 @@ def overdub_export(jid: str, request: ExportRequest):
         }
     except (OverdubError, OSError, ValueError, RuntimeError) as error:
         logger.info("Overdub export rejected: %s", type(error).__name__)
+        raise HTTPException(422, str(error)[:180]) from error
+
+
+def _require_selected_voice_engine(count):
+    """Only voice synthesis is needed: the source, ASR and translation are cached."""
+    if count == 0:
+        return
+    from app.api import dub as dub_api
+
+    missing = launch_api.missing_models(
+        False, None, need_engine=True, separation_local=False,
+    )
+    if missing:
+        launch_api.raise_models_needed(missing)
+    dub_api._require_voice_engine_running()
+
+
+@router.post("/api/dub/jobs/{jid}/overdub/regenerate")
+def overdub_regenerate(jid: str, request: ExportRequest):
+    """Start an independent selective-TTS job from the approved original A4 plan.
+
+    Unlike export, this does not reuse any old qwen_line_N.wav. It copies
+    only the source, cached separation/transcript and complete editable script
+    into a fresh job. The normal JobStore queue owns the expensive synthesis,
+    cancellation, resume and progress.
+    """
+    source, work = _job(jid)
+    if request.review_confirmed is not True:
+        raise HTTPException(422, "Confirm the reviewed event decisions before regenerating")
+    try:
+        levels = OverdubLevels(
+            request.original_speech_db, request.dub_speech_db, request.fade_ms,
+        )
+        # Reject obsolete or incomplete source caches before making a project.
+        try:
+            inputs = source_inputs(work)
+        except OverdubError as error:
+            raise HTTPException(409, str(error)[:180]) from error
+        seconds = media.video_duration(str(source))
+        _check_export_room(source, work, seconds)
+        current = _source_preview(source, work, analyze=False)
+        if request.source_wav_sha256 != current["source_wav_sha256"] or (
+            request.total_frames != current["total_frames"]
+        ):
+            raise OverdubError("The source audio has changed since review")
+        plan = approved_plan(
+            current["total_frames"], current["source_wav_sha256"], request.events
+        )
+        cues = parse_srt(inputs["sub.srt"].read_text(encoding="utf-8-sig"))
+        spans = _parse_plan(plan, current["total_frames"], current["source_wav_sha256"])
+        selected, skipped = select_translatable_cues(cues, spans)
+        if selected:
+            _require_selected_voice_engine(len(selected))
+        check_space(state.WORKSPACE)
+
+        # Allocate and stage atomically with respect to other Overdub exports.
+        # No existing video, plan or line WAV is ever replaced.
+        with _EXPORT_LOCK:
+            from app.api import dub as dub_api
+
+            original_job = state.job_store.get(jid)
+            project = original_job.get("project") or work.name
+            title = project + " Overdub"
+            new_work = Path(job_dir(title, original_job.get("language_code") or "ru"))
+            try:
+                seed_regeneration(inputs, new_work, plan, levels)
+            except Exception:
+                shutil.rmtree(new_work)
+                raise
+            fields = {
+                "project": title,
+                "title": title,
+                "day": launch_api.today(),
+                "from_link": False,
+                "work_dir": str(new_work),
+                "language": original_job.get("language") or "Russian",
+                "language_code": original_job.get("language_code") or "ru",
+                "source_lang": original_job.get("source_lang"),
+                "dub_mode": "local",
+                "audio_mode": "overdub",
+                "overdub_source_job": jid,
+                "stt_engine": original_job.get("stt_engine") or "whisper",
+                "translator": original_job.get("translator"),
+                "translator_model": original_job.get("translator_model"),
+                "tts": original_job.get("tts") or "qwen3",
+                "quality": original_job.get("quality"),
+                "separation": original_job.get("separation") or "demucs",
+            }
+
+            def _target(new_jid, log):
+                return dub_api._work_for(fields, new_jid, resume=True)(log)
+
+            new_jid = launch_job(
+                str(new_work), fields, "Rebuilding reviewed Overdub speech from cached source",
+                _target,
+            )
+        return {
+            "job_id": new_jid, "approved_for_tts": len(selected),
+            "source_only": skipped,
+            "status_url": f"/api/dub/jobs/{new_jid}",
+        }
+    except HTTPException:
+        raise
+    except (OverdubError, OSError, ValueError, RuntimeError) as error:
+        logger.info("Selective Overdub refused: %s", type(error).__name__)
         raise HTTPException(422, str(error)[:180]) from error
 
 

@@ -156,6 +156,12 @@ def _as_the_pipeline_reads_it(kw, work):
         out.pop("audio_mode")
     if out.get("overdub_event_plan_path") is None:
         out.pop("overdub_event_plan_path")
+    # Fresh selective Overdub is opt-in. The existing frozen paths still
+    # have the same effective defaults as before this parameter was added.
+    if out.get("overdub_levels") is None:
+        out.pop("overdub_levels")
+    if out.get("require_cached_source") is False:
+        out.pop("require_cached_source")
     return out
 
 

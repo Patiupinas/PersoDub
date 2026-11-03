@@ -2164,6 +2164,10 @@ async function exportContext() {
 const overdubDialog = initOverdubDialog({
   $,
   onExport: (jobId, filename) => qualityReport.showOverdub(jobId, filename),
+  onRegenerate: (jobId) => {
+    projects.renderHistory().catch(() => {});
+    resumeJob(jobId);
+  },
 });
 const exportDialog = initExportDialog({
   $, getContext: exportContext, storage: localStorage, shell: window.persodubShell || null,

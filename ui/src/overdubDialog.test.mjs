@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 
 import {
   ACTIONS, OVERDUB_RATE, initOverdubDialog,
-  overDubRowsHtml, reviewedEvents, splitOverdubInterval,
+  nextPossibleExerciseIndex, overDubRowsHtml, reviewedEvents, splitOverdubInterval,
 } from "./overdubDialog.mjs";
 
 const FRAME = OVERDUB_RATE;
@@ -257,4 +257,53 @@ test("A4 event seek remains source-clock accurate after splitting an interval", 
   assert.equal(h.$("overdubSourcePlayer").currentTime, 0.85);
   assert.equal(h.$("overdubReviewed").checked, false);
   assert.equal(h.$("overdubExport").disabled, true);
+});
+
+
+test("exercise navigator prioritizes unreviewed non-speech hints and wraps", () => {
+  const events = [
+    { hint: "speech", action: "REVIEW" },
+    { hint: "singing", action: "PRESERVE" },
+    { hint: "coughing", action: "REVIEW" },
+    { hint: "breathing", action: "REVIEW" },
+    { hint: "unknown", action: "REVIEW" },
+  ];
+  assert.equal(nextPossibleExerciseIndex(events), 2);
+  assert.equal(nextPossibleExerciseIndex(events, 2), 3);
+  assert.equal(nextPossibleExerciseIndex(events, 3), 2);
+  assert.equal(nextPossibleExerciseIndex(events.map(row => ({ ...row, action: "PRESERVE" }))), -1);
+  assert.equal(nextPossibleExerciseIndex([]), -1);
+});
+
+test("possible exercise button jumps to source without applying classifier action", async (t) => {
+  const hints = Array.from({ length: 230 }, (_, i) => ({
+    start_frame: i * FRAME, end_frame: (i + 1) * FRAME, action: "REVIEW",
+    suggested_action: "TRANSLATE", hint: "speech", score: 0.8,
+  }));
+  hints[121] = { ...hints[121], hint: "coughing", suggested_action: "PRESERVE" };
+  hints[128] = { ...hints[128], hint: "breathing", suggested_action: "PRESERVE" };
+  hints[215] = { ...hints[215], hint: "singing", suggested_action: "PRESERVE", action: "PRESERVE" };
+  const h = harness({
+    response: { ...preview, total_frames: 230 * FRAME, suggestions: hints },
+  });
+  t.after(h.reset);
+  await h.modal.open("abc");
+  assert.equal(h.$("overdubNextExercise").disabled, false);
+  assert.equal(h.$("overdubReviewed").checked, false);
+
+  h.$("overdubNextExercise").listeners.click();
+  assert.equal(h.$("overdubPageLabel").textContent, "101-200 / 230");
+  assert.match(h.$("overdubList").innerHTML, /data-od-index="121"/);
+  assert.equal(h.$("overdubSourcePlayer").currentTime, 120.6);
+  assert.equal(h.$("overdubSourcePlayer").playCalls, 1);
+  assert.equal(h.$("overdubReviewed").checked, false);
+  assert.match(h.$("overdubStatus").textContent, /Possible vocal exercise near 121.00s/);
+
+  h.$("overdubNextExercise").listeners.click();
+  assert.equal(h.$("overdubSourcePlayer").currentTime, 127.6);
+  assert.equal(h.$("overdubReviewed").checked, false);
+  assert.equal(h.$("overdubExport").disabled, true);
+  // Model suggestions remain unapproved; only an explicit human change alters actions.
+  assert.equal(h.calls.length, 1);
+  assert.match(h.$("overdubList").innerHTML, /data-od-index="128"/);
 });

@@ -187,6 +187,47 @@ def _mix_chunk(original_pcm, dub_pcm, start_frame, envelope):
 
 
 
+def select_translatable_cues(segments, approved_spans):
+    """Permit TTS only for whole cues inside explicit source-bound A4 speech.
+
+    A cue straddling a protected/unknown interval is left in the original
+    source, not split into misleading translated words. Adjacent TRANSLATE
+    intervals may be merged because a manual UI split does not mute audio.
+    The approved right edge is copied into each selected cue for the Qwen
+    duration and placement limits. Never mutate the complete source script.
+    """
+    translated = []
+    for span in approved_spans:
+        if span.action != "TRANSLATE":
+            continue
+        if translated and span.start == translated[-1][1]:
+            translated[-1] = (translated[-1][0], span.end)
+        else:
+            translated.append((span.start, span.end))
+    starts = [start for start, _end in translated]
+    selected = []
+    skipped = 0
+    for cue in segments:
+        start = cue.get("start")
+        end = cue.get("end")
+        if (type(start) not in (int, float)
+                or type(end) not in (int, float)
+                or not math.isfinite(start) or not math.isfinite(end)
+                or start < 0 or end <= start or not cue.get("text", "").strip()):
+            skipped += 1
+            continue
+        a = round(start * SR)
+        b = round(end * SR)
+        idx = bisect.bisect_right(starts, a) - 1
+        if idx < 0 or a >= b or b > translated[idx][1]:
+            skipped += 1
+            continue
+        keep = dict(cue)
+        keep["dub_limit_s"] = translated[idx][1] / SR
+        selected.append(keep)
+    return selected, skipped
+
+
 def validate_overdub_plan(source_wav, event_plan):
     """Validate the exact sample clock and original PCM hash before TTS."""
     with _open_pcm(source_wav) as source:

@@ -7,6 +7,22 @@ import { initS2stLab } from "./s2stLab.mjs";
 export const OVERDUB_RATE = 48000;
 export const REVIEW_PAGE_SIZE = 100;
 export const ACTIONS = ["REVIEW", "TRANSLATE", "PRESERVE"];
+const EXERCISE_HINTS = new Set([
+  "singing", "breathing", "coughing", "sneezing", "laughing", "crying_baby",
+]);
+
+// Prioritize unreviewed original audio, never treat model labels as approvals.
+// Return -1 when only transcript speech/unknown hints remain.
+export function nextPossibleExerciseIndex(items, after = -1) {
+  if (!Array.isArray(items) || !items.length) return -1;
+  for (let step = 1; step <= items.length; step++) {
+    const index = ((after + step) % items.length + items.length) % items.length;
+    if (items[index].action === "REVIEW" && EXERCISE_HINTS.has(items[index].hint)) {
+      return index;
+    }
+  }
+  return -1;
+}
 
 export function reviewedEvents(items) {
   if (!Array.isArray(items) || !items.length) throw new Error("No reviewed events");
@@ -72,6 +88,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
   let busy = false;
   let generation = 0;
   let page = 0;
+  let exerciseCursor = -1;
   const s2stLab = initS2stLab({ $, fetchFn });
   const overlay = $("overdubOverlay");
   const status = $("overdubStatus");
@@ -80,6 +97,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
   const exportButton = $("overdubExport");
   const analyze = $("overdubAnalyze");
   const useHints = $("overdubUseHints");
+  const nextExercise = $("overdubNextExercise");
   const split = $("overdubSplit");
   const result = $("overdubResult");
   const previousPage = $("overdubPagePrev");
@@ -103,6 +121,8 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
     const hasSource = !!preview;
     analyze.disabled = busy || !hasSource || !preview.ast_available;
     useHints.disabled = busy || !hasSource || !events.length;
+    nextExercise.disabled = busy || !hasSource ||
+      nextPossibleExerciseIndex(events, exerciseCursor) < 0;
     split.disabled = busy || !hasSource;
     confirm.disabled = busy || !hasSource;
     exportButton.disabled = busy || !hasSource || !confirm.checked;
@@ -141,6 +161,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
       if (currentGen !== generation || currentJob !== jobId) return;
       preview = answer;
       events = answer.suggestions.map((row) => ({ ...row, action: "REVIEW" }));
+      exerciseCursor = -1;
       page = 0;
       if (answer.analysis === "ast_observations") {
         message(t("AST event suggestions are ready. Review every interval before export."));
@@ -179,6 +200,7 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
     sourcePlayer.src = `/api/dub/jobs/${encodeURIComponent(jid)}/overdub/source`;
     preview = null;
     events = [];
+    exerciseCursor = -1;
     page = 0;
     confirm.checked = false;
     result.hidden = true;
@@ -189,12 +211,10 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
   }
   // Seek on the existing original-video endpoint, never the translated mix.
   // Source playback is observation only; it does not change A4 actions.
-  list.addEventListener("click", (event) => {
-    const control = event.target.closest("[data-od-play]");
-    if (!control || busy || !preview) return;
-    const index = Number(control.dataset.odPlay);
+  function listenOriginal(index) {
     const item = events[index];
     if (!item || !Number.isSafeInteger(index)) return;
+    exerciseCursor = index;
     const start = item.start_frame / OVERDUB_RATE;
     const end = item.end_frame / OVERDUB_RATE;
     previewStopTime = end;
@@ -204,6 +224,22 @@ export function initOverdubDialog({ $, fetchFn = (...args) => fetch(...args), on
     if (started && typeof started.catch === "function") {
       started.catch(() => message(t("Could not play original video.")));
     }
+  }
+  list.addEventListener("click", (event) => {
+    const control = event.target.closest("[data-od-play]");
+    if (!control || busy || !preview) return;
+    listenOriginal(Number(control.dataset.odPlay));
+  });
+  nextExercise.addEventListener("click", () => {
+    if (busy || !preview) return;
+    const index = nextPossibleExerciseIndex(events, exerciseCursor);
+    if (index < 0) return;
+    page = Math.floor(index / REVIEW_PAGE_SIZE);
+    list.scrollTop = 0;
+    listenOriginal(index);
+    message(t("Possible vocal exercise near {time}s. Listen before choosing an action.",
+      { time: atTime(events[index].start_frame) }));
+    paint();
   });
   sourcePlayer.addEventListener("timeupdate", () => {
     if (previewStopTime !== null && sourcePlayer.currentTime >= previewStopTime) {

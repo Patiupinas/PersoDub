@@ -132,6 +132,12 @@ pipeline and the Perso cloud path remain unchanged. All strings and controls
 are available in the desktop UI; new untranslated strings fall back to English
 under a non-English UI locale.
 
+## Source-bound selective TTS (2026-11-03)
+
+The opt-in product `run_dub(audio_mode="overdub")` now **uses the reviewed A4 event plan before Qwen**. Only translated cues completely contained in `TRANSLATE` are synthesized; every cue crossing `REVIEW` or `PRESERVE` stays original-only, and no TTS is run if none qualifies. Eligible Qwen request, scorer, merge and final PCM placement are bounded by the same exact A4 right-edge source sample clock. The original track and untouched full translated subtitles remain; this is separate from retrospective re-export of an already synthesized job.
+
+Model event suggestions remain *suggestions*, never approvals. The A4 dialog includes one **Next possible vocal exercise** control which jumps to non-speech model hints and plays the original source for manual review, without making any A4 choice. Before claiming selective TTS performance, source intervals must actually be reviewed: the existing four-minute lesson's old plan contains zero PRESERVE actions, so it saves zero synthesis with the new gate. See `docs/p1-a4-pretts-gate-20261103.md` for exact regression tests, offline original-source observations and current limitations.
+
 ## Long-form lessons (hours, not only short videos)
 
 The target use case includes **2-6-hour vocal lessons**, which can mix

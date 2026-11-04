@@ -53,7 +53,7 @@ Open private local `index.html`: **10 model/voice conditions x 2 identical scrip
 
 ## Product architectural decision and one next action
 
-Retain current Silero and Qwen integration unchanged until listening gold. VoxCPM2 with stable Russian male/female voice references is the strongest **technical finalist** (0 word errors across all eight reference-conditioned WAVs plus default, 48 kHz), with Chatterbox V3 fixed-reference as a second naturalness contender despite the one ASR morph change. ESpeech standard is unusually quick but its speed-constrained/conditioning failure needs investigation; **do not automatically promote it**.
+Retain current Silero and Qwen integration unchanged until listening gold. VoxCPM2 with stable Russian male/female voice references is the strongest **technical finalist** (0 word errors across four reference-conditioned WAVs and both default WAVs, 48 kHz), with Chatterbox V3 fixed-reference as a second naturalness contender despite the one ASR morph change. ESpeech standard is unusually quick but its speed-constrained/conditioning failure needs investigation; **do not automatically promote it**.
 
 **Next action**: obtain native Russian 1-5 naturalness and clarity ratings from the blind page; select one or two finalists; then integrate the winner using the repository's existing `TTSEngine` interface and test phrase-level context, fixed speaker-to-voice assignments, original source clock and A4 vocal-music protection. This step must use real user audio, speaker turns and a short source video, not assume that stand-alone samples prove production suitability.
 

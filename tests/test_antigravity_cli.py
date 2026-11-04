@@ -139,3 +139,89 @@ def test_status_endpoint_exposes_optional_cli_without_assuming_success(monkeypat
     assert response.json()["antigravity_available"] is False
     monkeypatch.setattr(engines_status, "antigravity_available", lambda: True)
     assert TestClient(app, base_url="http://127.0.0.1").get("/api/engines").json()["antigravity_available"] is True
+
+
+@pytest.mark.parametrize(
+    ("source_lang", "language_name", "source_text", "technical_term"),
+    [
+        ("de", "German", "Atme mit dem Zwerchfell und halte die Stütze.", "Stütze"),
+        ("Spanish", "Spanish", "Respira con el diafragma y usa el apoyo.", "apoyo"),
+        ("English", "English", "Support your breath with the diaphragm.", "breath control"),
+    ],
+)
+def test_multilingual_prompt_keeps_explicit_source_language(
+    monkeypatch, source_lang, language_name, source_text, technical_term
+):
+    prompts = []
+
+    def fake_ask(self, prompt):
+        prompts.append(prompt)
+        return json.dumps(["Контролируй дыхание диафрагмой."])
+
+    monkeypatch.setattr(AntigravityCLI, "ask", fake_ask)
+    result = AntigravityCLI(binary="/fake").translate(
+        [source_text], "ru", source_lang, [9.0]
+    )
+    assert result == ["Контролируй дыхание диафрагмой."]
+    assert len(prompts) == 1
+    assert f"Source language: {language_name}" in prompts[0]
+    assert source_text in prompts[0]
+    assert technical_term in prompts[0]
+    assert '"source"' in prompts[0]
+    assert '"english"' not in prompts[0]
+
+
+@pytest.mark.parametrize("source_lang", [None, "", "xx", "French"])
+def test_unrecognized_source_language_never_silently_becomes_english(
+    monkeypatch, source_lang
+):
+    monkeypatch.setattr(AntigravityCLI, "ask", lambda *_: pytest.fail("CLI should not run"))
+    with pytest.raises(ValueError, match="explicit English, German or Spanish"):
+        AntigravityCLI(binary="/fake").translate(
+            ["Respira con el diafragma."], "ru", source_lang, [6.0]
+        )
+
+
+def test_spanish_source_and_russian_output_are_source_clock_bound(monkeypatch):
+    monkeypatch.setattr(
+        AntigravityCLI, "ask",
+        lambda *_: json.dumps(["Диафрагма опускается, рёбра расширяются."]),
+    )
+    result = AntigravityCLI(binary="/fake").translate(
+        ["Las costillas se expanden y el diafragma baja."], "ru", "es", [8.0]
+    )
+    assert result == ["Диафрагма опускается, рёбра расширяются."]
+
+
+def test_german_sentence_continuation_does_not_require_duplicated_full_stop():
+    source = [
+        "Bauchatmung, Brustatmung und Zwerchfellatmung möchte ich erklären",
+        "und danach einen kleinen Selbsttest mitgeben,",
+    ]
+    translated = [
+        "Я объясню брюшное, грудное и диафрагмальное дыхание,",
+        "а затем дам тебе небольшой тест для самопроверки,",
+    ]
+    flags = review_ru_lines(
+        source, translated, [6.0, 5.0], allow_source_continuations=True
+    )
+    assert flags == []
+    assert review_ru_lines(source, translated, [6.0, 5.0]) != []
+
+
+def test_spanish_realistic_source_allows_one_word_timing_slack():
+    source = ["La respiración sí se puede controlar, y debemos hacerlo al cantar."]
+    translated = ["Дыханием можно управлять, и при пении это необходимо."]
+    assert review_ru_lines(
+        source, translated, [3.5], allow_source_continuations=True
+    ) == []
+
+
+def test_completed_source_sentence_still_requires_completed_russian_translation():
+    flags = review_ru_lines(
+        ["Die Atmung ist wichtig."],
+        ["Дыхание важно, потому что"],
+        [5.0],
+        allow_source_continuations=True,
+    )
+    assert "possible_sentence_fragment" in flags[0]["issues"]

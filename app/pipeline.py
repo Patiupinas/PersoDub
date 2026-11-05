@@ -17,7 +17,10 @@ import uuid
 from typing import Callable, List, NoReturn, Optional
 
 from app import config, media, room, settings_env
-from app.audio.loudness import normalize_overdub_base
+from app.audio.loudness import (
+    measure_overdub_voice_loudness,
+    normalize_overdub_base,
+)
 from app.audio.onset import snap_starts
 from app.audio.overdub import (
     OverdubLevels,
@@ -1595,10 +1598,18 @@ def run_dub(
             base_loudness["normalized_integrated_lufs"],
             base_loudness["normalized_true_peak_dbtp"],
         ))
+        voice_loudness = measure_overdub_voice_loudness(
+            audio_wav, os.path.join(work_dir, "overdub_voice_loudness.json"),
+        )
+        log("   Overdub TTS: %s LUFS, compensation %+.2f dB" % (
+            voice_loudness["input_voice_lufs"],
+            voice_loudness["gain_offset_db"],
+        ))
         receipt = render_overdub(
             overdub_source_pcm, audio_wav, overdub_plan, overdub_wav,
             normalized_source_wav=normalized_source,
             source_normalization=base_loudness,
+            voice_calibration=voice_loudness,
             **({"levels": overdub_levels} if overdub_levels is not None else {}),
         )
         _save_json(work_dir, "overdub_receipt.json", receipt)

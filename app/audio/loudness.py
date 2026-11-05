@@ -215,3 +215,121 @@ def validate_normalized_base(source_wav, normalized_wav, receipt):
                         normalized_path=Path(normalized_wav)):
         raise SourceLoudnessError("The normalized base does not match the A4 source")
     return frames
+
+
+# The owner accepted the Russian mix on German/Spanish source lessons. Their
+# voice-only recordings measure -14.75 and -14.96 gated LUFS, respectively.
+# English source-lesson voice-only measured -25.15 LUFS: at the same -16 dB
+# slider it sounded about 10 dB too quiet. Anchor the *voice-only* speech at
+# a common -15 LUFS before applying the user's existing per-mix gain.
+VOICE_LOUDNESS_PROFILE = "overdub_voice_integrated_r128_v1"
+VOICE_REFERENCE_LUFS = -15.0
+VOICE_MAX_COMPENSATION_DB = 12.0
+
+
+def measure_overdub_voice_loudness(voice_wav, receipt_path):
+    """Measure gated voice-only LUFS, excluding silence/pause dilution.
+
+    This does not rewrite or clip a single TTS sample. A single constant gain
+    offset is applied later inside the mixer, where the user's requested
+    -16 dB still has its intended relative meaning.
+    """
+    voice = Path(voice_wav)
+    receipt_file = Path(receipt_path)
+    if voice.resolve() == receipt_file.resolve():
+        raise SourceLoudnessError("Voice measurement receipt cannot replace the voice WAV")
+    frames = _wav_frames(voice)
+    sha = _sha_file(voice)
+    expected = {
+        "schema_version": 1,
+        "profile": VOICE_LOUDNESS_PROFILE,
+        "voice_wav_sha256": sha,
+        "voice_frames": frames,
+        "reference_voice_lufs": VOICE_REFERENCE_LUFS,
+    }
+    if receipt_file.is_file():
+        try:
+            cached = json.loads(receipt_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cached = None
+        if isinstance(cached, dict) and all(cached.get(k) == v for k, v in expected.items()):
+            try:
+                validate_voice_loudness(voice, cached)
+            except SourceLoudnessError:
+                # Rebuild a corrupt or stale derived receipt rather than
+                # trapping the user in a permanent invalid-cache state.
+                pass
+            else:
+                return cached
+
+    target = f"loudnorm=I={VOICE_REFERENCE_LUFS}:TP={SOURCE_TRUE_PEAK_DBTP}:LRA={SOURCE_LRA}"
+    stats = _loudnorm_report([
+        "ffmpeg", "-nostdin", "-hide_banner", "-nostats",
+        "-i", str(voice), "-af", target + ":print_format=json",
+        "-f", "null", "-",
+    ], frames / SR)
+    input_lufs = stats["input_i"]
+    if math.isfinite(input_lufs):
+        requested = VOICE_REFERENCE_LUFS - input_lufs
+        offset = max(-VOICE_MAX_COMPENSATION_DB, min(VOICE_MAX_COMPENSATION_DB, requested))
+        state = "MEASURED" if offset == requested else "GAIN_CAP_REACHED"
+    else:
+        # A4 may approve no speech at all: an all-silent TTS bed is valid and
+        # must not acquire gain or block the original-only export.
+        requested = None
+        offset = 0.0
+        state = "NO_MEASURABLE_VOICE"
+    if _sha_file(voice) != sha:
+        raise SourceLoudnessError("The translated voice WAV changed during loudness analysis")
+    result = {
+        **expected,
+        "status": state,
+        "input_voice_lufs": input_lufs if math.isfinite(input_lufs) else None,
+        "requested_compensation_db": requested,
+        "gain_offset_db": round(offset, 4),
+        "voice_true_peak_dbtp": stats["input_tp"] if math.isfinite(stats["input_tp"]) else None,
+        "measured_by": "ffmpeg_loudnorm_ebur128_integrated",
+        "voice_pcm_modified": False,
+    }
+    receipt_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = receipt_file.with_name(receipt_file.name + ".part")
+    if tmp.exists():
+        raise SourceLoudnessError("Pending voice-loudness receipt already exists")
+    try:
+        tmp.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        os.replace(tmp, receipt_file)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return result
+
+
+def validate_voice_loudness(voice_wav, receipt):
+    """Bind a mixer-level compensation to this exact voice WAV and its meter."""
+    if not isinstance(receipt, dict):
+        raise SourceLoudnessError("Missing measured translated-voice loudness")
+    expected = {
+        "schema_version": 1,
+        "profile": VOICE_LOUDNESS_PROFILE,
+        "voice_wav_sha256": _sha_file(voice_wav),
+        "voice_frames": _wav_frames(voice_wav),
+        "reference_voice_lufs": VOICE_REFERENCE_LUFS,
+    }
+    if any(receipt.get(k) != v for k, v in expected.items()):
+        raise SourceLoudnessError("The translated voice loudness does not match this TTS WAV")
+    gain = receipt.get("gain_offset_db")
+    if (type(gain) not in (int, float) or not math.isfinite(gain)
+            or abs(gain) > VOICE_MAX_COMPENSATION_DB):
+        raise SourceLoudnessError("Invalid voice-loudness gain offset")
+    measured = receipt.get("input_voice_lufs")
+    if measured is not None:
+        if type(measured) not in (int, float) or not math.isfinite(measured):
+            raise SourceLoudnessError("Invalid measured voice LUFS")
+        expected_gain = round(max(-VOICE_MAX_COMPENSATION_DB, min(
+            VOICE_MAX_COMPENSATION_DB, VOICE_REFERENCE_LUFS - measured,
+        )), 4)
+        if abs(gain - expected_gain) > 1e-4:
+            raise SourceLoudnessError("Voice compensation differs from measured LUFS")
+    elif gain != 0.0:
+        raise SourceLoudnessError("An unmeasurable voice cannot be amplified")
+    return gain

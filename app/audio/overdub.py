@@ -464,7 +464,7 @@ def extract_original_pcm(video_path, output_wav, duration=None):
 
 def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
                    levels=None, normalized_source_wav=None,
-                   source_normalization=None):
+                   source_normalization=None, voice_calibration=None):
     """Combine original + voice-only translated TTS using source-bound A4 spans.
 
     REVIEW and PRESERVE pass the selected base soundtrack without further
@@ -525,7 +525,24 @@ def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
             translated.rewind()
         spans = _parse_plan(data, frames, _sha_file(src_path))
         voice_activity = _voice_activity_intervals(translated, frames)
-        envelope = _Envelope(spans, levels, voice_activity=voice_activity)
+        effective_levels = levels
+        applied_gain_offset = 0.0
+        if voice_calibration is not None:
+            from app.audio.loudness import validate_voice_loudness
+
+            requested_offset = validate_voice_loudness(dub_path, voice_calibration)
+            original_gain = levels.translate_gains[0]
+            # Keep the sum of peak gain magnitudes <= 1 even when the requested
+            # voice level was already near unity before auto calibration.
+            max_voice_db = 20 * math.log10(max(1e-12, 1.0 - original_gain))
+            effective_voice_db = max(
+                -60.0, min(levels.speech_dub_db + requested_offset, max_voice_db),
+            )
+            applied_gain_offset = effective_voice_db - levels.speech_dub_db
+            effective_levels = OverdubLevels(
+                levels.speech_original_db, effective_voice_db, levels.fade_ms,
+            )
+        envelope = _Envelope(spans, effective_levels, voice_activity=voice_activity)
         pending = out_path.with_name(out_path.name + ".part")
         if pending.exists():
             raise OverdubError("Pending output file already exists")
@@ -573,6 +590,14 @@ def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
         receipt["preserved_span_pcm_reference"] = "normalized_base_source"
     else:
         receipt["preserved_span_pcm_reference"] = "original_source"
+    if voice_calibration is not None:
+        receipt["voice_loudness_calibration"] = {
+            **voice_calibration,
+            "requested_dub_db": levels.speech_dub_db,
+            "applied_compensation_db": round(applied_gain_offset, 4),
+            "effective_dub_db": round(effective_levels.speech_dub_db, 4),
+            "sum_gain_ceiling_respected": True,
+        }
     return receipt
 
 
@@ -603,9 +628,13 @@ def main(argv=None):
                     args.original, normalized, measured,
                 ),
             }
+        from app.audio.loudness import measure_overdub_voice_loudness
+
+        voice_receipt = args.output.with_name(args.output.stem + ".voice_loudness.json")
+        voice_calibration = measure_overdub_voice_loudness(args.dub_voice, voice_receipt)
         result = render_overdub(
             args.original, args.dub_voice, args.events, args.output,
-            levels=options, **kwargs,
+            levels=options, voice_calibration=voice_calibration, **kwargs,
         )
         if args.receipt:
             if args.receipt.exists() or args.receipt.resolve() in {

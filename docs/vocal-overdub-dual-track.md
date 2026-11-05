@@ -15,7 +15,9 @@ The original audio is never deleted. Both spoken languages are audible during `T
 
 Consequently, `PRESERVE` and `REVIEW` in the **Overdub** track contain the *normalized source programme* with no Russian TTS, not bit-identical raw PCM. Their samples are bit-identical to the **normalized base**, while the separate Original track remains packet-identical to the input. This is intentional global source loudness equalization, not a translation of protected vocal exercises.
 
-Default levels after source normalization:
+**Translated speech loudness (P1-Q):** Once the original programme has a common -22 LUFS reference, the voice-only TTS must also have a stable reference. Actual validated voice-only EN/DE/ES examples measured **-25.15/-14.75/-14.96 LUFS** despite the same -16 dB UI control. Before mixing, one *gated integrated EBU R128 measurement* of the sparse voice-only 48 kHz WAV sets a constant compensation against **-15 LUFS**, chosen to retain the German/Spanish owner-preferred voice mix. The TTS WAV itself remains byte-identical (no external gain, resynthesis, dynamic compression or peak limiter). The compensation is applied to the translated gain **inside** the mixer, *after* the user's requested -16/-20 dB parameter. The mixer caps the applied compensation so source+voice peak gain magnitudes sum to no more than unity. The receipt records voice-only input LUFS, source-bound voice WAV SHA256, the requested -16 dB and effective gain. The voice measurement is cached per WAV SHA and profile. A silent original-only A4 job is left unchanged. This change affects only translated audio under explicit A4 TRANSLATE; all protected source spans and the separate Original track are unchanged.
+
+Default levels after source normalization and TTS calibration:
 
 | Event action | Original | Synthesized voice |
 | --- | ---: | ---: |

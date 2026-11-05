@@ -1,6 +1,6 @@
 # P1-L - Actual Russian TTS model shootout on RTX 4090
 
-Date: **2026-11-04**. Status: **real model-generated audio available, native-Russian blind naturalness scores NOT_RUN**. This experiment follows the owner's instruction to improve robotic-sounding Russian dubbing, prioritize several persistent male/female Russian voices for long vocal lectures, and postpone voiceprint matching.
+Date: **2026-11-04**, listener rating update **2026-11-05**. Status: **real model-generated audio available, first individual blind listening panel OBSERVED (20/20 scored), independent panel NOT_RUN**. This experiment follows the owner's instruction to improve robotic-sounding Russian dubbing, prioritize several persistent male/female Russian voices for long vocal lectures, and postpone voiceprint matching.
 
 ## Hardware, existing project and research artifact locations
 
@@ -49,12 +49,31 @@ The A/B comparison is **lexically controlled**, but not voice-matched across arc
 
 Open private local `index.html`: **10 model/voice conditions x 2 identical scripts = 20 audio players**, blinded labels A-J, each with independent 1-5 ratings for `naturalness` and `clarity`. The page supports downloading `persodub-tts-listening-ratings.json` and revealing source/model labels only after scoring. `listening-manifest.json` records labels, source names, exact filenames, hashes and duration for auditable ratings.
 
-**Human native Russian ratings are NOT_RUN**. There is **no objective winner for naturalness**, regardless of WER or sample rate. Comparing snippets of 8-11 seconds does **not** certify 2-hour output stability, prosody/voice continuity across ASR boundaries, pauses, reference bleed, singing preservation or final Overdub mix.
+### Owner listening result (uploaded 2026-11-05)
+
+The first completed listening file has `date: 2026-11-04`, 20 unique IDs, and 20/20 ratings for naturalness and clarity. The unmodified source upload's SHA-256 is `1624fa235564bbfe13e64a1987c3b8d81863a04218a9311bc40fd529fc52d9f9`. The raw completed ratings are **private on Mac**, `persodub-tts-listening-ratings-20261105-private.json`, and are not checked into this public repository. These aggregate findings were reconciled with the **frozen SHA-256-bound `listening-manifest.json`**, not an alphabet-based guess; the same A-J blind key applies to both trial texts.
+
+| Blind label | Actual TTS voice/config | Naturalness mean / 5 | Clarity mean / 5 |
+| --- | --- | ---: | ---: |
+| F | **VoxCPM2 + Russian female `kseniya` synthetic reference** | **5.0** | **5.0** |
+| A | VoxCPM2 default / no reference | 4.5 | 4.5 |
+| D | Silero `kseniya` female | 4.5 | 4.5 |
+| J | VoxCPM2 + male `aidar` synthetic reference | 4.0 | 4.5 |
+| E | Silero `aidar` male | 4.0 | 4.0 |
+| G | ESpeech RL-V2 `speed=0.82` | 3.5 | 4.0 |
+| H | ESpeech RL-V2 standard | 3.5 | 4.0 |
+| B | Chatterbox V3 + female `kseniya` reference | 3.0 | 2.5 |
+| C | Chatterbox V3 + male `aidar` reference | 2.5 | 3.0 |
+| I | Chatterbox V3 default | 2.5 | 3.0 |
+
+Source-level owner ratings for winner F: `breathing` **5/5 nature, 5/5 clarity** and `lecture` **5/5, 5/5**. Silero female control D: `breathing` 5/5, 5/5 and `lecture` 4/5, 4/5. VoxCPM2 male J: 5/5, 5/5 on breathing but 3/5, 4/5 on lecture. This is an individual listening preference, **not** independently replicated native MOS, an acoustic oracle, or a proven long-form product winner. In particular the female `kseniya` voice is **VoxCPM2 conditioned on a synthetic Silero reference**, not a voice natively shipped with VoxCPM2.
+
+A favorable listener score does not erase independently measured defects: ESpeech slower breathing still had an ASR hypothesis with six word errors, and Chatterbox default lecture had three. Short isolated source-clock-free snippets do **not** certify two-hour output stability, prosody continuity, pause placement, A4 singing preservation, source-term semantic faithfulness or final Overdub mix.
 
 ## Product architectural decision and one next action
 
-Retain current Silero and Qwen integration unchanged until listening gold. VoxCPM2 with stable Russian male/female voice references is the strongest **technical finalist** (0 word errors across four reference-conditioned WAVs and both default WAVs, 48 kHz), with Chatterbox V3 fixed-reference as a second naturalness contender despite the one ASR morph change. ESpeech standard is unusually quick but its speed-constrained/conditioning failure needs investigation; **do not automatically promote it**.
+**Owner-selected research winner: VoxCPM2 with the Russian female `kseniya` synthetic reference (F).** Keep VoxCPM2 default and Silero `kseniya` as primary A/B controls. For male dubbing, re-test VoxCPM2 + `aidar` against Silero `aidar`, since the same listener rated the male VoxCPM2 lecture lower than the breathing passage. Chatterbox V3 is deprioritized by actual owner ratings despite its previous technical shortlist. Existing product Silero and Qwen settings remain unchanged: this is an **experimental selection**, not a production TTS cutover.
 
-**Next action**: obtain native Russian 1-5 naturalness and clarity ratings from the blind page; select one or two finalists; then integrate the winner using the repository's existing `TTSEngine` interface and test phrase-level context, fixed speaker-to-voice assignments, original source clock and A4 vocal-music protection. This step must use real user audio, speaker turns and a short source video, not assume that stand-alone samples prove production suitability.
+**Next one action**: implement an **opt-in** VoxCPM2 adapter through the existing `TTSEngine` interface, reusing source-speaker to Russian voice-group ownership and **explicit fixed Russian reference assets**, then test a short real A4-reviewed source-video Overdub with true source clock, phrase-level context, source-original audio preservation, and singing examples. Keep Silero/Qwen as available fallbacks and compare the same speaking script with the winner and the Silero female control. Avoid changing the production default until this actual device test is measured.
 
 No GitHub Actions, main merge, or private artifacts published.

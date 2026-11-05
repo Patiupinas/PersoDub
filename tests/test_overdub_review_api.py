@@ -538,15 +538,21 @@ def test_selective_regeneration_real_mux_with_cached_source_no_models(
     assert (new_work / "translated.srt").read_bytes() == expected_script
     assert hashlib.sha256(source.read_bytes()).hexdigest() == before_video
     assert not list(new_work.glob("qwen_line_*.wav"))
-    # Protected source is bit-identical outside the A4 crossfade.
+    # Protected A4 spans use the same sample positions from the *normalized*
+    # source base. The original source WAV and original selectable MP4 track
+    # retain their exact, unnormalized PCM and original video packets.
     import wave
     with wave.open(str(new_work / "overdub_mixed_48k.wav")) as actual, wave.open(
-        str(new_work / "overdub_original_48k.wav")
+        str(new_work / "overdub_original_normalized_48k.wav")
     ) as reference:
         pos = round(1.6 * 48000)
         actual.setpos(pos)
         reference.setpos(pos)
         assert actual.readframes(4800) == reference.readframes(4800)
+    assert _sha_file(new_work / "overdub_original_48k.wav") == plan["source_wav_sha256"]
+    receipt = json.loads((new_work / "overdub_receipt.json").read_text())
+    assert receipt["base_source_normalization"]["source_wav_sha256"] == plan["source_wav_sha256"]
+    assert receipt["preserved_span_pcm_reference"] == "normalized_base_source"
 
 
 def test_new_a4_mode_and_source_reference_survive_jobstore_restart(tmp_path):

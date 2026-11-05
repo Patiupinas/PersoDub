@@ -11,17 +11,21 @@ An Overdub export contains two selectable audio streams in one MP4:
 
 The original audio is never deleted. Both spoken languages are audible during `TRANSLATE` events; during `PRESERVE` and `REVIEW` the original audio is primary and synthesized words are fully off outside the crossfades.
 
-Default levels:
+**Current source baseline (2026-11-05 P1-P):** Before selecting either Russian voice gain, the decoded source WAV is measured using two-pass EBU R128 loudness normalization. The Overdub base is aligned to **-22.0 LUFS** with a **-1.5 dBTP true-peak ceiling** (target LRA=20), using FFmpeg's fixed-gain/linear mode when feasible and its true-peak-limited dynamic mode when required. The output is a distinct, cached 48 kHz stereo PCM WAV with **exactly the original sample count**. Its receipt records input/output LUFS and true peaks, actual processing mode, input/output SHA256 and the source clock. The A4 event-plan source SHA remains bound to the **raw original PCM**. Re-running -16 dB vs -20 dB with the same source reuses this normalized WAV. The selectable second **Original** track is still the unmodified original video's audio stream.
+
+Consequently, `PRESERVE` and `REVIEW` in the **Overdub** track contain the *normalized source programme* with no Russian TTS, not bit-identical raw PCM. Their samples are bit-identical to the **normalized base**, while the separate Original track remains packet-identical to the input. This is intentional global source loudness equalization, not a translation of protected vocal exercises.
+
+Default levels after source normalization:
 
 | Event action | Original | Synthesized voice |
 | --- | ---: | ---: |
-| `TRANSLATE` (spoken explanation) | -16 dB | -2 dB |
+| `TRANSLATE` (spoken explanation) | -16 dB | -16 dB |
 | `PRESERVE` (singing/exercise/laughter etc.) | 0 dB | Muted |
 | `REVIEW` (unclassified/awaiting decision) | 0 dB | Muted |
 
 Short (up to 50 ms) TTS/sep audio tails beyond the source video are trimmed; longer mismatches stop the export. A shorter soundtrack is silence-padded to the video duration at extraction.
 
-The crossfade is **300 ms raised-cosine**, centered on each event boundary, shortened for very short events. The gain sum never exceeds unity, so the mixer does not introduce summation clipping. The `PRESERVE` and `REVIEW` source samples outside these transitions are bit-identical to the original 48 kHz PCM.
+The crossfade is **300 ms raised-cosine**, centered on each event boundary, shortened for very short events. The gain sum never exceeds unity, so the mixer does not introduce summation clipping. The `PRESERVE` and `REVIEW` source samples outside these transitions are bit-identical to the chosen source base (normalized for new Overdub renders, raw for explicitly legacy low-level calls). The second selectable Original track remains packet-identical to the original video.
 
 ### Authority and event clock
 

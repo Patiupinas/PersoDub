@@ -249,6 +249,29 @@ def _run_fake_a4_pipeline(tmp_path, monkeypatch, actions, *, mutate_plan_during_
     monkeypatch.setattr(pipeline, "extract_original_pcm",
                         lambda _video, dest, duration=None:
                         (shutil.copyfile(src_audio, dest) or dest))
+
+    def fake_normalize(src, dest, receipt_path):
+        # This test exercises A4 job ordering, not actual R128 measurement.
+        # The separate source-loudness tests use real FFmpeg.
+        shutil.copyfile(src, dest)
+        sha = hashlib.sha256(Path(src).read_bytes()).hexdigest()
+        receipt = {
+            "schema_version": 1,
+            "profile": "r128_source_loudnorm_two_pass_v1",
+            "source_wav_sha256": sha,
+            "normalized_wav_sha256": sha,
+            "source_frames": 5 * 48000,
+            "target_lufs": -22.0,
+            "true_peak_ceiling_dbtp": -1.5,
+            "target_lra": 20.0,
+            "input_integrated_lufs": -22.0,
+            "normalized_integrated_lufs": -22.0,
+            "normalized_true_peak_dbtp": -1.5,
+        }
+        Path(receipt_path).write_text(json.dumps(receipt))
+        return receipt
+
+    monkeypatch.setattr(pipeline, "normalize_overdub_base", fake_normalize)
     monkeypatch.setattr(pipeline, "_separate_or_reuse",
                         lambda *_args, **_kwargs:
                         (str(vocals), str(background), None, "fake", False))

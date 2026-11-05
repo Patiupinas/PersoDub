@@ -73,7 +73,7 @@ def _audio_size(duration):
 def _check_export_room(source, work, duration):
     """Budget for four decoded WAVs and two temporary video copies."""
     pcm = _audio_size(duration)
-    needed = pcm * 4 + source.stat().st_size * 2 + 256 * 1024 * 1024
+    needed = pcm * 5 + source.stat().st_size * 2 + 256 * 1024 * 1024
     if shutil.disk_usage(work).free < needed:
         raise OverdubError("Not enough free disk space for the Overdub export")
 

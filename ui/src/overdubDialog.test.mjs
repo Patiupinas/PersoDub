@@ -53,7 +53,7 @@ function harness({ response = preview, onExport = () => {}, onRegenerate = () =>
     return all.get(name);
   };
   $("overdubOriginalDb").value = "-16";
-  $("overdubTranslationDb").value = "-8";
+  $("overdubTranslationDb").value = "-16";
   $("overdubFadeMs").value = "300";
   const calls = [];
   let prepared = response;

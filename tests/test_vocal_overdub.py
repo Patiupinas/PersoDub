@@ -64,7 +64,7 @@ def test_speech_original_is_audible_but_lower_than_overdub_voice(tmp_path):
     plan = make_plan(tmp_path, src, default_events())
     output = tmp_path / "mixed.wav"
     receipt = render_overdub(src, dub, plan, output, levels=OverdubLevels())
-    want = round(8000 * 10 ** (-16 / 20) + 16000 * 10 ** (-8 / 20))
+    want = round(8000 * 10 ** (-16 / 20) + 16000 * 10 ** (-16 / 20))
     assert abs(sample(output, 0.5) - want) <= 1
     assert sample(output, 1.5) == 8000
     assert sample(output, 2.5) == 8000
@@ -116,7 +116,9 @@ def test_shorter_dub_is_zero_padded_on_same_source_clock(tmp_path):
     )
     mixed = tmp_path / "mixed.wav"
     render_overdub(src, dub, plan, mixed)
-    assert sample(mixed, 0.4) > sample(mixed, 1.4)
+    expected = round((5000 + 18000) * 10 ** (-16 / 20))
+    assert abs(sample(mixed, 0.4) - expected) <= 1
+    assert sample(mixed, 1.4) == 5000
     assert sample(mixed, 1.4) == sample(src, 1.4)
 
 
@@ -287,7 +289,7 @@ def test_separator_51ms_silent_padding_preserves_exact_video_clock(tmp_path):
     ])
     result = render_overdub(source, voice, plan, tmp_path / "output.wav")
     assert result["dub_tail_trimmed_frames"] == tail_frames
-    expected = round(9000 * 10 ** (-16 / 20) + 16000 * 10 ** (-8 / 20))
+    expected = round(9000 * 10 ** (-16 / 20) + 16000 * 10 ** (-16 / 20))
     assert abs(sample(tmp_path / "output.wav", 0.5) - expected) <= 1
     assert sample(tmp_path / "output.wav", 1.5) == 9000
     with wave.open(str(tmp_path / "output.wav")) as mixed:

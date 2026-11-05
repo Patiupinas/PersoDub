@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from app import media
+from app.audio.loudness import normalize_overdub_base
 from app.audio.overdub import (
     OverdubLevels,
     create_review_plan,
@@ -106,7 +107,15 @@ def export_existing(video, work_dir, events_path, output_mp4, levels=None):
         write_silent_bed_like(original, silent)
         place_lines(str(silent), line_paths, starts, str(voice),
                     gains=gains, log=lambda msg: None)
-        receipt = render_overdub(original, voice, plan, mixed, levels=levels)
+        # Reuse this source-bound, measured normalization for multiple loudness
+        # comparisons. Original video audio remains the separate second track.
+        normalized = job / "overdub_original_normalized_48k.wav"
+        normalized_receipt = job / "overdub_original_normalization.json"
+        base_loudness = normalize_overdub_base(original, normalized, normalized_receipt)
+        receipt = render_overdub(
+            original, voice, plan, mixed, levels=levels,
+            normalized_source_wav=normalized, source_normalization=base_loudness,
+        )
         staging = tmp / "finished.mp4"
         result = media.mux_overdub(str(video), str(mixed), str(staging), duration)
         if result.returncode:

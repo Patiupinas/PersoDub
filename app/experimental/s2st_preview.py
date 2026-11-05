@@ -118,7 +118,15 @@ def render(source_video, translated_wav, start, end, output_mp4):
             "total_frames": total_frames, "events": events,
         }
         plan_path.write_text(json.dumps(plan, indent=2) + "\n")
-        receipt = render_overdub(original_pcm, speech_pcm, plan_path, mixed_pcm)
+        from app.audio.loudness import normalize_overdub_base
+
+        normalized_pcm = temp / "normalized_base.wav"
+        normalized_receipt = temp / "normalized_base.json"
+        normalized = normalize_overdub_base(original_pcm, normalized_pcm, normalized_receipt)
+        receipt = render_overdub(
+            original_pcm, speech_pcm, plan_path, mixed_pcm,
+            normalized_source_wav=normalized_pcm, source_normalization=normalized,
+        )
         mux = media.mux_overdub(
             str(video), str(mixed_pcm), str(staged_mp4), clipped_duration,
         )

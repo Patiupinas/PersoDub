@@ -1,4 +1,4 @@
-"""Sample-accurate, opt-in dialogue overdub on an untouched original soundtrack.
+"""Sample-accurate Overdub with an immutable raw source and optional normalized base.
 
 An explicit source-bound event plan owns the choice TRANSLATE/PRESERVE/REVIEW.
 The audio renderer never reclassifies activity or decides translation policy.
@@ -211,7 +211,8 @@ class _Envelope:
         source_gain, dubbing_gain = self._base_at(frame)
         if self.voice_starts is None:
             return source_gain, dubbing_gain
-        # Keep every PRESERVE/REVIEW original frame bit-identical.
+        # Use the base source without changing gain inside PRESERVE/REVIEW.
+        # If normalization is enabled, this base is the derived normalized WAV.
         index = bisect.bisect_right(self.starts, frame) - 1
         if self.spans[index].action != "TRANSLATE":
             return 1.0, 0.0
@@ -462,13 +463,16 @@ def extract_original_pcm(video_path, output_wav, duration=None):
     return str(dest)
 
 def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
-                   levels=None):
+                   levels=None, normalized_source_wav=None,
+                   source_normalization=None):
     """Combine original + voice-only translated TTS using source-bound A4 spans.
 
-    REVIEW and PRESERVE both pass original audio at its exact original samples
-    and mute the dubbed voice. TRANSLATE keeps the original audible at a lower
-    level while playing dubbed speech. Transitions are raised-cosine, and the
-    sum of gain magnitudes is <=1 so the mixer never clips by summation.
+    REVIEW and PRESERVE pass the selected base soundtrack without further
+    ducking and mute the dubbed voice. When normalized_source_wav is absent
+    the source is exactly bit-identical to the original PCM; when supplied,
+    the A4 plan still verifies the raw source, but the Overdub track uses the
+    measured normalized source for ALL events (the selectable original MP4
+    track is preserved outside this mixer). Transitions are raised-cosine.
 
     The dub WAV may end early (zero-padded) or have a <=50 ms encoder/separator
     tail beyond the source (trimmed). A longer, <=250 ms tail is accepted only
@@ -482,14 +486,25 @@ def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
     src_path = Path(original_wav)
     dub_path = Path(dub_voice_wav)
     out_path = Path(output_wav)
+    mix_source = Path(normalized_source_wav) if normalized_source_wav is not None else src_path
     if (
         len({src_path.resolve(), dub_path.resolve(), out_path.resolve()}) != 3
-        or out_path.exists()
+        or out_path.exists() or mix_source.resolve() in {
+            dub_path.resolve(), out_path.resolve()
+        }
     ):
         raise OverdubError("Output must be new and separate from both inputs")
+    if (normalized_source_wav is None) != (source_normalization is None):
+        raise OverdubError("Normalized base and source-normalization receipt must be supplied together")
+    if normalized_source_wav is not None:
+        from app.audio.loudness import validate_normalized_base
+
+        validate_normalized_base(src_path, mix_source, source_normalization)
     data = json.loads(Path(event_plan).read_text(encoding="utf-8"))
-    with _open_pcm(src_path) as source, _open_pcm(dub_path) as translated:
-        frames = source.getnframes()
+    with _open_pcm(src_path) as original, _open_pcm(mix_source) as source, _open_pcm(dub_path) as translated:
+        frames = original.getnframes()
+        if source.getnframes() != frames:
+            raise OverdubError("Normalized base changed the original source sample clock")
         tail_trimmed = max(0, translated.getnframes() - frames)
         short_tail = round(0.05 * SR)
         if tail_trimmed > short_tail:
@@ -531,7 +546,7 @@ def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
         finally:
             if pending.exists():
                 pending.unlink()
-    return {
+    receipt = {
         "schema_version": 1,
         "status": "rendered_approved_partition_overdub",
         "source_wav_sha256": data["source_wav_sha256"],
@@ -553,6 +568,12 @@ def render_overdub(original_wav, dub_voice_wav, event_plan, output_wav, *,
             for action in ("TRANSLATE", "PRESERVE", "REVIEW")
         },
     }
+    if source_normalization is not None:
+        receipt["base_source_normalization"] = source_normalization
+        receipt["preserved_span_pcm_reference"] = "normalized_base_source"
+    else:
+        receipt["preserved_span_pcm_reference"] = "original_source"
+    return receipt
 
 
 def main(argv=None):
@@ -565,11 +586,26 @@ def main(argv=None):
     parser.add_argument("--dub-speech-db", type=float, default=-16.0)
     parser.add_argument("--fade-ms", type=float, default=300)
     parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--raw-base", action="store_true",
+                        help="Keep legacy bit-identical source base; bypass LUFS normalization")
     args = parser.parse_args(argv)
     try:
         options = OverdubLevels(args.original_speech_db, args.dub_speech_db, args.fade_ms)
+        kwargs = {}
+        if not args.raw_base:
+            from app.audio.loudness import normalize_overdub_base
+
+            normalized = args.output.with_name(args.output.stem + ".normalized_base.wav")
+            measured = args.output.with_name(args.output.stem + ".base_loudness.json")
+            kwargs = {
+                "normalized_source_wav": normalized,
+                "source_normalization": normalize_overdub_base(
+                    args.original, normalized, measured,
+                ),
+            }
         result = render_overdub(
-            args.original, args.dub_voice, args.events, args.output, levels=options
+            args.original, args.dub_voice, args.events, args.output,
+            levels=options, **kwargs,
         )
         if args.receipt:
             if args.receipt.exists() or args.receipt.resolve() in {

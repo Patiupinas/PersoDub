@@ -1386,7 +1386,7 @@ def run_qwen_dub(
     # not unrelated short/uncertain diarization fragments.
     active_speakers = set(seg_speakers)
     speakers = [speaker for speaker in speakers if speaker in active_speakers]
-    if getattr(engine, "id", None) != "silero_ru":
+    if getattr(engine, "id", None) not in ("silero_ru", "voxcpm2_ru"):
         refs = build_speaker_refs(sample_cues, speakers, vocals_path, mode=voice_mode)
         log("   %d/%d speaker reference(s) built (4-7s contiguous span)" % (len(refs), len(speakers)))
     else:
@@ -1452,14 +1452,18 @@ def resynth_one_line(work_dir, entry, text, language):
     if os.path.isfile(fixed_voices):
         with open(fixed_voices, encoding="utf-8") as fd:
             manifest = json.load(fd)
-        if manifest.get("engine") != "silero_ru" or manifest.get("source_clone") is not False:
+        native_engine_id = manifest.get("engine")
+        if native_engine_id not in ("silero_ru", "voxcpm2_ru") or manifest.get("source_clone") is not False:
             raise ValueError("invalid native Russian speaker assignment manifest")
         voice_id = (manifest.get("speaker_to_voice") or {}).get(spk)
         if not voice_id:
             raise ValueError("speaker has no fixed Russian voice assignment")
-        engine = get_engine("silero_ru")
+        engine = get_engine(native_engine_id)
         if engine is None:
             raise RuntimeError("native Russian TTS engine is not registered")
+        if (native_engine_id == "voxcpm2_ru"
+                and manifest.get("engine_identity") != engine.fingerprint_identity()):
+            raise ValueError("VoxCPM2 server weights or Russian reference bank changed; rebuild the job")
     else:
         ref_wav = ref_wav_path(work_dir, spk)
         refs_path = os.path.join(work_dir, "speaker_refs.json")

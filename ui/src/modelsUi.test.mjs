@@ -251,3 +251,8 @@ test("native Russian fixed-voice model has its own download identity", () => {
   assert.equal(neededModelId("voice", "silero_ru"), "silero-ru");
   assert.equal(neededModelId("voice", "qwen3"), "qwen3-tts");
 });
+
+
+test("experimental VoxCPM2 is external and never requests a Qwen download", () => {
+  assert.equal(neededModelId("voice", "voxcpm2_ru"), null);
+});

@@ -1,5 +1,7 @@
 # PersoDub Vocal-Lesson Dubbing: Execution Plan and AI-Agent Handoff
 
+**P1-M 2026-11-05 live continuation:** Opt-in VoxCPM2 RU TTS via the existing engine interface now has an actual running Mac MPS service and two 234s Overdub research renders comparing the owner's selected female `kseniya` profile against Silero `kseniya`. Both retained 7039/7039 original video packets and 10107/10107 original AAC packets and preserved 219.703s of PCM outside the two research speech windows. Fresh independent RU ASR on the two selected lines read back 1/22 errors for VoxCPM2 versus 0/22 for Silero. The approved A4 gold remains NOT_RUN and the old Qwen/Silero defaults are unchanged. See `docs/p1-voxcpm2-ru-optin-pilot-20261105.md`. Next: source-mixed native Russian listening, and one-phoneme readback investigation before attempting longer pilots.
+
 **Snapshot:** 2026-11-01 (Europe/Madrid). **Scope:** the user's EN/DE/ES to Russian, local-first, vocal-instruction dubbing project. This is an execution handoff, not proof that an implementation has passed release acceptance.
 
 **Canonical repository:** https://github.com/Patiupinas/PersoDub (the user's fork, not stronghamjji/PersoDub).

@@ -1,6 +1,9 @@
 {
   "All transcribed speech cues selected; exercises still need review": "인식된 모든 발화가 선택되었습니다. 발성 연습 구간은 추가 검토가 필요합니다",
   "Native Russian voices (no cloning)": "러시아어 기본 음성 (목소리 복제 없음)",
+  "Experimental Russian voices.": "실험용 러시아어 음성입니다.",
+  "Requires a running external VoxCPM2 server.": "실행 중인 외부 VoxCPM2 서버가 필요합니다.",
+  "Experimental external Russian voices · Requires VoxCPM2 server": "실험용 외부 러시아어 음성 · VoxCPM2 서버 필요",
   "(empty answer)": "(빈 답변)",
   "+ Add language": "+ 언어 추가",
   "1 change": "변경 1개",

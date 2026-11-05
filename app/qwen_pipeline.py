@@ -1394,7 +1394,19 @@ def run_qwen_dub(
         # must not copy the source speaker's foreign accent into the TTS.
         refs = {}
         log("   source voice cloning disabled; selecting native Russian presets")
-    voice_ids = engine.assign_voices(refs, speakers, work_dir, log, mode=voice_mode)
+    native_voice = getattr(engine, "id", None) in ("silero_ru", "voxcpm2_ru")
+    if native_voice:
+        from app.source_voice_register import resolve_source_voice_registers
+
+        voice_registers = resolve_source_voice_registers(
+            vocals_path, sample_cues, segments, speakers, work_dir, log,
+        )
+        voice_ids = engine.assign_voices(
+            refs, speakers, work_dir, log, mode=voice_mode,
+            source_registers=voice_registers,
+        )
+    else:
+        voice_ids = engine.assign_voices(refs, speakers, work_dir, log, mode=voice_mode)
     write_speaker_refs_manifest(refs, sample_cues, work_dir)
     # assign_voices writes each reference to ref_wav_path -- reuse it as the
     # scorer's speaker-embedding source (best-of-N selection compares takes against these).

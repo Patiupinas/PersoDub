@@ -54,6 +54,11 @@ def source_inputs(work_dir):
         paths[name] = work / name
     paths["sub.srt"] = current_script
     paths["source.srt"] = paths[SOURCE_SRT]
+    # Keep an explicit, source-reviewed voice-register choice on a fresh
+    # Overdub job. It belongs to this unchanged source timeline.
+    choice = work / "russian_voice_register_overrides.json"
+    if choice.is_file() and choice.resolve().parent == work:
+        paths[choice.name] = choice
     return paths
 
 

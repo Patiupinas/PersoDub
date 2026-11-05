@@ -1,5 +1,7 @@
 # P1-M - VoxCPM2 Russian opt-in through PersoDub TTS and real-video comparison
 
+**Later owner correction P1-N (2026-11-05):** The source instructor speaks with a male voice and the female `kseniya` dub in this original comparison is not a voice-register match; Russian -2 dB was too loud. The corrected source-mixed male `aidar` 234-second videos and lower `-8 dB` mix are in the private `male-voice-quieter-20261105` report directory, and the source-aware persistent product change is in `docs/p1-gender-matched-overdub-20261105.md`. The historical P1-M timings and female voice ratings remain observations, not the current output selection.
+
 **Date:** 2026-11-05. **Branch:** `feature/p1-voxcpm2-optin-20261105`, based on Draft PR #55 at `1afa553cf15327b72bc8cfe0e3b9cf9a2b62708d`.
 
 ## Motivation and actual selection

@@ -6,15 +6,12 @@ This adapter uses only HTTP and an immutable server-side Russian voice bank.
 import hashlib
 import json
 import os
-import re
 from typing import Optional
 
 import httpx
 
 from app.engines.base import SynthesisRequest, SynthesisResult, SynthesisTimeout, TTSEngine
 from app.voxcpm2_profile import MODEL_ID, VOXCPM2_PROFILE, VOXCPM2_RU_VOICES
-
-_VOICE_GROUP = re.compile(r"^VOICE_(\d+)$")
 
 
 class VoxCPM2RuEngine(TTSEngine):
@@ -77,27 +74,25 @@ class VoxCPM2RuEngine(TTSEngine):
     def clone(self, ref_audio_path, ref_text=None, mode=None):
         raise NotImplementedError("VoxCPM2 uses the reviewed Russian preset bank, not source timbre")
 
-    def assign_voices(self, refs, speakers, work_dir, log, mode=None):
+    def assign_voices(self, refs, speakers, work_dir, log, mode=None, source_registers=None):
         if refs:
             raise ValueError("VoxCPM2 source-voice cloning must remain disabled")
-        if len(speakers) > len(VOXCPM2_RU_VOICES):
-            raise ValueError("VoxCPM2 pilot supports two distinct Russian voice groups; use Silero for more")
+        if source_registers is None or set(source_registers) != set(speakers):
+            raise ValueError("VoxCPM2 requires verified source speaking registers for every group")
+        bank = {"male": "aidar", "female": "kseniya"}
+        if any(register not in bank for register in source_registers.values()):
+            raise ValueError("Unverified source speaking register; review before choosing a voice")
         health = self._health()
-        choices = {}
-        for i, speaker in enumerate(speakers):
-            match = _VOICE_GROUP.fullmatch(speaker)
-            index = int(match.group(1)) - 1 if match else i
-            if not 0 <= index < len(VOXCPM2_RU_VOICES):
-                raise ValueError("VoxCPM2 pilot has no tested preset for this voice group")
-            choices[speaker] = VOXCPM2_RU_VOICES[index]
+        choices = {speaker: bank[source_registers[speaker]] for speaker in speakers}
         if len(set(choices.values())) != len(choices):
-            raise ValueError("Two distinct speaker groups cannot share one Russian voice")
+            raise ValueError("VoxCPM2 pilot has one tested voice per speaking register; multiple same-register speakers need a larger Russian voice bank")
         receipt = {
             "version": 1,
             "engine": self.id,
             "profile": VOXCPM2_PROFILE,
             "engine_identity": self._identity(health),
             "speaker_to_voice": choices,
+            "source_registers": source_registers,
             "source_clone": False,
         }
         os.makedirs(work_dir, exist_ok=True)
@@ -106,7 +101,7 @@ class VoxCPM2RuEngine(TTSEngine):
         with open(partial, "w", encoding="utf-8") as stream:
             json.dump(receipt, stream, sort_keys=True, ensure_ascii=False, indent=2)
         os.replace(partial, destination)
-        log("   VoxCPM2 fixed Russian voices selected for %d groups" % len(choices))
+        log("   VoxCPM2 source-register-matched Russian voices selected for %d groups" % len(choices))
         return choices
 
     def synthesize(self, req: SynthesisRequest) -> SynthesisResult:

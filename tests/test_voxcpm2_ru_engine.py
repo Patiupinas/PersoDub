@@ -61,11 +61,15 @@ def test_exact_profile_and_reference_bank_required(pilot):
 def test_preserves_speaker_group_ownership_without_source_cloning(tmp_path, pilot):
     engine, state = pilot
     logged = []
-    voices = engine.assign_voices({}, ["VOICE_01", "VOICE_02"], str(tmp_path), logged.append)
-    assert voices == {"VOICE_01": "kseniya", "VOICE_02": "aidar"}
+    voices = engine.assign_voices(
+        {}, ["VOICE_01", "VOICE_02"], str(tmp_path), logged.append,
+        source_registers={"VOICE_01": "male", "VOICE_02": "female"},
+    )
+    assert voices == {"VOICE_01": "aidar", "VOICE_02": "kseniya"}
     manifest = json.loads((tmp_path / "russian_voice_assignments.json").read_text())
     assert manifest["engine"] == "voxcpm2_ru"
     assert manifest["engine_identity"] == engine.fingerprint_identity()
+    assert manifest["source_registers"] == {"VOICE_01": "male", "VOICE_02": "female"}
     assert manifest["source_clone"] is False
     assert not list(tmp_path.glob("qwen_ref*.wav"))
     assert logged
@@ -73,10 +77,18 @@ def test_preserves_speaker_group_ownership_without_source_cloning(tmp_path, pilo
 
 def test_pilot_rejects_unvalidated_third_voice(tmp_path, pilot):
     engine, _ = pilot
-    with pytest.raises(ValueError, match="two distinct"):
-        engine.assign_voices({}, ["VOICE_01", "VOICE_02", "VOICE_03"], str(tmp_path), lambda _: None)
+    with pytest.raises(ValueError, match="same-register"):
+        engine.assign_voices(
+            {}, ["VOICE_01", "VOICE_02", "VOICE_03"], str(tmp_path), lambda _: None,
+            source_registers={"VOICE_01": "male", "VOICE_02": "female", "VOICE_03": "male"},
+        )
     with pytest.raises(ValueError, match="clon"):
-        engine.assign_voices({"VOICE_01": {"wav_bytes": b"bad"}}, ["VOICE_01"], str(tmp_path), lambda _: None)
+        engine.assign_voices(
+            {"VOICE_01": {"wav_bytes": b"bad"}}, ["VOICE_01"], str(tmp_path),
+            lambda _: None, source_registers={"VOICE_01": "male"},
+        )
+    with pytest.raises(ValueError, match="requires verified"):
+        engine.assign_voices({}, ["VOICE_01"], str(tmp_path), lambda _: None)
 
 
 def test_requests_match_exact_successful_benchmark_profile(pilot):
@@ -143,7 +155,10 @@ def test_revoice_rejects_changed_reference_identity(monkeypatch, tmp_path, pilot
     from app import qwen_pipeline
 
     engine, state = pilot
-    engine.assign_voices({}, ["VOICE_01"], str(tmp_path), lambda _: None)
+    engine.assign_voices(
+        {}, ["VOICE_01"], str(tmp_path), lambda _: None,
+        source_registers={"VOICE_01": "male"},
+    )
     register_engine(engine)
     path = tmp_path / "russian_voice_assignments.json"
     receipt = json.loads(path.read_text())

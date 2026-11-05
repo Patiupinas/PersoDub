@@ -93,7 +93,7 @@ class ExportRequest(BaseModel):
     events: list[dict]
     review_confirmed: bool = False
     original_speech_db: float = -16.0
-    dub_speech_db: float = -2.0
+    dub_speech_db: float = -8.0
     fade_ms: float = 300.0
 
 
@@ -103,7 +103,7 @@ class DraftRequest(BaseModel):
     expected_revision: str | None = None
     events: list[dict]
     original_speech_db: float = -16.0
-    dub_speech_db: float = -2.0
+    dub_speech_db: float = -8.0
     fade_ms: float = 300.0
 
 
@@ -291,18 +291,31 @@ def overdub_export(jid: str, request: ExportRequest):
         raise HTTPException(422, str(error)[:180]) from error
 
 
-def _require_selected_voice_engine(count):
-    """Only voice synthesis is needed: the source, ASR and translation are cached."""
+def _require_selected_voice_engine(count, tts_choice="qwen3"):
+    """Preflight the exact persisted TTS, not an unrelated Qwen sidecar."""
     if count == 0:
         return
     from app.api import dub as dub_api
 
     missing = launch_api.missing_models(
         False, None, need_engine=True, separation_local=False,
+        need_tts=tts_choice not in ("silero_ru", "voxcpm2_ru"),
+        need_silero_ru=tts_choice == "silero_ru",
     )
     if missing:
         launch_api.raise_models_needed(missing)
+    if tts_choice == "voxcpm2_ru":
+        from app.engines.voxcpm2_ru import VoxCPM2RuEngine
+
+        if not VoxCPM2RuEngine().is_available():
+            raise HTTPException(422, "The experimental VoxCPM2 Russian server is unavailable")
+        return
     dub_api._require_voice_engine_running()
+    if tts_choice == "silero_ru":
+        from app.engines.silero_ru import SileroRuEngine
+
+        if not SileroRuEngine().is_available():
+            raise HTTPException(422, "The fixed Russian Silero model is unavailable")
 
 
 @router.post("/api/dub/jobs/{jid}/overdub/regenerate")
@@ -340,7 +353,8 @@ def overdub_regenerate(jid: str, request: ExportRequest):
         spans = _parse_plan(plan, current["total_frames"], current["source_wav_sha256"])
         selected, skipped = select_translatable_cues(cues, spans)
         if selected:
-            _require_selected_voice_engine(len(selected))
+            saved_job = state.job_store.get(jid) or {}
+            _require_selected_voice_engine(len(selected), saved_job.get("tts") or "qwen3")
         check_space(state.WORKSPACE)
 
         # Allocate and stage atomically with respect to other Overdub exports.

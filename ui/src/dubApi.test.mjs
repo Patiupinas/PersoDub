@@ -730,3 +730,8 @@ test("buildDubFormData: the voice engine travels when one is chosen, and only th
 test("native Russian fixed-voice engine is named distinctly from a clone", () => {
   assert.equal(voiceLabel("silero_ru"), "Silero RU v5.6");
 });
+
+
+test("experimental VoxCPM2 is named without claiming Qwen voice cloning", () => {
+  assert.equal(voiceLabel("voxcpm2_ru"), "VoxCPM2 RU (experimental)");
+});

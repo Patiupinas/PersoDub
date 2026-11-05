@@ -8,6 +8,8 @@ depend on an API module having been imported first.
 from app.engines.base import register_engine
 from app.engines.qwen_tts import QwenTTSEngine
 from app.engines.silero_ru import SileroRuEngine
+from app.engines.voxcpm2_ru import VoxCPM2RuEngine
 
 register_engine(QwenTTSEngine())
 register_engine(SileroRuEngine())
+register_engine(VoxCPM2RuEngine())

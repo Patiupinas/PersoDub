@@ -240,11 +240,16 @@ def work_for(job, *, cancel_check, on_notice, voices_only=False, resume=False,
             }
         # Persisted in the job so retries and redubs keep the same
         # Russian voice model rather than silently reverting to Qwen.
-        fixed_ru = job.get("tts") == "silero_ru"
-        if fixed_ru:
+        selected_voice = job.get("tts")
+        voice_engine = None
+        if selected_voice == "silero_ru":
             from app.engines.silero_ru import SileroRuEngine
+            voice_engine = SileroRuEngine()
+        elif selected_voice == "voxcpm2_ru":
+            from app.engines.voxcpm2_ru import VoxCPM2RuEngine
+            voice_engine = VoxCPM2RuEngine()
         return run_dub(
-            **({"qwen_engine": SileroRuEngine()} if fixed_ru else {}),
+            **({"qwen_engine": voice_engine} if voice_engine is not None else {}),
             video_path=video_path,
             srt_path=srt_path,
             source_srt_path=None if voices_only else source_srt_path,

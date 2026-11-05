@@ -70,6 +70,10 @@ Source-level owner ratings for winner F: `breathing` **5/5 nature, 5/5 clarity**
 
 A favorable listener score does not erase independently measured defects: ESpeech slower breathing still had an ASR hypothesis with six word errors, and Chatterbox default lecture had three. Short isolated source-clock-free snippets do **not** certify two-hour output stability, prosody continuity, pause placement, A4 singing preservation, source-term semantic faithfulness or final Overdub mix.
 
+## Follow-up implemented (2026-11-05)
+
+The owner's blind listening winner has been implemented as an **opt-in external VoxCPM2 Russian TTS** in the separate P1-M branch, using exactly the tested synthetic Russian reference profile. A real Mac MPS model and two unapproved research Overdub comparisons against Silero have run. See `docs/p1-voxcpm2-ru-optin-pilot-20261105.md`. This does not change this P1-L baseline or prove two-hour continuity.
+
 ## Product architectural decision and one next action
 
 **Owner-selected research winner: VoxCPM2 with the Russian female `kseniya` synthetic reference (F).** Keep VoxCPM2 default and Silero `kseniya` as primary A/B controls. For male dubbing, re-test VoxCPM2 + `aidar` against Silero `aidar`, since the same listener rated the male VoxCPM2 lecture lower than the breathing passage. Chatterbox V3 is deprioritized by actual owner ratings despite its previous technical shortlist. Existing product Silero and Qwen settings remain unchanged: this is an **experimental selection**, not a production TTS cutover.

@@ -1,6 +1,9 @@
 {
   "All transcribed speech cues selected; exercises still need review": "All transcribed speech cues selected; exercises still need review",
   "Native Russian voices (no cloning)": "Native Russian voices (no cloning)",
+  "Experimental Russian voices.": "Experimental Russian voices.",
+  "Requires a running external VoxCPM2 server.": "Requires a running external VoxCPM2 server.",
+  "Experimental external Russian voices · Requires VoxCPM2 server": "Experimental external Russian voices · Requires VoxCPM2 server",
   "(empty answer)": "(empty answer)",
   "+ Add language": "+ Add language",
   "1 change": "1 change",

@@ -779,6 +779,7 @@ const ENGINE_LABELS = {
   vertex: { label: "Vertex", api: true },
   qwen3: { label: "Qwen3-TTS", api: false },
   silero_ru: { label: "Silero RU v5.6", api: false },
+  voxcpm2_ru: { label: "VoxCPM2 RU (experimental)", api: false },
 };
 
 /**

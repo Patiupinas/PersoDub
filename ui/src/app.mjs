@@ -461,7 +461,9 @@ const ENGINE_HINTS = {
                get chatgpt() { return [t("Free within a ChatGPT account's limit. Sign in once, no download.")]; } },
   voice: { get qwen3() { return [t("Runs on this computer, free."), t("Clones each speaker\u2019s voice.")]; },
            get silero_ru() { return [t("Runs on this computer, free."),
-                  t("Native Russian voices (no cloning)")]; } },
+                  t("Native Russian voices (no cloning)")]; },
+           get voxcpm2_ru() { return [t("Experimental Russian voices."),
+                  t("Requires a running external VoxCPM2 server.")]; } },
 };
 // Perso does every stage of a Perso API dubbing: the greyed rows say so, not
 // what they would do on this computer (owner, 2026-10-22).

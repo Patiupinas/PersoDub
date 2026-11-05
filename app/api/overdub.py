@@ -93,7 +93,7 @@ class ExportRequest(BaseModel):
     events: list[dict]
     review_confirmed: bool = False
     original_speech_db: float = -16.0
-    dub_speech_db: float = -8.0
+    dub_speech_db: float = -16.0
     fade_ms: float = 300.0
 
 
@@ -103,7 +103,7 @@ class DraftRequest(BaseModel):
     expected_revision: str | None = None
     events: list[dict]
     original_speech_db: float = -16.0
-    dub_speech_db: float = -8.0
+    dub_speech_db: float = -16.0
     fade_ms: float = 300.0
 
 

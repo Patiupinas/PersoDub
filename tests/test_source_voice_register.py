@@ -152,8 +152,8 @@ def test_default_new_overdub_mix_is_six_db_quieter():
 
     profile = OverdubLevels()
     assert profile.speech_original_db == -16.0
-    assert profile.speech_dub_db == -8.0
-    assert profile.translate_gains[1] < 0.5
+    assert profile.speech_dub_db == -16.0
+    assert profile.translate_gains[1] <= 0.16
 
 
 def test_regenerated_voxcpm_overdub_checks_selected_external_engine_not_qwen(monkeypatch):

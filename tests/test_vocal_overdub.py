@@ -64,7 +64,7 @@ def test_speech_original_is_audible_but_lower_than_overdub_voice(tmp_path):
     plan = make_plan(tmp_path, src, default_events())
     output = tmp_path / "mixed.wav"
     receipt = render_overdub(src, dub, plan, output, levels=OverdubLevels())
-    want = round(8000 * 10 ** (-16 / 20) + 16000 * 10 ** (-2 / 20))
+    want = round(8000 * 10 ** (-16 / 20) + 16000 * 10 ** (-8 / 20))
     assert abs(sample(output, 0.5) - want) <= 1
     assert sample(output, 1.5) == 8000
     assert sample(output, 2.5) == 8000
@@ -86,11 +86,11 @@ def test_cosine_fade_is_smooth_and_fully_inside_translate_span(tmp_path):
     render_overdub(src, dub, plan, output, levels=OverdubLevels(fade_ms=400))
     settled_speech = sample(output, 0.5)
     settled_preserve = sample(output, 1.5)
-    assert settled_speech > settled_preserve
+    assert settled_speech < settled_preserve
     at_early = sample(output, 0.70)
     at_mid = sample(output, 0.83)
     at_late = sample(output, 0.98)
-    assert settled_speech > at_early > at_mid > at_late >= settled_preserve
+    assert settled_speech < at_early < at_mid < at_late <= settled_preserve
     assert abs(sample(output, 0.99998) - sample(output, 1.0)) <= 2
     assert sample(output, 0.60) == settled_speech
     assert sample(output, 1.00) == settled_preserve
@@ -287,7 +287,8 @@ def test_separator_51ms_silent_padding_preserves_exact_video_clock(tmp_path):
     ])
     result = render_overdub(source, voice, plan, tmp_path / "output.wav")
     assert result["dub_tail_trimmed_frames"] == tail_frames
-    assert sample(tmp_path / "output.wav", 0.5) > sample(source, 0.5)
+    expected = round(9000 * 10 ** (-16 / 20) + 16000 * 10 ** (-8 / 20))
+    assert abs(sample(tmp_path / "output.wav", 0.5) - expected) <= 1
     assert sample(tmp_path / "output.wav", 1.5) == 9000
     with wave.open(str(tmp_path / "output.wav")) as mixed:
         assert mixed.getnframes() == 96000

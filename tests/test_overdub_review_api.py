@@ -336,12 +336,14 @@ def test_regenerate_start_uses_reviewed_a4_and_new_independent_project(
     import app.api.overdub as api
 
     _ready_regeneration_source(local_job, tmp_path)
+    reviewed_voice = {"version": 1, "speaker_to_register": {"SPK0": "male"}}
+    (tmp_path / "russian_voice_register_overrides.json").write_text(json.dumps(reviewed_voice))
     new_work = tmp_path.parent / (tmp_path.name + "-selective-overdub")
     calls = []
 
     monkeypatch.setattr(api, "check_space", lambda path: None)
     monkeypatch.setattr(api, "job_dir", lambda title, code: (new_work.mkdir() or str(new_work)))
-    monkeypatch.setattr(api, "_require_selected_voice_engine", lambda count: calls.append(("voices", count)))
+    monkeypatch.setattr(api, "_require_selected_voice_engine", lambda count, choice: calls.append(("voices", count, choice)))
     monkeypatch.setattr(api, "launch_job", lambda work, fields, intro, target:
                         (calls.append(("launch", work, fields, target)) or "fedcba12"))
     prep = client.post("/api/dub/jobs/bench/overdub/prepare", json={}).json()
@@ -360,7 +362,7 @@ def test_regenerate_start_uses_reviewed_a4_and_new_independent_project(
     assert response.json()["job_id"] == "fedcba12"
     assert response.json()["approved_for_tts"] == 1
     assert response.json()["source_only"] == 0
-    assert calls[0] == ("voices", 1)
+    assert calls[0] == ("voices", 1, "qwen3")
     launch = calls[1]
     assert launch[0] == "launch"
     assert launch[2]["audio_mode"] == "overdub"
@@ -375,6 +377,7 @@ def test_regenerate_start_uses_reviewed_a4_and_new_independent_project(
     assert (new_work / "transcript.json").is_file()
     assert (new_work / "vocals.wav").read_bytes() == (tmp_path / "vocals.wav").read_bytes()
     assert (new_work / "background.wav").read_bytes() == (tmp_path / "background.wav").read_bytes()
+    assert json.loads((new_work / "russian_voice_register_overrides.json").read_text()) == reviewed_voice
     assert not list(new_work.glob("qwen_line_*.wav"))
     assert json.loads((new_work / "overdub_events.json").read_text())["events"] == body["events"]
     assert json.loads((new_work / "overdub_levels.json").read_text()) == {

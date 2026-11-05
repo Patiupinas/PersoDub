@@ -143,7 +143,7 @@ def main(argv=None):
     export.add_argument("--events", required=True, type=Path)
     export.add_argument("--output", required=True, type=Path)
     export.add_argument("--original-speech-db", type=float, default=-16.0)
-    export.add_argument("--dub-speech-db", type=float, default=-2.0)
+    export.add_argument("--dub-speech-db", type=float, default=-8.0)
     export.add_argument("--fade-ms", type=float, default=300.0)
     args = parser.parse_args(argv)
     try:

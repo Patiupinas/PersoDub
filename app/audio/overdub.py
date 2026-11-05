@@ -41,7 +41,7 @@ class OverdubLevels:
     """Per-event dB targets; the total gain cannot exceed unity."""
 
     speech_original_db: float = -16.0
-    speech_dub_db: float = -2.0
+    speech_dub_db: float = -8.0
     fade_ms: float = 300.0
 
     def __post_init__(self):
@@ -562,7 +562,7 @@ def main(argv=None):
     parser.add_argument("--events", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--original-speech-db", type=float, default=-16.0)
-    parser.add_argument("--dub-speech-db", type=float, default=-2.0)
+    parser.add_argument("--dub-speech-db", type=float, default=-8.0)
     parser.add_argument("--fade-ms", type=float, default=300)
     parser.add_argument("--receipt", type=Path)
     args = parser.parse_args(argv)

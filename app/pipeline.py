@@ -1012,6 +1012,8 @@ def _a4_tts_fingerprint(source_sha, event_plan_sha, selected, ref_cues, language
         ),
         "number_of_takes": QWEN_N_TAKES if n_takes is None else n_takes,
     }
+    if engine_id in ("silero_ru", "voxcpm2_ru"):
+        payload["source_voice_register_policy"] = "source_pitch_or_explicit_v1"
     if engine_id == "voxcpm2_ru":
         if not engine_identity:
             raise ValueError("VoxCPM2 A4 fingerprint requires the exact server model/reference identity")

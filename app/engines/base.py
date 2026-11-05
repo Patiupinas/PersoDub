@@ -106,7 +106,8 @@ class TTSEngine:
         raise NotImplementedError
 
     def assign_voices(self, refs: Dict[str, dict], speakers: List[str], work_dir: str,
-                      log: Callable[[str], None], mode: Optional[str] = None) -> Dict[str, str]:
+                      log: Callable[[str], None], mode: Optional[str] = None,
+                      source_registers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """A voice for the speakers of one job, {speaker: voice_id}, from
         their reference clips (refs, app/qwen_pipeline.build_speaker_refs).
         Each clip is written to ref_wav_path first: the take scorer, the voice

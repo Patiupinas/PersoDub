@@ -51,19 +51,36 @@ class SileroRuEngine(TTSEngine):
     def clone(self, ref_audio_path, ref_text=None, mode=None):
         raise NotImplementedError("Silero fixed Russian voices do not clone source audio")
 
-    def assign_voices(self, refs, speakers, work_dir, log, mode=None):
-        # VOICE_01 keeps its selection even when the caller order changes.
+    def assign_voices(self, refs, speakers, work_dir, log, mode=None, source_registers=None):
         choices = {}
-        for i, speaker in enumerate(speakers):
-            match = _VOICE_GROUP.fullmatch(speaker)
-            index = int(match.group(1)) - 1 if match else i
-            if index < 0:
-                raise ValueError("invalid dubbing voice group")
-            choices[speaker] = SILERO_RU_V56[index % len(SILERO_RU_V56)]
+        if source_registers is not None:
+            if set(source_registers) != set(speakers):
+                raise ValueError("Missing source speaking register for a Silero voice group")
+            bank = {
+                "male": ("aidar", "eugene"),
+                "female": ("kseniya", "xenia", "baya"),
+            }
+            counts = {"male": 0, "female": 0}
+            for speaker in speakers:
+                register = source_registers[speaker]
+                if register not in bank or counts[register] >= len(bank[register]):
+                    raise ValueError("Insufficient confirmed Russian voices for source speaking register")
+                choices[speaker] = bank[register][counts[register]]
+                counts[register] += 1
+        else:
+            # Keep the original direct-call contract; production passes
+            # source-register evidence from the dubbing pipeline.
+            for i, speaker in enumerate(speakers):
+                match = _VOICE_GROUP.fullmatch(speaker)
+                index = int(match.group(1)) - 1 if match else i
+                if index < 0:
+                    raise ValueError("invalid dubbing voice group")
+                choices[speaker] = SILERO_RU_V56[index % len(SILERO_RU_V56)]
         report = {
             "version": 1,
             "engine": self.id,
             "speaker_to_voice": choices,
+            "source_registers": source_registers,
             "source_clone": False,
         }
         os.makedirs(work_dir, exist_ok=True)

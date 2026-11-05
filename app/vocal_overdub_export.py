@@ -12,7 +12,10 @@ import tempfile
 from pathlib import Path
 
 from app import media
-from app.audio.loudness import normalize_overdub_base
+from app.audio.loudness import (
+    measure_overdub_voice_loudness,
+    normalize_overdub_base,
+)
 from app.audio.overdub import (
     OverdubLevels,
     create_review_plan,
@@ -112,9 +115,13 @@ def export_existing(video, work_dir, events_path, output_mp4, levels=None):
         normalized = job / "overdub_original_normalized_48k.wav"
         normalized_receipt = job / "overdub_original_normalization.json"
         base_loudness = normalize_overdub_base(original, normalized, normalized_receipt)
+        voice_calibration = measure_overdub_voice_loudness(
+            voice, job / "overdub_voice_loudness.json",
+        )
         receipt = render_overdub(
             original, voice, plan, mixed, levels=levels,
             normalized_source_wav=normalized, source_normalization=base_loudness,
+            voice_calibration=voice_calibration,
         )
         staging = tmp / "finished.mp4"
         result = media.mux_overdub(str(video), str(mixed), str(staging), duration)

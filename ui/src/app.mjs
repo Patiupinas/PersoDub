@@ -462,6 +462,8 @@ const ENGINE_HINTS = {
   voice: { get qwen3() { return [t("Runs on this computer, free."), t("Clones each speaker\u2019s voice.")]; },
            get silero_ru() { return [t("Runs on this computer, free."),
                   t("Native Russian voices (no cloning)")]; },
+           get voxcpm2_expressive_ru() { return [t("Clone the original speaker and preserve lively Russian intonation."),
+                                             t("Requires the experimental local VoxCPM2 service.")]; },
            get voxcpm2_ru() { return [t("Experimental Russian voices."),
                   t("Requires a running external VoxCPM2 server.")]; } },
 };

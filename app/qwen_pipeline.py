@@ -1407,6 +1407,17 @@ def run_qwen_dub(
         )
     else:
         voice_ids = engine.assign_voices(refs, speakers, work_dir, log, mode=voice_mode)
+    # Only the just-selected voice provider may own a future one-line remake.
+    # Stale receipts from an earlier different TTS selection must not route a
+    # revoice through the previous provider after this assignment succeeds.
+    if getattr(engine, "id", None) != "voxcpm2_expressive_ru":
+        stale = os.path.join(work_dir, "source_voice_clone_assignments.json")
+        if os.path.isfile(stale):
+            os.unlink(stale)
+    if not native_voice:
+        stale = os.path.join(work_dir, "russian_voice_assignments.json")
+        if os.path.isfile(stale):
+            os.unlink(stale)
     write_speaker_refs_manifest(refs, sample_cues, work_dir)
     # assign_voices writes each reference to ref_wav_path -- reuse it as the
     # scorer's speaker-embedding source (best-of-N selection compares takes against these).
@@ -1485,8 +1496,24 @@ def resynth_one_line(work_dir, entry, text, language):
         with open(refs_path, encoding="utf-8") as fd:
             refs = json.load(fd)
         ref_text = (refs.get(spk) or {}).get("ref_text") or ""
-        engine = get_engine("qwen3_tts")
-        voice_id = engine.clone(ref_wav, ref_text)
+        clone_manifest_path = os.path.join(work_dir, "source_voice_clone_assignments.json")
+        if os.path.isfile(clone_manifest_path):
+            with open(clone_manifest_path, encoding="utf-8") as fd:
+                clone_manifest = json.load(fd)
+            if (clone_manifest.get("engine") != "voxcpm2_expressive_ru"
+                    or clone_manifest.get("source_clone") is not True):
+                raise ValueError("Invalid expressive source-voice cloning receipt")
+            engine = get_engine("voxcpm2_expressive_ru")
+            if engine is None:
+                raise RuntimeError("Expressive VoxCPM2 engine is not registered")
+            if clone_manifest.get("engine_identity") != engine.fingerprint_identity():
+                raise ValueError("Expressive VoxCPM2 model/style identity changed; rebuild the job")
+            voice_id = engine.clone(ref_wav, ref_text)
+            if voice_id != (clone_manifest.get("speaker_to_voice") or {}).get(spk):
+                raise ValueError("Source voice reference changed; rebuild the job")
+        else:
+            engine = get_engine("qwen3_tts")
+            voice_id = engine.clone(ref_wav, ref_text)
     out_path = os.path.join(work_dir, "qwen_line_%d.wav" % i)
     # A fresh seed every time: a remake is asked for because the voice there
     # is not wanted, so it has to be able to come out differently. The fixed

@@ -299,7 +299,7 @@ def _require_selected_voice_engine(count, tts_choice="qwen3"):
 
     missing = launch_api.missing_models(
         False, None, need_engine=True, separation_local=False,
-        need_tts=tts_choice not in ("silero_ru", "voxcpm2_ru"),
+        need_tts=tts_choice not in ("silero_ru", "voxcpm2_ru", "voxcpm2_expressive_ru"),
         need_silero_ru=tts_choice == "silero_ru",
     )
     if missing:
@@ -311,6 +311,12 @@ def _require_selected_voice_engine(count, tts_choice="qwen3"):
             raise HTTPException(422, "The experimental VoxCPM2 Russian server is unavailable")
         return
     dub_api._require_voice_engine_running()
+    if tts_choice == "voxcpm2_expressive_ru":
+        from app.engines.voxcpm2_expressive_ru import VoxCPM2ExpressiveRuEngine
+
+        if not VoxCPM2ExpressiveRuEngine().is_available():
+            raise HTTPException(422, "Selected expressive source-clone VoxCPM2 server is unavailable")
+        return
     if tts_choice == "silero_ru":
         from app.engines.silero_ru import SileroRuEngine
 

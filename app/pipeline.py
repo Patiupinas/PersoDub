@@ -932,7 +932,7 @@ def _ready_translator(translator, translate_engine, work_dir, cancel_check, log)
 
 
 def _stage_translate(srt_path, source_cues, language, translate_engine, translator,
-                     work_dir, on_notice, log, cancel_check=None):
+                     work_dir, on_notice, log, cancel_check=None, source_lang=None):
     """Stage 3/6 -- translated subtitles, provided or auto-translated.
 
     Returns (segments, auto_translated): the dialogue lines the dub speaks, and
@@ -959,7 +959,7 @@ def _stage_translate(srt_path, source_cues, language, translate_engine, translat
         # with the one the user picks (owner, 2026-10-03), never one of ours.
         try:
             srt_path = _auto_translate_srt(
-                source_cues, language, tr, work_dir, log=log,
+                source_cues, language, tr, work_dir, source_lang=source_lang, log=log,
             )
         except _GEMINI_NOTICE_ERRORS as e:
             _raise_notice(e, log, on_notice)
@@ -1313,7 +1313,7 @@ def _transcribe_or_reuse(video_path, work_dir, reuse, vocals_path, stt_engine, s
 
 
 def _translate_or_reuse(reuse, srt_path, source_cues, language, translate_engine, translator,
-                        work_dir, on_notice, log, cancel_check=None):
+                        work_dir, on_notice, log, cancel_check=None, source_lang=None):
     """Stage 3/6, or the translation the earlier run finished when `reuse`
     (translated.srt is only ever written whole). Returns (segments,
     auto_translated, reused)."""
@@ -1326,7 +1326,7 @@ def _translate_or_reuse(reuse, srt_path, source_cues, language, translate_engine
         return segments, True, True
     segments, auto_translated = _stage_translate(
         srt_path, source_cues, language, translate_engine, translator,
-        work_dir, on_notice, log, cancel_check=cancel_check)
+        work_dir, on_notice, log, cancel_check=cancel_check, source_lang=source_lang)
     return segments, auto_translated, False
 
 
@@ -1506,7 +1506,8 @@ def run_dub(
                       target=language, source=source_language_code or detected_code, srt_given=bool(srt_path)):
         segments, auto_translated, translation_reused = _translate_or_reuse(
             tx_reused and srt_path is None, srt_path, source_cues, language, translate_engine, translator,
-            work_dir, on_notice, log, cancel_check=cancel_check)
+            work_dir, on_notice, log, cancel_check=cancel_check,
+            source_lang=source_language_code or detected_code)
 
         # Preserve emotion & speaker -- the reference lines the Qwen path builds its
         # per-speaker voice samples from. (If source subtitles exist, their timing is

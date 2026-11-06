@@ -114,6 +114,33 @@ def test_pipeline_uses_gate_not_generic_length_fit(tmp_path, monkeypatch):
     assert not (tmp_path/"translated.srt").exists()
 
 
+def test_stage_preserves_source_language_through_translator_and_resume(tmp_path):
+    from app import pipeline
+
+    observed = {}
+
+    class RecordingTranslator:
+        id = "antigravity"
+        display_name = "Antigravity test"
+        model = None
+        length_rules = True
+        recheck_script = False
+
+        def translate(self, texts, target_lang, source_lang=None, durations=None, fuller=False):
+            observed.update(source=source_lang, target=target_lang, durations=durations)
+            return ["Сделай спокойный вдох."]
+
+    cues = [{"start": 0.35, "end": 4.35, "text": "Take a gentle breath."}]
+    translated, automatic, reused = pipeline._translate_or_reuse(
+        False, None, cues, "Russian", "antigravity", RecordingTranslator(),
+        str(tmp_path), None, lambda msg: None, source_lang="en",
+    )
+    assert automatic is True
+    assert reused is False
+    assert observed == {"source": "en", "target": "Russian", "durations": [4.0]}
+    assert translated[0]["text"] == "Сделай спокойный вдох."
+
+
 def test_qa_uses_real_experiment_cues_without_declaring_semantic_pass():
     rows = [
         ("I ran with my dog", "Я хотела погонять пса на улице, а погонял он меня.", 6.0),

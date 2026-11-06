@@ -936,7 +936,7 @@ def _start_plan(*, video, source_url, download_id, language, language_code, num_
         stt_engine = sep_engine = translate_engine = tts_engine = None
     if not _valid_language_code(language_code, dub_mode):
         raise HTTPException(422, t("Unknown language_code: {code}", code=language_code))
-    if tts_engine in ("silero_ru", "voxcpm2_ru") and language_code != "ru":
+    if tts_engine in ("silero_ru", "voxcpm2_ru", "voxcpm2_expressive_ru") and language_code != "ru":
         raise HTTPException(422, "Fixed Russian voice engines require target language ru.")
     if dub_mode == "perso":
         try:
@@ -1031,19 +1031,23 @@ def _start_preflight(plan: _StartPlan, has_script: bool) -> Optional[str]:
         # needed whatever the STT and separation choices (the checks after the
         # voices run in it too).
         missing = launch_api.missing_models(need_whisper, translate_missing_id,
-                                  need_tts=plan.tts_engine not in ("silero_ru", "voxcpm2_ru"),
+                                  need_tts=plan.tts_engine not in ("silero_ru", "voxcpm2_ru", "voxcpm2_expressive_ru"),
                                   need_engine=True, need_ollama=need_ollama,
                                   separation_local=plan.sep_engine != "perso",
                                   need_roformer=plan.sep_engine == "roformer",
                                   need_silero_ru=plan.tts_engine == "silero_ru")
         if missing:
             launch_api.raise_models_needed(missing)
-        if plan.tts_engine != "voxcpm2_ru":
+        if plan.tts_engine not in ("voxcpm2_ru", "voxcpm2_expressive_ru"):
             _require_voice_engine_running()
         if plan.tts_engine == "voxcpm2_ru":
             from app.engines.voxcpm2_ru import VoxCPM2RuEngine
             if not VoxCPM2RuEngine().is_available():
                 raise HTTPException(422, "VoxCPM2 Russian pilot is unavailable. Set PERSODUB_VOXCPM2_URL and start its opt-in server.")
+        if plan.tts_engine == "voxcpm2_expressive_ru":
+            from app.engines.voxcpm2_expressive_ru import VoxCPM2ExpressiveRuEngine
+            if not VoxCPM2ExpressiveRuEngine().is_available():
+                raise HTTPException(422, "Expressive source-clone VoxCPM2 service unavailable. Restart its opt-in server with the selected profile.")
         if plan.tts_engine == "silero_ru":
             from app.engines.silero_ru import SileroRuEngine
             if not SileroRuEngine().is_available():

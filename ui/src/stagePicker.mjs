@@ -38,7 +38,8 @@ const CHARACTER = {
                get gemini() { return t("Most accurate · Gemini key"); } },
   voice: { get qwen3() { return t("Follows the voice of each speaker"); },
            get silero_ru() { return t("Native Russian voices (no cloning)"); },
-           get voxcpm2_ru() { return t("Experimental external Russian voices · Requires VoxCPM2 server"); } },
+           get voxcpm2_ru() { return t("Experimental external Russian voices · Requires VoxCPM2 server"); },
+           get voxcpm2_expressive_ru() { return t("VoxCPM2 expressive - clone the source speaker · Requires VoxCPM2 server"); } },
 };
 
 /** A model's state in a word or two, with its look: Ready, Downloading 43%

@@ -780,6 +780,7 @@ const ENGINE_LABELS = {
   qwen3: { label: "Qwen3-TTS", api: false },
   silero_ru: { label: "Silero RU v5.6", api: false },
   voxcpm2_ru: { label: "VoxCPM2 RU (experimental)", api: false },
+  voxcpm2_expressive_ru: { label: "VoxCPM2 source voice + expression (experimental)", api: false },
 };
 
 /**

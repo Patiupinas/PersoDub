@@ -1018,6 +1018,12 @@ def _a4_tts_fingerprint(source_sha, event_plan_sha, selected, ref_cues, language
     }
     if engine_id in ("silero_ru", "voxcpm2_ru"):
         payload["source_voice_register_policy"] = "source_pitch_or_explicit_v1"
+    if engine_id == "voxcpm2_expressive_ru":
+        if not engine_identity:
+            raise ValueError("Expressive VoxCPM2 A4 fingerprint requires the exact server model/style identity")
+        from app.voxcpm2_profile import VOXCPM2_EXPRESSIVE_PROFILE
+        payload["engine_identity"] = engine_identity
+        payload["source_clone_expression_profile"] = VOXCPM2_EXPRESSIVE_PROFILE
     if engine_id == "voxcpm2_ru":
         if not engine_identity:
             raise ValueError("VoxCPM2 A4 fingerprint requires the exact server model/reference identity")
@@ -1091,18 +1097,18 @@ def _stage_synthesize(segments, ref_cues, work_dir, vocals_path, background_path
     """
     engine = qwen_engine or QwenTTSEngine()
     effective_n_takes = n_takes if n_takes is not None else QWEN_N_TAKES
-    if getattr(engine, "id", None) in ("silero_ru", "voxcpm2_ru") and effective_n_takes > 1:
+    if getattr(engine, "id", None) in ("silero_ru", "voxcpm2_ru", "voxcpm2_expressive_ru") and effective_n_takes > 1:
         # The existing best-of-N scoring compares each take to a cloned
         # source-language reference. A native Russian preset has no such
         # source reference, so repeated takes cannot be ranked by that gate.
-        log("   native Russian fixed voices use one take (no source-voice scoring)")
+        log("   selected Russian VoxCPM2/Silero profile uses one validated take per line")
         effective_n_takes = 1
     # Say which Voice-quality mode ran (user feedback 2026-08-06). <=1 is the
     # "fast" UI mode: best-of-N selection is disabled (see config.QWEN_N_TAKES).
     mode = ("fast, 1 take/line" if effective_n_takes <= 1
             else f"high quality, best of {effective_n_takes} takes")
     if getattr(engine, "id", None) not in ("silero_ru", "voxcpm2_ru"):
-        _log_stage(log, "synthesize", f"Cloning & synthesizing voices (Qwen3-TTS — {mode})…")
+        _log_stage(log, "synthesize", f"Cloning & synthesizing voices ({getattr(engine, 'display_name', 'Qwen3-TTS')} - {mode})…")
     else:
         _log_stage(log, "synthesize",
                    f"Synthesizing fixed Russian voices ({engine.display_name}, {mode})…")
@@ -1548,7 +1554,7 @@ def run_dub(
             engine_id=(getattr(qwen_engine, "id", "qwen3_tts") if qwen_engine is not None
                        else "qwen3_tts"),
             **({"engine_identity": qwen_engine.fingerprint_identity()}
-               if getattr(qwen_engine, "id", None) == "voxcpm2_ru" else {}),
+               if getattr(qwen_engine, "id", None) in ("voxcpm2_ru", "voxcpm2_expressive_ru") else {}),
         )
     reuse_lines = bool(resume and (translation_reused or srt_path))
     if audio_mode == "overdub":

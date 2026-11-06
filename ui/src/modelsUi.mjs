@@ -21,7 +21,7 @@ export function neededModelId(role, value) {
   if (role === "stt") return value === "perso" ? null : "whisper";
   if (role === "translate") return value === "gemma" ? "gemma" : value === "hunyuan" ? "hunyuan" : null;
   if (role === "voice") return value === "silero_ru" ? "silero-ru"
-    : value === "voxcpm2_ru" ? null : "qwen3-tts";
+    : (value === "voxcpm2_ru" || value === "voxcpm2_expressive_ru") ? null : "qwen3-tts";
   return null;
 }
 

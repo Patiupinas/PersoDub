@@ -248,6 +248,9 @@ def work_for(job, *, cancel_check, on_notice, voices_only=False, resume=False,
         elif selected_voice == "voxcpm2_ru":
             from app.engines.voxcpm2_ru import VoxCPM2RuEngine
             voice_engine = VoxCPM2RuEngine()
+        elif selected_voice == "voxcpm2_expressive_ru":
+            from app.engines.voxcpm2_expressive_ru import VoxCPM2ExpressiveRuEngine
+            voice_engine = VoxCPM2ExpressiveRuEngine()
         return run_dub(
             **({"qwen_engine": voice_engine} if voice_engine is not None else {}),
             video_path=video_path,
